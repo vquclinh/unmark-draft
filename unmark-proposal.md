@@ -2,7 +2,7 @@
 
 **Tone-Factored Input Adaptation for Diacritic-Robust Vietnamese Language Understanding**
 
-Research Proposal · **Version 1.2** · 19 August 2026
+Research Proposal · **Version 1.3** · 19 August 2026
 
 | | |
 |---|---|
@@ -167,13 +167,31 @@ where `canon` applies Unicode NFC and a fixed tone-placement rule, and **every**
 | Channel | Granularity | States |
 |---|---|---|
 | Base `b` | character | fully stripped letters; tokenized by the frozen tokenizer |
-| Tone `τ` | **syllable** | {`UNMARKED`, sắc, huyền, hỏi, ngã, nặng} — 6 states |
+| Tone `τ` | **syllable** | 5 marked tones (sắc, huyền, hỏi, ngã, nặng) + 2 policy slots — **7 states** |
 | Letter `λ` | **character** | {`NONE`, breve, circumflex, horn, stroke, circumflex+…} — small closed set |
-| Non-Vietnamese | — | `N/A` in both channels: digits, Latin words, punctuation, symbols |
+| Non-Vietnamese | — | `N/A` in both channels; membership decided by the rule below |
+
+**Deciding what counts as Vietnamese.** Digits, punctuation and symbols are trivially `N/A`. Alphabetic spans are not: an undiacritized ASCII string may be an English word, a loanword, or a Vietnamese syllable that has simply lost its marks — and several strings are simultaneously a valid Vietnamese syllable and a valid English word. No deterministic rule resolves this, and the decomposition is required to be rule-based.
+
+The rule is therefore chosen for determinism, not for correctness:
+
+> An alphabetic span is treated as a **Vietnamese candidate** if it matches the Vietnamese syllable inventory after stripping; otherwise both channels are `N/A`.
+
+Ambiguous spans are resolved towards Vietnamese, and this is documented as a known and deliberate error mode rather than hidden. One property matters more than the rule's accuracy: it is a pure function of the *stripped* form, so it assigns the same labels to clean and corrupted input and cannot break grid invariance.
+
+**Seven tone slots, so that all three H4 policies share one architecture.** The tone table has 7 rows for every policy: five marked tones plus two slots whose meaning is set by the policy (§6.7).
+
+| Policy | Slot A | Slot B |
+|---|---|---|
+| `OBSERVABLE` (UNMARK) | `UNMARKED` | unused |
+| `FORCED-NGANG` | *ngang* | unused |
+| `ORACLE` | *ngang* | `MISSING` |
+
+A six-state table, as specified in v1.2, cannot express the oracle policy, which needs *ngang* and `MISSING` simultaneously. Giving all three policies an identical 7 × d table removes any objection that the oracle was granted extra capacity.
 
 **Why the two channels have different granularity.** Tone is a property of the *syllable*: one syllable carries exactly one tone, regardless of how many vowels it contains. Letter diacritics are properties of *individual letters*, and one syllable may carry several of them at once, on different characters. Putting both at syllable level, as an earlier draft did, makes the letter channel lossy and breaks reconstruction. This asymmetry is not a detail — it is what makes G0 passable.
 
-**Locked decision: no separate `MISSING` state.** An earlier draft used six tones plus a `MISSING` symbol. This is not implementable: at inference the system observes only *no visible mark*, and cannot know whether a mark was deleted. Any state set requiring that knowledge works only in the laboratory.
+**Locked decision: no separate `MISSING` state at inference.** An earlier draft used six tones plus a `MISSING` symbol. This is not implementable: at inference the system observes only *no visible mark*, and cannot know whether a mark was deleted. Any state set requiring that knowledge works only in the laboratory.
 
 The tone channel therefore encodes *only what is observable*. Genuine *ngang* and stripped tone both map to `UNMARKED`. This conflation is intentional and is the technical core of the proposal:
 
@@ -192,7 +210,7 @@ The specification is:
 1. The **base stream** defines the token grid. All positions are indexed by `T(b(x))`.
 2. Each subword is assigned the channel labels of the syllable it belongs to, by tracking character offsets through tokenization.
 3. The **tone label** of a syllable is copied to every subword that overlaps that syllable's character span.
-4. The **letter labels** are per character; a subword spanning several characters is assigned a pooled label (first-mark or a small learned pooling — locked in §5).
+4. The **letter labels** are per character. A subword spanning several characters pools in *embedding space*, not in label space: `l_i = Pool({ W_λ[λ_c] : c ∈ span(token_i) })`, with mean pooling for v1. Collapsing several characters back into one categorical label ("first mark wins") would reintroduce, at subword level, exactly the information loss that moving the channel to character level was meant to remove. Learned attention pooling is an ablation.
 5. The **original stream** is *not* used as a third parallel stream, because it cannot be aligned to the base grid without an ad-hoc heuristic. If a residual path to the original embedding is wanted, it is added only in the fully diacritized condition.
 
 Invariants to assert in unit tests, before any training run: the three label sequences have equal length; that length equals `|T(b(x))|`; every non-Vietnamese subword carries `N/A` in both channels; and corrupting the input changes the tone labels but never the base ids.
@@ -211,11 +229,23 @@ g_i = σ( W_g [ e_i ; t_i ; l_i ] + c_g ) ∈ (0,1)^d
 z_i = g_i ⊙ f_i + (1 − g_i) ⊙ e_i
 ```
 
+**Linear, not MLP.** v1.2 specified a two-layer MLP in the architecture lock while costing a single linear projection in the parameter budget — the two did not agree. The main method is a **single linear projection** `W_f ∈ R^(d×3d)`, which is what the budget in §4.7 describes and what keeps the parameter count matched against the `ALIGN` baseline. An MLP variant `3d → h → d` is an ablation and, if run, must state `h`, the activation, dropout, and its own parameter count.
+
 The vector `z_i` replaces the ordinary input embedding. All transformer layers above remain frozen.
 
 **What is replaced, and what is not.** `z_i` substitutes for the *word* embedding only. Position embeddings and token-type embeddings are supplied by the encoder as usual — in practice, by passing `z` through the model's `inputs_embeds` interface. Adding position encodings inside the module would double-count them, and the failure is silent: the model trains, the loss decreases, and every number is wrong. **This is the single most likely implementation bug in the project.**
 
-The gate provides a structural guarantee: `g_i → 0` recovers the unmodified model exactly. This matters because in deployment the system does not know whether the input is diacritized. Gating on a frozen encoder is standard practice and is *not* claimed as novel; it is included because the identity-recovery property is needed, and it must be cited accordingly.
+**What the gate actually guarantees.** An earlier version of this document claimed that `g_i → 0` recovers the unmodified model exactly. That claim was false, and the error is worth stating plainly because it changes how the whole design should be described.
+
+Since `e_i = Emb_θ(b_i)` is computed from the **stripped** base stream, `g_i → 0` yields `E_θ(T(b(x)))`, not `E_θ(T(x))`. The gate recovers the **base-only pathway**, not the original model. Whether clean-input performance survives that substitution is not a structural guarantee at all — it is exactly hypothesis H1, and exactly what G1 measures.
+
+**Consequence: the base grid is invariant by construction.** Restating the design honestly makes it look better, not worse. Because `b(x) = b(x̃)` for every corruption rate, UNMARK sees the *same* token grid whatever the input condition. Corruption is therefore, inside UNMARK, a purely **channel-level** phenomenon: only `τ` changes. For `FLOOR`, `RESTORE` and `ALIGN`, corruption is a string-level phenomenon that re-tokenizes the input and changes its length. That difference is the substance of the contribution, and it should be the framing in the paper: **UNMARK does not repair a damaged input, it removes the input's dependence on whether the damage occurred.**
+
+The cost is equally real and must be reported: even on fully diacritized text, UNMARK *forgoes* the encoder's original tokenization and must reconstruct what it needs from channels.
+
+**Consequence for the experimental tables.** `UPPER` (unmodified model, clean text) and UNMARK on clean text are *different input pathways*, not the same pathway with a module attached. The "no clean-input regression" control is therefore a cross-pathway comparison, and the paper must say so rather than implying an identity that does not hold.
+
+Gating on a frozen encoder is standard practice and is *not* claimed as novel; it is included for adaptive behaviour and must be cited accordingly.
 
 ### 4.6 Training objectives
 
@@ -247,7 +277,7 @@ D( h_UNMARK(x), h_UNMARK(x̃) )  <  D( h_base(x), h_base(x̃) )
 
 | Component | Parameters |
 |---|---|
-| Tone embedding table (6 × d) | ≈ 5K |
+| Tone embedding table (7 × d) | ≈ 5K |
 | Letter-diacritic table (~10 × d, per character) | ≈ 8K |
 | Fusion projection (3d → d) | ≈ 1.8M |
 | Gate projection (3d → d) | ≈ 1.8M |
@@ -261,6 +291,18 @@ A linear fusion variant reduces this further and is included in the ablation.
 
 ## 5. Specification lock
 
+> **Status: partially locked.** The architecture is locked. Several concrete values are still open, and each one blocks a specific gate:
+>
+> | Open item | Blocks |
+> |---|---|
+> | `RESTORE` checkpoint and decoding parameters | G2 |
+> | Dataset versions and splits | G2, full grid |
+> | Stage-1 corpus | stage-1 training |
+> | `ALIGN` architecture and budget | G3 |
+> | Classification head concrete values | G1 |
+>
+> Work that depends on none of these — orthography, corruption, alignment, tests — can begin immediately. Calling this section "locked" before the table above is filled in would be self-deception.
+
 Everything below is frozen before the gates begin. The purpose is to prevent the failure mode in which architecture and experimental protocol are adjusted while results are being read — which turns a study into trial and error and makes the comparison uninterpretable.
 
 The rule is not "never change anything". G1 exists precisely to discover whether the architecture survives contact with a frozen encoder. The rule is: **whatever enters the comparison is locked, and whatever is changed is logged with the reason and the date.**
@@ -270,15 +312,16 @@ The rule is not "never change anything". G1 exists precisely to discover whether
 | Item | Locked value |
 |---|---|
 | Base stream | stripped text, frozen tokenizer, frozen embedding table |
-| Tone channel | 6 observable states, syllable level |
-| Letter channel | closed set, **character** level, pooled to subword |
-| Main fusion | 2-layer MLP, 3d → d |
+| Tone channel | 7 slots (5 marked + 2 policy slots), syllable level |
+| Letter channel | closed set, **character** level, mean-pooled in embedding space |
+| Main fusion | single linear projection, 3d → d (MLP is an ablation) |
 | Gate | per-dimension, σ(W_g[·]) |
 | Normalisation | LayerNorm after fusion, before the gate combination |
 | Position / token-type | supplied by the encoder via `inputs_embeds` |
 | Encoder | fully frozen; no layer unfrozen without a logged decision |
 | Alignment loss | pooled, cosine distance |
 | Corruption sampling | `p ~ U(0,1)` per example, continuous |
+| Stage-2 head | trained on **clean data only**, then frozen (see §5.2) |
 
 Linear-versus-MLP fusion, gate-versus-no-gate, and tone-only-versus-both-channels are *ablations*, not open architecture questions.
 
@@ -288,7 +331,16 @@ This is a scientific-integrity requirement, not a convenience. If baselines are 
 
 - `RESTORE`: named restorer, pinned checkpoint and version, frozen, fixed decoding parameters. Its own token-level accuracy is measured and reported separately, on long text and on short text.
 - `ALIGN`: architecture, parameter budget matched to UNMARK within a stated tolerance, loss, and training budget — all fixed in advance.
-- **Classification head**: one architecture, identical across all five systems, with the same learning-rate schedule, epoch budget, early-stopping criterion, and seed list.
+- **Classification head**: one architecture, identical across all five systems, with the same learning-rate schedule, epoch budget, early-stopping criterion, and seed list. The concrete values (hidden size, pooling, learning rate, epochs, patience) are pinned during spec lock; "identical" is not a specification until the numbers are written down.
+
+**The head is trained on clean data only.** This is a substantive experimental decision, not a detail. Two protocols are possible:
+
+| Protocol | What it measures |
+|---|---|
+| Head trained on clean only, then frozen and evaluated on every condition | Whether the *representation* is stable under corruption. |
+| Head trained on clean plus corrupted data | Whether the *system* is robust — but robustness now comes partly from supervised noise augmentation in the head. |
+
+UNMARK's research question is about representation stability, so the first protocol is locked. A reviewer can otherwise attribute any gain to the head having seen corrupted labels, and the claim about input representations would not follow from the evidence. The same protocol applies to all five systems.
 
 ### 5.3 Data and corruption (locked before G2)
 
@@ -366,7 +418,7 @@ Reported for `RESTORE`, `ALIGN`, and `UNMARK`. The comparison of these three GRR
 
 ### 6.6 Controls
 
-- **No clean-input regression.** Every system must be reported on `FULL`. A system that improves corrupted input while degrading clean input is useless in deployment, where the mode is unknown.
+- **No clean-input regression.** Every system must be reported on `FULL`. A system that improves corrupted input while degrading clean input is useless in deployment, where the mode is unknown. Note that for UNMARK this is a *cross-pathway* comparison — `UPPER` runs the encoder's own tokenization, UNMARK runs the base grid — and the paper must state that rather than implying an identity.
 - **Seeds.** At least three per configuration; report mean and standard deviation. If the improvement is within seed variance, there is no result, and this must be stated.
 - **Ablations.** Linear versus MLP fusion; with versus without gate; tone channel only versus tone plus letter channel; training data volume; fixed versus sampled corruption rate.
 - **LLM reference point.** A zero-shot general-purpose LLM row, included as a reference rather than a competing baseline, to pre-empt the "why not just use an LLM" question and to test whether the problem disappears at scale.
@@ -512,9 +564,10 @@ def propagate(d: Decomposition, tokenizer) -> tuple[list[int], list[int], list[i
 # unmark/modules/unmark.py
 class UnmarkEncoder(nn.Module):
     """Frozen encoder + trainable input-side module."""
-    def __init__(self, encoder, d_model, n_tone=6, n_letter=10,
-                 fusion="mlp", use_gate=True,
+    def __init__(self, encoder, d_model, n_tone=7, n_letter=10,
+                 fusion="linear", use_gate=True,
                  tone_policy="observable"):   # observable | forced_ngang | oracle
+        # n_tone = 5 marked + 2 policy slots, identical for all three policies
         ...
     def forward(self, input_ids, tone_ids, letter_ids, attention_mask):
         z = self.fuse(input_ids, tone_ids, letter_ids)
@@ -525,7 +578,7 @@ class UnmarkEncoder(nn.Module):
 ### 8.3 Two-stage training
 
 1. **Stage 1 — module.** Self-supervised. Encoder frozen. Train `φ` with `L_align + L_clean` under sampled corruption. No labels required. Corpus: any Vietnamese text.
-2. **Stage 2 — head.** Module frozen, encoder frozen. Train a classification head per task. Run identically for all five systems.
+2. **Stage 2 — head.** Module frozen, encoder frozen. Train a classification head per task **on clean data only**, then freeze it and evaluate under every corruption condition. Run identically for all five systems.
 
 Keeping the stages separate is what makes the comparison fair: only the input representation differs between systems at stage 2.
 
@@ -570,6 +623,8 @@ The slack at the end is not optional and should not be spent in advance. Its pur
 | Gains within seed variance | Medium | Three seeds from the start; report honestly if so |
 | Alignment bug between streams | Medium | Unit tests and invariants before training (§4.4) |
 | Position embeddings added twice | Medium | Word embeddings only, via `inputs_embeds`; assert in a unit test |
+| Base grid discards useful original tokenization on clean input | High | Acknowledged cost, not a bug; H1 and G1 quantify it before anything is built on top |
+| Head trained on corrupted data confounds the claim | Medium | Clean-only head protocol locked in §5.2 |
 | Nondeterministic corruption across systems | Medium | `C(x,p,s)` pinned by seed; regression test on fixed examples |
 | Decisions drift onto the test split | Medium | Ablations on dev; test opened once (§5.4) |
 | Over-reading the one-seed pilot | Medium | Pilot is go/no-go only; nothing from it enters the paper |
@@ -609,10 +664,12 @@ Most of what was open in v1.0 is now locked in §5. What remains, to be settled 
 1. Which diacritic restorer serves as `RESTORE`: name, checkpoint, version, decoding parameters.
 2. Exact dataset versions and splits for the four tasks.
 3. Corpus for stage-1 training: size, domain mix, and whether it should match the downstream task domains.
-4. Subword pooling rule for the character-level letter channel: first-mark, majority, or a small learned pooling.
+4. `ALIGN` baseline: concrete architecture, parameter budget, loss, and training budget. Classification head: hidden size, pooling, learning rate, epoch budget, early-stopping patience, seed list.
 5. Whether to include a retrieval task if time permits, or stay entirely within classification. (Default: stay.)
 
 ### Changelog
+
+**v1.3 (19 Aug 2026).** Corrected a false structural claim: the gate recovers the *base-only pathway*, not the unmodified model, because `e_i` is computed from the stripped stream. The consequences are now stated positively (the base grid is invariant by construction, so corruption is channel-level inside UNMARK) and negatively (clean input forgoes the encoder's original tokenization; `UPPER` is a different pathway). Tone table enlarged to 7 slots so all three H4 policies share one architecture. Main fusion fixed as a single linear projection, resolving the disagreement between the architecture lock and the parameter budget. Letter channel pools in embedding space rather than label space. Stage-2 head locked to clean-only training. Deterministic rule added for deciding whether an alphabetic span is Vietnamese. §5 relabelled *partially* locked, with a table of what each open item blocks.
 
 **v1.2 (19 Aug 2026).** All venue and submission-deadline references removed. The schedule is now a working plan rather than a countdown, and the gates carry the discipline the deadline used to supply. Venue selection is deferred until the results exist.
 
