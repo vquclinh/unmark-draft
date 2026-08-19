@@ -288,6 +288,137 @@ of real Vietnamese, no corpus ships with this repository, and nothing here downl
 
 ---
 
+## Deterministic corruption (B2)
+
+Generates the clean/corrupted pairs for UNMARK stage-1 training and every evaluation
+condition. Pure standard library plus the orthography core — no tokenizer, no model, no
+word list, no network.
+
+```python
+from unmark.corruption import corrupt
+
+r = corrupt("Tôi đang nghiên cứu.", "P50", seed=42, sample_id="doc-17")
+r.corrupted_text          # deterministic for this exact key
+r.realized_probability    # selected / eligible units
+```
+
+### `C(x, condition, seed, sample_id)`
+
+Corruption operates on `canon(x)`, so `hòa` and `hoà` are the same example and get the
+same noise. The original string is preserved verbatim and never mutated.
+
+Each syllable is scored independently:
+
+```text
+payload  = schema_version | seed | sample_id | sha256(canonical text) | unit_index
+score    = BLAKE2b(payload, 8 bytes) / 2**64        # in [0, 1)
+selected = score < probability
+```
+
+No `random` module, no global RNG, and no Python `hash()` — that one is randomised per
+process, so a corpus corrupted today would not reproduce tomorrow. Each unit's decision
+depends only on its own key, so inserting a syllable does not change any other unit's
+fate, and reordering a dataset changes nothing at all.
+
+`CORRUPTION_SCHEMA_VERSION = "b2-v1"` is part of the payload and is recorded in every
+result. Changing it changes every decision, which is the point: artifacts from different
+algorithm versions must not be pooled silently.
+
+### Conditions
+
+Taken verbatim from proposal §6.3:
+
+| Condition | Removes | From |
+|---|---|---|
+| `FULL` | nothing | — |
+| `P25` / `P50` / `P75` | tone marks | 25/50/75% of syllables |
+| `P100` | tone marks | all syllables |
+| `STRIP_ALL` | tone marks **and** letter diacritics | all syllables |
+
+`P100` and `STRIP_ALL` are **not** the same. `P100` leaves `ă â ê ô ơ ư đ` intact —
+`nghiên cứu` becomes `nghiên cưu`. `STRIP_ALL` removes those too — `nghien cuu` — which is
+what someone types without an IME. `VARIANT` is recognised but not implemented; see
+[`docs/spec/decisions.md`](docs/spec/decisions.md) (D-B2-005).
+
+### Eligibility is not resolved yet — and the code refuses to pretend
+
+Corruption probabilities are meant to apply to **eligible Vietnamese syllables**
+(proposal §4.3, §6.3). The syllable inventory that rule needs does not exist yet (GAP-2),
+so B2 scores **candidate spans** — every maximal alphabetic run, language-blind.
+
+That distinction is load-bearing, not cosmetic. Under the fallback, `toi dung Python va
+PyTorch` has a denominator of 5 rather than 3, and `STRIP_ALL` rewrites `café` to `cafe`
+because the acute is a Vietnamese tone codepoint. Neither is wrong for the *engine*; both
+are wrong for a *protocol*. So:
+
+* every count is named `candidate_*`, never `eligible_*`;
+* `result.eligible_units` **raises** rather than returning the candidate count;
+* every span keeps `Eligibility.UNDECIDED`;
+* `corrupt()` defaults to `purpose=SCIENTIFIC` and **raises today** —
+  implementation verification must ask for `CorruptionPurpose.SELF_CHECK`, and its
+  artifacts are stamped `provisional_eligibility: true`.
+
+```python
+corrupt(text, "P50", seed=1, sample_id="s")                       # raises: GAP-2 open
+corrupt(text, "P50", seed=1, sample_id="s", purpose=SELF_CHECK)   # provisional, labelled
+```
+
+Closing GAP-2 is **B3 / pre-training's** responsibility and must happen before stage-1
+training or any main experiment. See [`docs/spec/decisions.md`](docs/spec/decisions.md)
+D-B2-003 and [`docs/audits/004-…`](docs/audits/004-b2-eligibility-safety-followup.md).
+
+### Requested vs realized rates
+
+Selection is an independent Bernoulli trial per candidate, not an exact `round(p·N)`
+count, so a short sentence's realized fraction differs from `p`. A selected `ngang`
+syllable has no mark to remove, so selection and modification are reported separately:
+
+```text
+candidate_selection_rate    = selected_candidates / candidate_units
+candidate_modification_rate = modified_candidates / candidate_units   # ≤ the above
+```
+
+Both are `None`, never `0.0`, when a string has no candidate spans at all.
+
+### Base invariance
+
+```text
+strip_to_base(canon(x)) == strip_to_base(corrupt(x).corrupted_text)
+```
+
+holds for every condition including `STRIP_ALL`, because corruption only removes
+information already represented outside the base channel. It never substitutes letters,
+deletes consonants, inserts words, reorders characters, or touches punctuation,
+whitespace, digits, case, URLs, e-mail addresses or non-Vietnamese combining marks.
+
+### Clean lexical tone vs corrupted observed tone
+
+The corrupted *string* cannot distinguish a genuine `ngang` from a stripped tone — that is
+the ambiguity UNMARK exists to model. The *metadata* can, and does:
+
+```python
+r = corrupt("ma má", "P100", seed=1, sample_id="s")
+r.corrupted_text                                  # "ma ma"
+r.decisions[0].clean_lexical_tone, r.decisions[0].tone_mark_removed   # NGANG, False
+r.decisions[1].clean_lexical_tone, r.decisions[1].tone_mark_removed   # SAC,   True
+```
+
+Both corrupted syllables read `ObservedTone.UNMARKED`. Neither is ever relabelled `NGANG`.
+`oracle_tone_is_missing` and `oracle_tone_is_genuine_ngang` expose the H4 oracle view
+(proposal §6.7) without B2 implementing any H4 policy or embedding table.
+
+### Self-check
+
+```bash
+.venv/bin/python scripts/b2_corruption_self_check.py
+```
+
+Writes `results/b2/<run_id>/` with `config.json`, `cases.jsonl`, `summary.json` and
+`report.md`. Curated implementation-verification examples only — not a dataset, not a
+benchmark, not a training corpus. Nothing is downloaded.
+
+---
+
 ## Cleanup
 
 Every environment and cache in this project is disposable and repository-local.
@@ -321,11 +452,13 @@ requirements/
 scripts/
   g_minus1_restore_smoke.py   # G-1 runtime entry point (Colab; lazy torch/transformers)
   g0_orthography_check.py     # G0 round-trip checker (local, no corpus ships here)
+  b2_corruption_self_check.py # B2 corruption self-check (local, curated examples)
 tests/
   test_orthography_signature.py
   test_orthography_decompose.py
   test_restore_smoke_utils.py
 unmark/
+  corruption/                 # B2: conditions, deterministic scoring, corrupt()
   orthography/
     marks.py                  # mark inventories, tone/letter channel states
     units.py                  # base-char + combining-mark grouping (shared)
@@ -338,6 +471,7 @@ unmark/
     g_minus1.py               # smoke suite, config validation, records, summary, report
 docs/
   spec/orthography.md         # orthography decisions (D-001 placement, D-002 eligibility)
+  spec/decisions.md           # implementation decision / deviation log
   audits/                     # persisted audits
 results/
   g_minus1/                   # run artifacts (git-ignored except .gitkeep)

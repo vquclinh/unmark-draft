@@ -352,6 +352,8 @@ C(x, p, s) → x̃
 
 of example, rate, and seed: the same triple must always produce the same corrupted string. If corruption is nondeterministic, `RESTORE`, `ALIGN`, and UNMARK are silently evaluated on different noise, and the whole results table becomes meaningless without any error being raised.
 
+Two details make that requirement enforceable rather than aspirational, and both are implemented in B2. First, corruption operates on `canon(x)`, not on raw source spelling, so placement variants and NFC/NFD forms are the same example and receive the same noise. Second, "example" is identified by an explicit stable `sample_id` rather than by row order or by a process-randomised hash, so reordering a dataset cannot change any sample's corruption. The per-unit decision is a keyed digest of `(schema version, seed, sample_id, canonical-text identity, unit index)`; the rationale and the remaining clarifications are recorded in `docs/spec/decisions.md` (D-B2-001 … D-B2-006).
+
 ### 5.4 Split discipline
 
 | Split | Permitted use |

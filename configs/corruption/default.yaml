@@ -1,0 +1,87 @@
+# ---------------------------------------------------------------------------
+# B2 deterministic corruption - project defaults.
+#
+# Condition semantics are taken verbatim from proposal v1.3 section 6.3 and are
+# not tunable here: changing them is an experiment-spec change, not a config
+# change. Clarifications are recorded in docs/spec/decisions.md.
+# ---------------------------------------------------------------------------
+
+schema_version: b2-v1
+
+# Changing schema_version changes every corruption decision. Old run artifacts
+# recording a different version are NOT comparable and must not be pooled.
+
+canonicalisation:
+  # Corruption operates on canon(x), never on raw source spelling, so that
+  # placement variants (hoà/hòa) and NFC/NFD forms corrupt identically.
+  # See docs/spec/decisions.md D-B2-004 and docs/spec/orthography.md D-001.
+  mode: canon
+  tone_placement: MODERN
+
+unit:
+  # Proposal 6.3: "Tone marks removed from 25/50/75% of syllables", where 4.3
+  # makes a syllable a Vietnamese candidate only if its stripped form is in the
+  # Vietnamese syllable inventory.
+  kind: candidate_syllable_span
+
+eligibility:
+  # TEMPORARY IMPLEMENTATION FALLBACK - see docs/spec/decisions.md D-B2-003.
+  #
+  # The syllable inventory 4.3 requires does not exist yet (GAP-2), so B2 scores
+  # every maximal alphabetic run and calls them CANDIDATES, never "eligible".
+  # This is NOT the scientific protocol: English spans sit in the p25/p50/p75
+  # denominator, and STRIP_ALL rewrites foreign words spelled with a codepoint
+  # that is also a Vietnamese tone mark (cafe' -> cafe).
+  #
+  # corrupt() defaults to purpose=SCIENTIFIC and RAISES while this is UNRESOLVED.
+  # Only implementation verification may pass purpose=SELF_CHECK.
+  #
+  # Resolution owner: B3 / pre-training. Must be closed before stage-1 training
+  # or any main experiment; corruption artifacts produced before and after are
+  # NOT comparable, because the denominator changes.
+  policy: UNRESOLVED
+  resolved_policy_name: VIETNAMESE_SYLLABLE_INVENTORY
+  filter: none
+  provisional: true
+
+seed_policy:
+  # Per-unit decisions come from a keyed digest, never from a global RNG and
+  # never from Python's process-randomised hash(). D-B2-001.
+  algorithm: blake2b
+  digest_bytes: 8
+  key_fields: [schema_version, seed, sample_id, text_identity, unit_index]
+  text_identity: sha256-hex-of-canonical-clean-text
+  selection_rule: "score < probability"
+  # Independent Bernoulli per unit, NOT an exact round(p*N) count. D-B2-002.
+  independent_per_unit: true
+
+conditions:
+  FULL:
+    scope: NONE
+    probability: 0.0
+    description: Fully diacritized (upper bound)
+  P25:
+    scope: TONE
+    probability: 0.25
+    description: Tone marks removed from 25% of syllables
+  P50:
+    scope: TONE
+    probability: 0.50
+    description: Tone marks removed from 50% of syllables
+  P75:
+    scope: TONE
+    probability: 0.75
+    description: Tone marks removed from 75% of syllables
+  P100:
+    scope: TONE
+    probability: 1.0
+    description: All tone marks removed
+  STRIP_ALL:
+    scope: TONE_AND_LETTER
+    probability: 1.0
+    description: Tone and letter diacritics removed (real typing behaviour)
+
+# Recognised in proposal 6.3 but not implemented in B2 (D-B2-005): producing it
+# requires TonePlacement.TRADITIONAL, which B1A deliberately did not implement.
+unimplemented_conditions:
+  - VARIANT
