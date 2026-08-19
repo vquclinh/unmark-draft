@@ -152,7 +152,7 @@ where `b` is the base form with all diacritics removed, `τ` is the tone state, 
 
 Two facts settle the matter. First, a syllable may carry *several* letter-forming marks at different positions, so a single per-syllable letter state cannot reconstruct it. The letter-diacritic channel is therefore defined **per character**, not per syllable (§4.3). With that change, letter diacritics reconstruct exactly.
 
-Second, one genuine ambiguity remains: Vietnamese admits two accepted positions for a tone mark over a vowel cluster (*hoà* versus *hòa*), and the same string may arrive in NFC or NFD form. These are orthographic variants that carry no semantic distinction, so `dec` canonicalises them deliberately.
+Second, one genuine ambiguity remains: Vietnamese admits two accepted positions for a tone mark over a vowel cluster (*hoà* versus *hòa*), and the same string may arrive in NFC or NFD form. These are orthographic variants that carry no semantic distinction, so `dec` canonicalises them deliberately. The convention is fixed as **nucleus-based** placement — the tone mark sits on the vowel nucleus, so *hòa* canonicalises to *hoà*, *thúy* to *thuý*, *khỏe* to *khoẻ*. This is a project canonicalisation convention adopted for reproducibility, not a claim that the other convention is incorrect; both occur in real text. The rule and its rationale are recorded in `docs/spec/orthography.md` (D-001).
 
 The requirement is therefore:
 
@@ -160,7 +160,7 @@ The requirement is therefore:
 rec(dec(x)) = canon(x)
 ```
 
-where `canon` applies Unicode NFC and a fixed tone-placement rule, and **every** difference between `x` and `canon(x)` is enumerable and logged. No silent loss is tolerated. Canonicalisation is not a limitation hidden in a footnote: it becomes the `VARIANT` evaluation condition (§6.3).
+where `canon` applies Unicode NFC and the fixed nucleus-based tone-placement rule above, and **every** difference between `x` and `canon(x)` is enumerable and logged. No silent loss is tolerated. Canonicalisation is not a limitation hidden in a footnote: it becomes the `VARIANT` evaluation condition (§6.3).
 
 ### 4.3 Channel state sets
 

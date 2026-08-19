@@ -17,29 +17,15 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
-# The five Vietnamese tone marks, as Unicode combining characters. `ngang`
-# (the level tone) is written with no mark at all and therefore has no
-# codepoint -- that absence is the premise of the whole UNMARK project.
-TONE_MARKS = (
-    "\u0300"  # grave      - huyen
-    "\u0301"  # acute      - sac
-    "\u0303"  # tilde      - nga
-    "\u0309"  # hook above - hoi
-    "\u0323"  # dot below  - nang
-)
+from unmark.orthography.marks import D_STROKE, LETTER_MARKS, TONE_MARKS, VIETNAMESE_MARKS
 
-# Letter diacritics. These form distinct letters (a/ă/â, e/ê, o/ô/ơ, u/ư) and
-# belong to the letter identity rather than to the tone.
-LETTER_MARKS = (
-    "\u0302"  # circumflex - a-hat, e-hat, o-hat
-    "\u0306"  # breve      - a-breve
-    "\u031B"  # horn       - o-horn, u-horn
-)
-
-VIETNAMESE_MARKS = TONE_MARKS + LETTER_MARKS
-
-# `d` with stroke has no canonical decomposition, so it needs an explicit map.
-D_STROKE = {"đ": "d", "Đ": "D"}
+# TONE_MARKS, LETTER_MARKS, VIETNAMESE_MARKS and D_STROKE are imported from
+# `marks.py` rather than redeclared here, so the G-1 diagnostic and the B1A
+# orthography core cannot drift apart. Same codepoints, same semantics as before.
+#
+# Purpose differs from `decompose.strip_to_base`, which returns the orthography
+# core's base stream and never touches whitespace: `base_signature` collapses
+# whitespace because it is a comparison form, not a reconstruction target.
 
 _D_STROKE_TABLE = str.maketrans(D_STROKE)
 _MARK_TABLE = {ord(ch): None for ch in VIETNAMESE_MARKS}

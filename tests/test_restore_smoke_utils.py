@@ -46,6 +46,10 @@ def _load_script_module():
 # unmark/training/, unmark/baselines/) and that code is free to import PyTorch
 # normally -- it simply does not go on this list.
 LIGHTWEIGHT_MODULES = (
+    "unmark.orthography.marks",
+    "unmark.orthography.models",
+    "unmark.orthography.canonical",
+    "unmark.orthography.decompose",
     "unmark.orthography.signature",
     "unmark.gates.g_minus1",
 )
@@ -91,9 +95,13 @@ def test_lightweight_module_imports_without_loading_the_heavy_stack(module):
 
 def test_lightweight_modules_are_actually_usable_not_merely_importable():
     """Guards against the probe passing vacuously on a broken import."""
+    # Note the import form: `unmark.orthography.decompose` is both a submodule
+    # and a re-exported function, so `import ... as d` would bind the function.
     probe = (
         "import unmark.orthography.signature as s, unmark.gates.g_minus1 as g; "
-        "assert s.base_signature('Tôi') == 'Toi'; assert len(g.SMOKE_CASES) > 0"
+        "from unmark.orthography.decompose import decompose, recompose; "
+        "assert s.base_signature('Tôi') == 'Toi'; assert len(g.SMOKE_CASES) > 0; "
+        "assert recompose(decompose('Đường')) == 'Đường'"
     )
     assert _import_in_clean_subprocess(probe) == []
 
