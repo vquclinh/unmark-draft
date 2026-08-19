@@ -1,0 +1,35 @@
+# --- Python environments (all disposable, never committed) -----------------
+# Local lightweight dev env; Colab experiment env; legacy name.
+.venv/
+.venv-colab/
+venv/
+
+# --- Python byproducts -----------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Experiment artifacts --------------------------------------------------
+# Gate runs write timestamped directories here. The directories are tracked
+# only by their .gitkeep placeholder; raw results stay out of git.
+results/**
+# Re-include directories first: git will not descend into an excluded
+# directory, so without this the .gitkeep negation below can never match.
+!results/**/
+!results/**/.gitkeep
+
+# --- Model weights and caches ----------------------------------------------
+# HF_HOME is redirected here on Colab so the whole download is disposable.
+.hf-cache/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# PyTorch .bin checkpoints are matched by name rather than by extension: a blank
+# *.bin rule would also swallow legitimate non-model binaries (fixtures, fonts,
+# tokenizer artifacts) and hide them from review.
+pytorch_model.bin
+pytorch_model-*.bin
+model.bin
+model-*.bin

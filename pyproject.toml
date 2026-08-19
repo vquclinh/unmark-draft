@@ -1,0 +1,6 @@
+# Minimal project file. The repository is not packaged or installed; this
+# exists so that `pytest -q` from the repository root can import the
+# lightweight `unmark` package without any install step.
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,29 @@
+# GOOGLE COLAB experiment environment (repo-local .venv-colab), GPU runtime.
+#
+# Install into a venv created with --system-site-packages so that the CUDA
+# PyTorch already provided by the Colab runtime is reused. torch is therefore
+# NOT listed here on purpose: pinning it would force a multi-gigabyte
+# reinstall of a CUDA build that Colab already ships.
+-r base.txt
+
+# Pinned. The G-1 checkpoint (nrl-ai/vn-diacritic-vit5-base, revision
+# 30ea5a9e4a0b9436e18915fd4dbb5876eaee7325) was serialised by transformers
+# 4.57.6. Transformers 5.x cannot load its tokenizer.json and fails with
+#   TypeError: argument 'vocab': 'dict' object cannot be converted to 'Sequence'
+# This was observed directly, not assumed; see the README compatibility note.
+transformers==4.57.6
+
+# Required by the T5 tokenizer stack for this checkpoint.
+sentencepiece>=0.2,<0.3
+safetensors>=0.4
+
+# Not strictly required by this script (no device_map / no sharded loading),
+# but transformers emits warnings without it and later GPU gates will need it.
+accelerate>=0.30
+
+# TODO (before G1): this single file currently serves both the frozen RESTORE
+# baseline and every future GPU phase. If a PhoBERT/UNMARK phase ever needs a
+# transformers version other than 4.57.6, split it -- e.g. requirements/
+# restore.txt and requirements/unmark.txt -- rather than loosening the pin here.
+# The RESTORE environment has to stay frozen for the comparison in proposal
+# section 5.3 to mean anything. Not actioned now: no later phase exists yet.

@@ -1,0 +1,3 @@
+# Shared, lightweight dependencies used by project utilities on ANY machine.
+# Nothing heavy belongs here: this file is installed locally as well as on Colab.
+PyYAML>=6.0,<7

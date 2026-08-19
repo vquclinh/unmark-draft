@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# G-1 candidate RESTORE baseline - LOCKED model configuration.
+#
+# This file pins the exact checkpoint under evaluation at Gate G-1.
+# Nothing here may be changed while a G-1 run is being read: the whole point
+# of the gate is that the restorer is a fixed, frozen, off-the-shelf system
+# (proposal v1.3, section 5.3 "RESTORE: named restorer, pinned checkpoint and
+# version, frozen, fixed decoding parameters").
+# ---------------------------------------------------------------------------
+
+model_id: nrl-ai/vn-diacritic-vit5-base
+revision: 30ea5a9e4a0b9436e18915fd4dbb5876eaee7325
+
+# --- Decoding -------------------------------------------------------------
+# Deterministic greedy decoding only. do_sample MUST stay false and num_beams
+# MUST stay 1; the script refuses to run otherwise.
+#
+# Why max_new_tokens and not max_length:
+#   1. This checkpoint ships a generation_config.json with NO max_length field
+#      (only decoder_start_token_id / eos_token_id / pad_token_id). If neither
+#      max_length nor max_new_tokens is passed, transformers falls back to the
+#      GenerationConfig default of max_length=20 and silently truncates every
+#      output after ~20 sub-word tokens. Passing a bound explicitly is therefore
+#      mandatory, not cosmetic.
+#   2. For an encoder-decoder, `max_length` bounds the *decoder* sequence
+#      including the decoder_start token, while `max_new_tokens` bounds only
+#      newly generated tokens and is independent of both the decoder prefix and
+#      the encoder input length. max_new_tokens has one meaning across model
+#      families and across transformers versions; max_length has historically
+#      not. It is also the parameter that wins when both are supplied, so
+#      setting it alone removes any ambiguity about which bound is in force.
+#   3. The model card's `max_length=256` and this `max_new_tokens: 256` differ
+#      by exactly one decoder-start token, which cannot bind on any smoke case
+#      (longest input here is well under 100 sub-word tokens).
+generation:
+  do_sample: false
+  num_beams: 1
+  max_new_tokens: 256
+
+# Number of independent greedy generations per case, used to test determinism.
+repeats: 3
+
+# --- Input handling -------------------------------------------------------
+# The tokenizer_config.json of this checkpoint sets model_max_length to the
+# "no limit" sentinel (1e30), so `truncation=True` alone would never truncate.
+# The bound is stated explicitly and matches the fine-tuning input length (256).
+tokenizer:
+  max_input_tokens: 256
+  truncation: true
+
+# --- Runtime --------------------------------------------------------------
+# auto -> cuda when available, else cpu.
+device: auto
+
+# DIAGNOSTIC EXPECTATION, NOT A RUNTIME CONTROL.
+# The checkpoint is stored in float32 and is loaded exactly as stored: the script
+# passes no dtype argument to from_pretrained, so changing the value below does
+# not change inference. It is recorded in the run's config.json and compared
+# against the observed `parameter_dtype`, and a mismatch is reported.
+#
+# G-1 deliberately does not cast to fp16 on GPU: half precision would make CPU
+# and T4 runs numerically different and would confound the determinism question
+# this gate exists to answer.
+expected_dtype: float32
+
+# Seeds are irrelevant to greedy decoding but are set anyway so that any future
+# change to the decoding policy cannot silently become unreproducible.
+seed: 42
+
+# --- Engineering-only thresholds -----------------------------------------
+# These drive ENGINEERING_SMOKE_PASS / ENGINEERING_SMOKE_FAIL ONLY.
+# They are NOT a scientific acceptance criterion and they say nothing about
+# restoration quality. The G-1 decision stays with the researcher.
+engineering:
+  # Categories that must work for the checkpoint to be engineering-usable.
+  core_categories:
+    - full_strip
+    - partial_strip
+    - already_clean
+    - ambiguity_context
+    - proper_names
+    - punctuation_numbers
+  # Categories reported separately; failures here never flip the status.
+  advisory_categories:
+    - ambiguity_short
+    - mixed_script
+    - url_email
+    - simple_emoji
+  # "No catastrophic lexical rewriting" on core categories.
+  #
+  # Thresholded on the ENGINEERING lexical metric (`rewrite_preserved`), which
+  # ignores capitalisation and a sentence-final stop, and NOT on the strict
+  # `base_preserved`. A restorer that capitalises a lowercase input has changed
+  # formatting, not vocabulary, and must not fail the gate for it. The strict
+  # rate is still computed, reported per category, and quoted in the check's
+  # detail string.
+  #
+  # This is an engineering smoke threshold, not a scientific acceptance
+  # criterion. It has never been tuned against model output -- the model has not
+  # been run. Do not tune it against results.
+  min_core_rewrite_preservation_rate: 0.9

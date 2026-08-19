@@ -1,0 +1,9 @@
+# LOCAL development environment (repo-local .venv).
+#
+# Scope: coding, git, configs, Unicode/orthography utilities, unit tests,
+# inspecting result files. Deliberately excludes torch, transformers,
+# sentencepiece, safetensors and accelerate -- heavy ML work runs on Colab
+# (see requirements/experiment.txt and the README).
+-r base.txt
+
+pytest>=8,<10
