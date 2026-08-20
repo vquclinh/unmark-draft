@@ -19,7 +19,7 @@
 TRAINING RUNNER STILL REQUIRED**
 
 The three branches, the loss, the deterministic data path and the collator exist
-and are tested. **1926 local tests pass, 46 skip** because torch is absent by
+and are tested. **1938 local tests pass, 46 skip** because torch is absent by
 design.
 
 Stage-1 is **not complete**, this is **not training-ready**, and the **PRE-TRAIN
