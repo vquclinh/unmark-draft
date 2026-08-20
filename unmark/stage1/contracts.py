@@ -1,0 +1,389 @@
+"""Pure-data contracts for Stage-1 self-supervised alignment.
+
+**No torch.** Enums, configuration records and the register of values that are
+still scientifically OPEN.
+
+Stage-1 aligns two *adapted* representations to a clean pretrained reference
+(proposal §4.6)::
+
+    L_align = D( h'(x_p), h(x) )
+    L_clean = D( h'(x),   h(x) )
+    L       = lambda_a * L_align + lambda_c * L_clean
+
+with `D` the cosine distance at the **pooled** representation level.
+
+The central rule in this module: **an API default is a scientific decision if it
+can reach an experiment.** Every value the proposal leaves open is therefore a
+*required* argument here, not a convenient default. `lambda_a = 1.0` would be a
+choice nobody made, arriving silently.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
+STAGE1_SCHEMA_VERSION = "stage1-v1"
+"""Versions the Stage-1 preparation contract, so a later change to how examples
+are prepared is visible rather than silent."""
+
+
+class Stage1Branch(Enum):
+    """The three forward pathways, kept distinct and auditable.
+
+    They are named rather than positional because the whole class of bug this
+    guards against is wiring one branch's tensors into another.
+    """
+
+    REFERENCE_CLEAN = "REFERENCE_CLEAN"
+    """`h(x)`: frozen tokenizer on the clean text, frozen encoder, **no
+    adapter, no channels, no b(x)**. The target."""
+
+    ADAPTED_CLEAN = "ADAPTED_CLEAN"
+    """`h'(x)`: `b(x)` -> `T(b(x))` -> clean channels -> `A_phi` -> frozen encoder."""
+
+    ADAPTED_CORRUPT = "ADAPTED_CORRUPT"
+    """`h'(x_p)`: the same base grid, corrupted channels."""
+
+    @property
+    def uses_adapter(self) -> bool:
+        return self is not Stage1Branch.REFERENCE_CLEAN
+
+    @property
+    def requires_gradient(self) -> bool:
+        """The reference is a target; only the adapted branches carry a graph."""
+        return self.uses_adapter
+
+
+class Stage1ContractViolation(ValueError):
+    """Raised when Stage-1 inputs contradict a locked contract."""
+
+
+class BaseInvarianceViolation(Stage1ContractViolation):
+    """Raised when `b(C(x)) != b(x)` in prepared data.
+
+    Loud by design. The deterministic phase established this equality
+    (D-B3B2-001); if it fails here, the corruption or the decomposition has
+    changed underneath Stage-1, and repairing it heuristically would hide a real
+    regression behind a plausible-looking batch.
+    """
+
+
+class UnresolvedStage1Value(RuntimeError):
+    """Raised when a scientifically OPEN value is needed but was never supplied.
+
+    Mirrors B2's `EligibilityUnresolved`: the unsafe path is the one you have to
+    ask for.
+    """
+
+
+# ---------------------------------------------------------------------------
+# What is locked, and what is not
+# ---------------------------------------------------------------------------
+LOCKED_STAGE1_VALUES: dict[str, str] = {
+    "corruption_rate_distribution": (
+        "p ~ U(0,1) per example, continuous -- proposal §4.6 and the §5.1 lock. "
+        "Not a fixed rate and not only the endpoints."
+    ),
+    "distance": "cosine distance (proposal §4.6)",
+    "representation_level": (
+        "pooled only; per-token alignment deferred because the branches do not "
+        "share a token grid (proposal §4.6)"
+    ),
+    "pooling": (
+        "attention-masked mean over non-special content tokens (D-B4A-006), "
+        "computed independently per branch"
+    ),
+    "encoder": "fully frozen (proposal §5.1); one shared theta for all branches",
+}
+
+OPEN_STAGE1_VALUES: dict[str, str] = {
+    "lambda_align": (
+        "proposal §4.6: 'L = lambda_a*L_align + lambda_c*L_clean, tuned on a "
+        "development split'. No value is locked. REQUIRED argument."
+    ),
+    "lambda_clean": "as lambda_align; REQUIRED argument.",
+    "corpus": (
+        "proposal §5 open-items table and §13 item 3: size, domain mix, and "
+        "whether it should match the downstream task domains. Not chosen here."
+    ),
+    "max_length": (
+        "no Stage-1 maximum sequence length is specified; §5.3's is about "
+        "Stage-2 task datasets. REQUIRED when truncation is used."
+    ),
+    "truncation_behaviour": (
+        "what to do when a sequence exceeds max_length, given that truncating "
+        "input ids without the channel metadata would desynchronise B3 projection."
+    ),
+    "corruption_redraw_schedule": (
+        "whether p is redrawn per epoch/visit or fixed per example for the whole "
+        "run. The distribution is locked; the schedule is not."
+    ),
+    "letter_dropout_rate": (
+        "proposal §4.6: 'An optional second rate governs letter-diacritic "
+        "dropout.' Optional, unspecified, and not enabled here."
+    ),
+    "stage1_seed": "the concrete experiment seed; the API requires one explicitly.",
+    "batch_size": "not specified for Stage-1.",
+    "optimizer": "not implemented in this phase.",
+    "learning_rate": "not specified.",
+    "epochs_or_steps": "not specified.",
+    "warmup_or_scheduler": "not specified.",
+    "gradient_accumulation": "not specified.",
+    "checkpoint_selection": "not specified.",
+    "backbone_finalisation": "D-B3B0-002 is OPEN; the pinned revision is a probe revision.",
+}
+
+
+def require_resolved(name: str) -> None:
+    """Refuse to proceed on a value the project has not decided."""
+    if name in OPEN_STAGE1_VALUES:
+        raise UnresolvedStage1Value(
+            f"{name} is scientifically OPEN: {OPEN_STAGE1_VALUES[name]} "
+            "Supply it explicitly; it must not acquire a default."
+        )
+
+
+@dataclass(frozen=True)
+class ObjectiveWeights:
+    """`lambda_a` and `lambda_c`. **Both required -- no defaults.**
+
+    The proposal tunes these on a development split, so any default here would
+    be a scientific value nobody chose, silently reaching an experiment.
+    """
+
+    lambda_align: float
+    lambda_clean: float
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("lambda_align", self.lambda_align),
+            ("lambda_clean", self.lambda_clean),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise Stage1ContractViolation(f"{name} must be a real number, got {value!r}")
+            if value != value or value in (float("inf"), float("-inf")):
+                raise Stage1ContractViolation(f"{name} must be finite, got {value!r}")
+            if value < 0:
+                raise Stage1ContractViolation(f"{name} must be non-negative, got {value!r}")
+        if self.lambda_align == 0 and self.lambda_clean == 0:
+            raise Stage1ContractViolation(
+                "both weights are zero: the objective would be identically zero"
+            )
+
+    def to_dict(self) -> dict[str, float]:
+        return {"lambda_align": self.lambda_align, "lambda_clean": self.lambda_clean}
+
+
+class OverflowBehaviour(Enum):
+    """What happens to a sequence longer than `max_length`.
+
+    **Both FAIL and SKIP are scientific choices.** SKIP silently changes the
+    Stage-1 corpus distribution by dropping long examples; FAIL changes which
+    corpora are usable at all. Neither may be selected by omitting an argument.
+
+    `TRUNCATE` does not exist: trimming ids without the channel metadata would
+    desynchronise the B3 projection, and trimming both raises a question the
+    proposal does not answer (what happens to a syllable cut in half).
+    """
+
+    FAIL = "FAIL"
+    SKIP = "SKIP"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    """Only valid when `max_length is None`: nothing can overflow."""
+
+
+@dataclass(frozen=True)
+class TruncationPolicy:
+    """Stage-1 length handling. **Every field is required -- no defaults.**
+
+    `max_length` is scientifically OPEN, so `TruncationPolicy()` must not be
+    constructible: an omitted argument would select "unbounded, fail" for an
+    experiment without anyone choosing it.
+
+    An **explicit** `max_length=None` is a legitimate caller statement --
+    "intentionally unbounded for this call" -- and is different from an implicit
+    default of `None`. Use `TruncationPolicy.unbounded()` to say so at the call
+    site.
+    """
+
+    max_length: int | None
+    on_overflow: OverflowBehaviour
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.on_overflow, OverflowBehaviour):
+            raise Stage1ContractViolation(
+                f"on_overflow must be an OverflowBehaviour, got {self.on_overflow!r}. "
+                "Truncation is not offered: it would desynchronise channels from ids."
+            )
+        if self.max_length is None:
+            if self.on_overflow is not OverflowBehaviour.NOT_APPLICABLE:
+                raise Stage1ContractViolation(
+                    f"max_length is None but on_overflow is {self.on_overflow.value}: "
+                    "nothing can overflow an unbounded policy. Use NOT_APPLICABLE."
+                )
+            return
+        if isinstance(self.max_length, bool) or not isinstance(self.max_length, int):
+            raise Stage1ContractViolation(f"max_length must be an int or None, got {self.max_length!r}")
+        if self.max_length <= 0:
+            raise Stage1ContractViolation(f"max_length must be positive, got {self.max_length}")
+        if self.on_overflow is OverflowBehaviour.NOT_APPLICABLE:
+            raise Stage1ContractViolation(
+                f"max_length is {self.max_length} but on_overflow is NOT_APPLICABLE: "
+                "a bounded policy must state FAIL or SKIP, and both are scientific choices"
+            )
+
+    @classmethod
+    def unbounded(cls) -> TruncationPolicy:
+        """An explicit "no length bound for this call".
+
+        Named so the intent is visible at the call site. It is a *statement*, not
+        a default -- `prepare_example` still requires the argument.
+        """
+        return cls(max_length=None, on_overflow=OverflowBehaviour.NOT_APPLICABLE)
+
+    @property
+    def is_enabled(self) -> bool:
+        return self.max_length is not None
+
+    def check(self, length: int, what: str) -> bool:
+        """True to keep the example. Raises or returns False when it overflows."""
+        if not self.is_enabled or length <= self.max_length:
+            return True
+        if self.on_overflow is OverflowBehaviour.SKIP:
+            return False
+        raise Stage1ContractViolation(
+            f"{what} length {length} exceeds max_length {self.max_length}. "
+            "Stage-1 does not truncate, because trimming ids without the channel "
+            "metadata would desynchronise the B3 projection (max_length policy is OPEN)."
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"max_length": self.max_length, "on_overflow": self.on_overflow.value}
+
+
+class Stage1Purpose(Enum):
+    """Why a Stage-1 configuration is being built.
+
+    Mirrors B2's `CorruptionPurpose`: the unsafe path is the one you have to ask
+    for. A `DIAGNOSTIC` config may carry explicit wiring values; a `SCIENTIFIC`
+    one **cannot be constructed at all** until the researcher has resolved the
+    OPEN values, so a diagnostic number cannot drift into a training run.
+    """
+
+    DIAGNOSTIC = "DIAGNOSTIC"
+    """Explicit values used only to exercise a forward/backward path. No
+    optimizer, no parameter update. **Resolves nothing.**"""
+
+    SCIENTIFIC = "SCIENTIFIC"
+    """Defines a real Stage-1 experiment. Requires every OPEN value to be named
+    as resolved."""
+
+
+SCIENTIFIC_REQUIRED_VALUES: tuple[str, ...] = (
+    "lambda_align",
+    "lambda_clean",
+    "corpus",
+    "max_length",
+    "truncation_behaviour",
+    "corruption_redraw_schedule",
+    "stage1_seed",
+    "batch_size",
+)
+"""OPEN values a scientific Stage-1 configuration must have resolved.
+
+Training hyperparameters beyond these belong to the runner, which does not exist
+yet, and to the PRE-TRAIN audit that must inspect it.
+"""
+
+
+@dataclass(frozen=True)
+class Stage1RunConfig:
+    """A Stage-1 configuration, stamped with why it exists.
+
+    Args:
+        purpose: `DIAGNOSTIC` or `SCIENTIFIC`. Required.
+        resolved_values: names from `OPEN_STAGE1_VALUES` the researcher has
+            decided. `SCIENTIFIC` raises unless it covers
+            `SCIENTIFIC_REQUIRED_VALUES`.
+    """
+
+    purpose: Stage1Purpose
+    weights: ObjectiveWeights
+    truncation: TruncationPolicy
+    corruption: CorruptionRatePolicy
+    resolved_values: frozenset[str] = frozenset()
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.purpose, Stage1Purpose):
+            raise Stage1ContractViolation("purpose must be a Stage1Purpose; it has no default")
+        unknown = set(self.resolved_values) - set(OPEN_STAGE1_VALUES)
+        if unknown:
+            raise Stage1ContractViolation(
+                f"resolved_values names items that are not in the OPEN register: {sorted(unknown)}"
+            )
+        if self.purpose is Stage1Purpose.SCIENTIFIC:
+            missing = [v for v in SCIENTIFIC_REQUIRED_VALUES if v not in self.resolved_values]
+            if missing:
+                raise UnresolvedStage1Value(
+                    "a SCIENTIFIC Stage-1 configuration requires these OPEN values to be "
+                    f"resolved first: {missing}. They are not decided, so no scientific "
+                    "Stage-1 run can be configured yet. A DIAGNOSTIC configuration may "
+                    "carry explicit wiring values, which resolve nothing."
+                )
+
+    @property
+    def is_diagnostic_only(self) -> bool:
+        return self.purpose is Stage1Purpose.DIAGNOSTIC
+
+    def to_dict(self) -> dict[str, Any]:
+        """Run-artifact record. Diagnostic configurations are labelled as such."""
+        return {
+            "purpose": self.purpose.value,
+            "diagnostic_only": self.is_diagnostic_only,
+            "values_are_scientific": not self.is_diagnostic_only,
+            "resolved_values": sorted(self.resolved_values),
+            "note": self.note,
+            **self.weights.to_dict(),
+            **self.truncation.to_dict(),
+            "corruption_seed": self.corruption.seed,
+            "corruption_scope": self.corruption.scope,
+        }
+
+
+@dataclass(frozen=True)
+class CorruptionRatePolicy:
+    """How the per-example corruption rate `p` is drawn.
+
+    **Locked:** `p ~ U(0,1)` per example, continuous (§4.6, §5.1).
+
+    **OPEN:** whether `p` is redrawn per epoch/visit. `visit` is therefore an
+    explicit argument with no default schedule attached -- the caller states
+    which draw it wants, and the project decides the schedule later.
+
+    The draw is a keyed digest over `(schema, seed, sample_id, visit)`, so it is
+    reproducible from its key alone and **uses no module-global RNG**. Python's
+    `random` module would make the same batch differ between processes.
+    """
+
+    seed: int
+    scope: str = "TONE"
+    schema_version: str = STAGE1_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int):
+            raise Stage1ContractViolation(f"seed must be an int, got {self.seed!r}")
+        if self.scope not in {"TONE", "TONE_AND_LETTER"}:
+            raise Stage1ContractViolation(
+                f"unsupported corruption scope {self.scope!r}; the letter-dropout rate "
+                "is optional and unspecified (§4.6), so it is not enabled by default"
+            )
+
+    def rate_for(self, sample_id: str, visit: int = 0) -> float:
+        """`p` for one example, in [0, 1). Deterministic and reproducible."""
+        payload = "|".join((self.schema_version, str(self.seed), str(sample_id), str(visit)))
+        digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "big") / float(1 << 64)

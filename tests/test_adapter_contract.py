@@ -814,17 +814,33 @@ STALE_CURRENT_STATE = (
 )
 
 
+def b4a_region(name: str) -> str:
+    """The part of a document that talks about B4A.
+
+    `decisions.md` accumulates every phase, and later phases legitimately have
+    open items -- so the whole file must not be scanned for "still open"
+    phrasing. Only the B4A block is in scope here.
+    """
+    text = (REPO / name).read_text(encoding="utf-8")
+    if name != "docs/spec/decisions.md":
+        return text
+    start = text.index("## B4A — neural adapter contract preflight")
+    remainder = text.index("\n## ", start + 1)
+    return text[start:remainder]
+
+
 @pytest.mark.parametrize("name", B4A_DOCS)
 @pytest.mark.parametrize("phrase", STALE_CURRENT_STATE)
 def test_no_stale_current_state_claims_in_b4a_docs(name, phrase):
     """The B4A items were open when first found and are resolved now.
 
-    History stays documented, but no sentence may read as saying an item is
-    *currently* open. Two such sentences survived the first revision of Audit
+    History stays documented, but no sentence may read as saying a **B4A** item
+    is *currently* open. Two such sentences survived the first revision of Audit
     014 -- this guards the class rather than the instances.
     """
-    text = (REPO / name).read_text(encoding="utf-8")
-    assert phrase not in text, f"{name} still asserts a resolved item is open: {phrase!r}"
+    assert phrase not in b4a_region(name), (
+        f"{name} still asserts a resolved B4A item is open: {phrase!r}"
+    )
 
 
 @pytest.mark.parametrize("name", B4A_DOCS)

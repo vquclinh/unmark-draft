@@ -33,6 +33,8 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-B3B1C-001 (manual alignment validated; tone ownership by candidate count) |
 | **RESOLVED DECISION** (cont.) | D-B3B2-001 (deterministic B3B COMPLETE), D-B4A-001, D-B4A-007 |
 | **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
+| **RESOLVED DECISION** (cont.) | D-S1A-001 … D-S1A-004 (Stage-1 data path and objective) |
+| **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter |
 | **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) — **all confirmed on real PhoBERT, run `20260820T081554Z`, 27/27** |
 | **RESOLVED DECISION** (cont.) | D-B4B-002 — **CLOSED** by the real PhoBERT run: explicit authoritative `position_ids` are required; D-B4B-006 (model provenance verifier repaired) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
@@ -1899,3 +1901,276 @@ repository-wide PRE-TRAIN audit first.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — the run confirms the specification rather than changing it. PDF stale: **YES** (from the earlier v1.4 source changes) |
+
+---
+
+## Stage-1A — objective and data path
+
+### D-S1A-001 — the clean reference branch tokenizes `canon(x)`, not the raw string
+
+| | |
+|---|---|
+| **Status** | **CLARIFIED** — narrows a proposal statement that did not specify the form |
+| **Owner** | Stage-1A |
+
+**Proposal wording.** §4.6 defines the reference as `h(x)` for "clean original
+text `x`", without saying whether `x` means the raw incoming string or its
+canonical form.
+
+**Implemented decision.** The reference branch tokenizes **`canon(x)`**.
+
+**Reason.** §5.3 already locks corruption to operate on `canon(x)` "so that
+placement variants and NFC/NFD forms are the same example and receive the same
+noise". If the reference used the raw string, two inputs that the corruption
+engine treats as **one example** would get **different** alignment targets — the
+target would depend on incoming spelling variation. That variation is the
+separate `VARIANT` evaluation axis (§6.3), not something the Stage-1 objective
+should silently absorb.
+
+**Mathematical consequence.** All three branches share one canonical identity per
+`sample_id`. The reference target is a function of the example, not of how the
+example happened to be typed.
+
+**Affected.** `unmark/stage1/data.py::prepare_example`; every Stage-1 batch.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — this is the only reading consistent with §5.3. PDF stale: **YES** (unchanged) |
+
+### D-S1A-002 — Stage-1 verifies base invariance rather than assuming it
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation safety) |
+| **Owner** | Stage-1A |
+
+**Prior assumption.** D-B3B2-001 established `b(C_c(x)) = b(x)` for the locked
+conditions, and Stage-1 shares one base grid between the adapted clean and
+adapted corrupted branches on the strength of it.
+
+**Implemented decision.** `prepare_example` **proves** the invariant per example
+before sharing: identical base strings, identical authoritative content token
+ids, and equal projection counts. `padded_stage1_batch` re-checks the collated
+base ids and special-token masks. A failure raises `BaseInvarianceViolation`.
+
+**Reason.** Sharing tensors between two branches is exactly where a silent
+divergence would be invisible — the batch would look well-formed and the two
+adapted representations would describe different strings. Deriving the corrupted
+branch independently and then asserting equality costs one extra decomposition
+and turns that class of bug into a loud failure.
+
+**Mathematical consequence.** None when the invariant holds; the objective is
+unchanged. When it does not hold, Stage-1 stops instead of training on
+mismatched pairs.
+
+**Affected.** `unmark/stage1/data.py`; any future corruption condition whose
+scope breaks base invariance would be caught here rather than downstream.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-S1A-003 — Stage-1 does not truncate; it refuses or skips
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (interface); the concrete `max_length` is **OPEN** |
+| **Owner** | Stage-1A |
+
+**Prior assumption.** Audit 017 recorded that the Stage-1 data path still needs a
+`max_length` policy.
+
+**Implemented decision.** `TruncationPolicy` requires **both** `max_length` and
+`on_overflow` — it has **no constructible no-argument form**, and
+`prepare_example` requires the policy with no default. **Truncation is not
+offered at all**: `OverflowBehaviour` is `FAIL | SKIP | NOT_APPLICABLE`, with no
+`TRUNCATE` member.
+
+**No implicit experiment-facing default exists.** An omitted argument would have
+selected "unbounded, FAIL" for an experiment without anyone choosing it — and
+`SKIP` is especially scientific, since dropping long examples changes the Stage-1
+corpus distribution. An **explicit** `max_length=None` is a legitimate caller
+statement ("intentionally unbounded for this call") and is spelled
+`TruncationPolicy.unbounded()`; that is different from an implicit default of
+`None`. Inconsistent combinations — a bound with `NOT_APPLICABLE`, or no bound
+with `FAIL`/`SKIP` — fail loud.
+
+`visit` is required by `prepare_example` for the same reason: an implicit
+`visit=0` would silently select "never redraw", and the redraw schedule is OPEN.
+
+**Reason.** Trimming `input_ids` without the channel metadata would desynchronise
+the B3 projection: tone and letter rows would describe positions the model no
+longer sees, and the misalignment would be silent. Truncating both together is
+possible in principle but requires deciding what happens to a syllable cut in
+half — a question the proposal does not answer.
+
+**Mathematical consequence.** No example is ever trained on with mismatched ids
+and channels. Long examples are either refused loudly or excluded explicitly.
+
+**Affected.** `unmark/stage1/contracts.py::TruncationPolicy`; the Stage-1 corpus
+decision, which must now state a `max_length` and an overflow behaviour.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-S1A-004 — the corruption rate is a keyed digest, and `visit` is explicit
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (mechanism); the **redraw schedule is OPEN** |
+| **Owner** | Stage-1A |
+
+**Proposal wording.** §4.6 and the §5.1 lock: "`p ~ U(0,1)` per example,
+continuous". The *distribution* is locked. Nothing states whether `p` is redrawn
+per epoch.
+
+**Implemented decision.** `CorruptionRatePolicy.rate_for(sample_id, visit)`
+returns a BLAKE2b keyed digest over `(schema_version, seed, sample_id, visit)`,
+mapped into `[0, 1)`. **No module-global RNG**; the draw is reproducible from its
+key alone. `visit` is an explicit argument with **no default schedule attached** —
+the caller states which draw it wants.
+
+The continuous `p` is expressed through the existing B2 contract as a
+`CorruptionCondition` with that probability, so the per-unit lottery remains B2's
+keyed digest and nothing about corruption is reimplemented here.
+
+**Reason.** `random.uniform` would make the same batch differ between processes
+and could not be reproduced from a run record. Attaching a schedule to `visit`
+would decide the redraw question by implementation default.
+
+**Mathematical consequence.** `p` is uniform on `[0, 1)` and stable per
+`(seed, sample_id, visit)`. Because B2 thresholds a per-unit score against `p`, a
+syllable corrupted at some `p` is also corrupted at any larger `p` — the
+corruption is monotone in the rate, which is the intended "fraction of syllables"
+semantics.
+
+**Affected.** `unmark/stage1/contracts.py`, `unmark/stage1/data.py`. The redraw
+schedule and the optional letter-dropout rate remain OPEN.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — the distribution is implemented as written. PDF stale: **YES** (unchanged) |
+
+### D-S1A-005 — Stage-1 scientific values that remain OPEN
+
+| | |
+|---|---|
+| **Status** | **OPEN — RESEARCHER DECISION REQUIRED** before any training |
+| **Owner** | Stage-1A |
+
+**The rule applied throughout:** *an API default is a scientific decision if it
+can reach an experiment.* Every value below is therefore a **required argument**
+or an explicit `None`, never a convenient default.
+
+| Value | Why it is open |
+|---|---|
+| `lambda_align`, `lambda_clean` | §4.6: "tuned on a development split". No value is locked. `ObjectiveWeights` requires both |
+| Stage-1 corpus | §5 open-items table, §13 item 3 |
+| `max_length`, overflow behaviour | no Stage-1 value specified (D-S1A-003) |
+| Corruption redraw schedule | distribution locked, schedule not (D-S1A-004) |
+| Optional letter-dropout rate | §4.6 calls it optional and gives no value |
+| Stage-1 seed | required explicitly by `CorruptionRatePolicy` |
+| Batch size, optimizer, learning rate, epochs/steps, warmup/scheduler, gradient accumulation, checkpoint selection | none specified; **not implemented in this phase** |
+| Backbone finalisation | [D-B3B0-002](#d-b3b0-002) is OPEN |
+
+`OPEN_STAGE1_VALUES` in `unmark/stage1/contracts.py` is the machine-readable
+register, and `require_resolved(name)` raises for any of them. Tests assert the
+lambdas and `max_length` cannot be defaulted.
+
+**The existence of a config field does not mean a value is decided.**
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-S1A-006 — diagnostic values cannot become scientific configuration
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation safety) |
+| **Owner** | Stage-1A |
+
+**The risk.** The upcoming real-model dry run needs *some* numbers to exercise
+the forward and backward path — plausibly `lambda_align = 1.0`,
+`lambda_clean = 1.0`, an explicit `max_length`. Those are wiring values. Nothing
+about writing them down resolves the scientific decisions, and the danger is that
+a diagnostic number quietly becomes a training default because it was the value
+sitting in the last config anyone wrote.
+
+**Implemented decision.** `Stage1RunConfig` carries a required
+`Stage1Purpose`, mirroring B2's `CorruptionPurpose`:
+
+* `DIAGNOSTIC` — explicit values for exercising a path. Constructible today.
+  `to_dict()` stamps `purpose`, `diagnostic_only: true` and
+  `values_are_scientific: false` into the run artifact, so a diagnostic record
+  cannot be mistaken for an experiment record.
+* `SCIENTIFIC` — **cannot be constructed at all** until `resolved_values` names
+  every entry of `SCIENTIFIC_REQUIRED_VALUES` (`lambda_align`, `lambda_clean`,
+  `corpus`, `max_length`, `truncation_behaviour`,
+  `corruption_redraw_schedule`, `stage1_seed`, `batch_size`). It raises
+  `UnresolvedStage1Value` listing what is missing.
+
+**Reason.** This is the strongest available guarantee that a diagnostic value
+does not drift into a training run: the scientific configuration does not exist
+as an object until the researcher has decided. The same pattern already guarded
+B2 while GAP-2 was open.
+
+**Mathematical consequence.** None — this is configuration hygiene. The
+objective is unchanged.
+
+**Affected.** `unmark/stage1/contracts.py`; the future real-model dry run, whose
+artifact must record `purpose = DIAGNOSTIC`; the training runner, which cannot be
+configured scientifically until §D-S1A-005 is resolved.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-S1A-007 — the PRE-TRAIN audit runs after the training runner exists
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (process ordering) |
+| **Owner** | Stage-1A |
+
+**Prior wording.** Audit 018 first listed the future order as: dry run → resolve
+OPEN values → **PRE-TRAIN audit** → training runner.
+
+**The problem.** That places the repository-wide audit *before* the code it is
+supposed to inspect. The PRE-TRAIN audit's purpose is to check the **complete
+training path** against the proposal before the first scientific optimizer step;
+auditing a repository with no runner in it would inspect everything except the
+part that does the training.
+
+**Corrected order.**
+
+1. **Real-model Stage-1 dry run** — real PhoBERT, all three branches, one
+   diagnostic backward permitted, **no optimizer, no parameter update**,
+   `purpose = DIAGNOSTIC`.
+2. **Resolve the scientific values** needed to define the runner and its run
+   configuration.
+3. **Implement the Stage-1 training runner** — optimizer, scheduler and
+   checkpointing may exist *in code*. **No scientific training is run**; no
+   `optimizer.step()` is executed as an experiment.
+4. **Run the mandatory repository-wide proposal-vs-code PRE-TRAIN audit**, which
+   inspects the runner from step 3.
+5. **Only if that audit PASSes:** the first scientific Stage-1 training run.
+
+**What step 4 must be able to see.** Full proposal vs repository; the Stage-1
+objective; corpus and split discipline; corruption sampling and redraw schedule;
+stable sample identity and seeds; lambda values; `max_length` and overflow
+policy; batch size; optimizer; learning rate; scheduler/warmup; epochs or steps;
+gradient accumulation; mixed precision if used; the frozen/trainable partition;
+the encoder eval invariant; checkpoint save/resume semantics and the selection
+criterion; leakage risks; provenance; reproducibility; configs versus docs versus
+tests; and the baseline/protocol commitments that must be fixed before any result
+is seen.
+
+**What the OPEN values and the PRE-TRAIN audit block.** They block **scientific
+Stage-1 training**. They do **not** block the real-model integration dry run in
+step 1, which uses explicit diagnostic-only values and runs no optimizer.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §7's gate discipline is unchanged; this records where the PRE-TRAIN audit sits relative to code that did not exist when the gates were written. PDF stale: **YES** (unchanged) |
