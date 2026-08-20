@@ -1,44 +1,56 @@
-"""Deterministic manual alignment for PhoBERT's slow tokenizer (B3B-1A).
+"""Deterministic character alignment for PhoBERT's slow tokenizer (B3B-1B).
 
-Why this exists
----------------
-The scientifically usable B3B-0 run found `offset_availability = ABSENT` for
-every preprocessing path: the authoritative tokenizer is `PhobertTokenizer`
-(`is_fast = False`), which returns no `offset_mapping`. Proposal v1.3 §4.4
-propagates channel labels "by tracking character offsets through tokenization",
-so that step is not implementable as written for this tokenizer.
+What the real tokenizer showed
+------------------------------
+B3B-1A hypothesised that tokenizing each B1A/B3A linguistic span independently
+and composing the pieces would reproduce the authoritative sequence. The first
+real Colab run refuted it: **6/13** sentences agreed, despite every span
+reconstructing its own surface exactly.
 
-Switching to a fast tokenizer to obtain offsets is **not** an option: the token
-ids produced by the pinned slow tokenizer are the frozen encoder's own
-vocabulary and remain authoritative. So the offsets have to be reconstructed.
+The cause is granularity. PhoBERT's fastBPE runs over **maximal non-whitespace
+chunks**, not over linguistic spans, so punctuation, hyphens, URLs and e-mail
+addresses change the BPE segmentation of the whole chunk they sit in::
 
-The hypothesis
---------------
-PhoBERT uses fastBPE, whose pieces carry a `@@` continuation suffix on every
-piece except the last of a word::
+    "nhien."      authoritative  ["nhi@@", "en@@", "."]
+                  span-composed  ["nh@@", "ien"] + ["."]        <- different
+    "VNU-HCM"     authoritative  ["VN@@", "U-@@", "HCM"]
+    "(VAT"        authoritative  ["(@@", "VAT"]
+    "Viet-Nam"    authoritative  ["Viet@@", "-@@", "Nam"]
 
-    nghien -> ["ngh@@", "ien"]      ngh + ien == nghien
+Re-running the composition over whole `\\S+` chunks gave **13/13** token
+agreement, **13/13** id agreement, and 119/119 chunk surfaces reconstructed.
 
-If that reconstruction is exact, each piece's character range inside the base
-syllable follows deterministically, and syllable→subword mapping is recoverable
-without native offsets.
+The contract this module implements
+-----------------------------------
+The authoritative model token grid is always `T(b(x))` from the pinned slow
+tokenizer. **This module never defines it.** It reconstructs a character map
+alongside it:
 
-**This module implements the hypothesis; it does not validate it.** Validation
-requires the real tokenizer and happens in
-`scripts/b3b1_phobert_alignment_probe.py` on Colab. Everything here is pure
-standard library and is exercised locally against mock BPE sequences only.
+1. take the exact base text `b(x)`;
+2. split it into maximal non-whitespace chunks, keeping global ranges;
+3. tokenize each *whole chunk* with the same tokenizer, no special tokens;
+4. use **raw BPE pieces**, before any id→token round trip;
+5. reconstruct the chunk by stripping the fastBPE continuation marker;
+6. require exact surface equality;
+7. derive a local half-open range per piece;
+8. translate to global ranges in `b(x)`;
+9. compose the chunks and verify against the authoritative tokens **and** ids;
+10. overlay the B1A/B3A orthographic spans onto the global ranges.
 
-Failure is explicit
--------------------
-Nothing is ever labelled on a guess. An eligible Vietnamese syllable that
-produces an unknown token, or whose pieces do not reconstruct its exact surface,
-is reported as `ALIGNMENT_FAILURE` with a reason. Special tokens, punctuation and
-non-Vietnamese spans are `NOT_APPLICABLE` in both orthography channels, per
-proposal §4.3.
+Vocabulary OOV is not alignment failure
+---------------------------------------
+`tokenizer.tokenize("khut")` returns `["khut"]` — the raw surface — while the id
+is `3`, the unknown id, and `convert_ids_to_tokens` gives back `<unk>`. The
+*surface* is exactly recoverable; only the vocabulary lookup fails. B3B-1A
+conflated the two and wrongly reported an alignment failure. They are now
+separate: such a piece is `ALIGNED` with `has_unknown_token_id = True`.
+
+No torch, no transformers, no tokenizer. Pure standard library.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Sequence
@@ -46,51 +58,104 @@ from typing import Any, Sequence
 from unmark.orthography import Eligibility
 
 CONTINUATION_MARKER = "@@"
-"""fastBPE continuation suffix. A piece ending with it continues into the next."""
+"""fastBPE continuation suffix: a piece carrying it continues into the next."""
+
+_CHUNK_PATTERN = re.compile(r"\S+")
 
 
-class SpanAlignmentStatus(Enum):
-    """Outcome of aligning one span's tokens to its characters."""
+class AlignmentStatusB(Enum):
+    """Outcome of aligning one unit's raw pieces to its characters."""
 
     ALIGNED = "ALIGNED"
-    """Every piece has an exact half-open character range in the span."""
-
     ALIGNMENT_FAILURE = "ALIGNMENT_FAILURE"
-    """The span could not be aligned. Channels must NOT be assigned."""
-
-    NOT_APPLICABLE = "NOT_APPLICABLE"
-    """The span carries no orthography channels: special token, punctuation,
-    digits, or a non-Vietnamese span (proposal 4.3)."""
-
     NOT_ATTEMPTED = "NOT_ATTEMPTED"
 
 
 class AlignmentFailureReason(Enum):
-    """Why an alignment failed. Recorded, never absorbed."""
+    """Why an alignment failed. Recorded, never absorbed.
+
+    `UNKNOWN_TOKEN` is deliberately absent: an unknown *vocabulary id* does not
+    prevent the *surface* from being recovered, and treating it as failure was
+    the B3B-1A defect.
+    """
 
     NO_TOKENS = "NO_TOKENS"
-    UNKNOWN_TOKEN = "UNKNOWN_TOKEN"
     SURFACE_MISMATCH = "SURFACE_MISMATCH"
     MALFORMED_CONTINUATION = "MALFORMED_CONTINUATION"
-    """The final piece still carries the continuation marker, so the span's
-    tokenization is not self-contained."""
+    RANGE_ERROR = "RANGE_ERROR"
+    """Piece ranges were non-monotonic, overlapping, or did not cover the unit."""
     UNRESOLVED_ELIGIBILITY = "UNRESOLVED_ELIGIBILITY"
-    """Eligibility was `UNDECIDED`. A scientific alignment must never label a
-    span whose Vietnamese candidacy was not resolved."""
+    """A scientific channel assignment was requested for a span whose Vietnamese
+    candidacy was never resolved."""
 
 
+class ToneOwnership(Enum):
+    """Whether a BPE piece can be assigned a syllable's tone label."""
+
+    VIETNAMESE = "VIETNAMESE"
+    """Every contributing character comes from one Vietnamese candidate span."""
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    """No contributing character comes from a Vietnamese candidate span."""
+
+    MIXED = "MIXED"
+    """The piece straddles a Vietnamese candidate and something else. Recorded,
+    never resolved by guessing -- see `docs/spec/decisions.md` D-B3B1B-002."""
+
+    UNRESOLVED = "UNRESOLVED"
+    """A contributing span's eligibility was `UNDECIDED`."""
+
+
+# ---------------------------------------------------------------------------
+# Whitespace chunking
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Chunk:
+    """A maximal non-whitespace run of the base text, with its global range."""
+
+    index: int
+    text: str
+    start: int
+    end: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"index": self.index, "text": self.text, "start": self.start, "end": self.end}
+
+
+def whitespace_chunks(text: str) -> tuple[Chunk, ...]:
+    """Split into maximal `\\S+` chunks, preserving exact global ranges.
+
+    These are the units PhoBERT's BPE actually operates on, so they are the
+    units the alignment must reconstruct. Whitespace itself produces no tokens
+    and belongs to no chunk.
+    """
+    return tuple(
+        Chunk(index=i, text=match.group(), start=match.start(), end=match.end())
+        for i, match in enumerate(_CHUNK_PATTERN.finditer(text))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pieces
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class PieceAlignment:
-    """One BPE piece and the exact characters of the span that produced it."""
+    """One raw BPE piece and the exact characters that produced it."""
 
     index: int
     token: str
+    """The RAW BPE piece, before any id round trip. For an OOV surface this is
+    the surface itself, not `<unk>`."""
     token_id: int | None
     surface: str
-    """The token with its continuation marker removed."""
-    start: int
-    end: int
-    """Half-open character range within the span text."""
+    local_start: int
+    local_end: int
+    """Half-open range within the chunk."""
+    global_start: int
+    global_end: int
+    """Half-open range within the full base text."""
+    has_unknown_token_id: bool = False
+    """The vocabulary lookup failed. Independent of surface recoverability."""
 
     @property
     def is_continuation(self) -> bool:
@@ -102,286 +167,389 @@ class PieceAlignment:
             "token": self.token,
             "token_id": self.token_id,
             "surface": self.surface,
-            "start": self.start,
-            "end": self.end,
+            "local_start": self.local_start,
+            "local_end": self.local_end,
+            "global_start": self.global_start,
+            "global_end": self.global_end,
             "is_continuation": self.is_continuation,
-        }
-
-
-@dataclass(frozen=True)
-class SpanAlignment:
-    """The alignment of one span's tokens onto its characters."""
-
-    span_text: str
-    tokens: tuple[str, ...]
-    token_ids: tuple[int, ...]
-    pieces: tuple[PieceAlignment, ...]
-    status: SpanAlignmentStatus
-    failure_reason: AlignmentFailureReason | None = None
-    eligibility: Eligibility = Eligibility.UNDECIDED
-    reconstructed: str = ""
-    detail: str = ""
-
-    @property
-    def aligned(self) -> bool:
-        return self.status is SpanAlignmentStatus.ALIGNED
-
-    @property
-    def subword_count(self) -> int:
-        return len(self.tokens)
-
-    @property
-    def carries_channels(self) -> bool:
-        """Whether orthography channels may be attached to this span.
-
-        Only a successfully aligned, resolved Vietnamese candidate qualifies.
-        """
-        return self.aligned and self.eligibility is Eligibility.VIETNAMESE_CANDIDATE
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "span_text": self.span_text,
-            "tokens": list(self.tokens),
-            "token_ids": list(self.token_ids),
-            "pieces": [p.to_dict() for p in self.pieces],
-            "status": self.status.value,
-            "failure_reason": self.failure_reason.value if self.failure_reason else None,
-            "eligibility": self.eligibility.value,
-            "reconstructed": self.reconstructed,
-            "subword_count": self.subword_count,
-            "carries_channels": self.carries_channels,
-            "detail": self.detail,
+            "has_unknown_token_id": self.has_unknown_token_id,
         }
 
 
 def piece_surface(token: str) -> str:
-    """The characters a BPE piece contributes: the token minus its marker."""
+    """The characters a raw BPE piece contributes."""
     if token.endswith(CONTINUATION_MARKER):
         return token[: -len(CONTINUATION_MARKER)]
     return token
 
 
 def reconstruct_surface(tokens: Sequence[str]) -> str:
-    """Concatenate the pieces' surfaces."""
     return "".join(piece_surface(token) for token in tokens)
 
 
-def align_span(
-    span_text: str,
+# ---------------------------------------------------------------------------
+# Chunk alignment
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ChunkAlignment:
+    """Raw pieces of one whitespace chunk mapped onto its characters."""
+
+    chunk: Chunk
+    tokens: tuple[str, ...]
+    token_ids: tuple[int, ...]
+    pieces: tuple[PieceAlignment, ...]
+    status: AlignmentStatusB
+    failure_reason: AlignmentFailureReason | None = None
+    reconstructed: str = ""
+    detail: str = ""
+
+    @property
+    def aligned(self) -> bool:
+        return self.status is AlignmentStatusB.ALIGNED
+
+    @property
+    def subword_count(self) -> int:
+        return len(self.tokens)
+
+    @property
+    def unknown_id_count(self) -> int:
+        return sum(1 for p in self.pieces if p.has_unknown_token_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "chunk": self.chunk.to_dict(),
+            "tokens": list(self.tokens),
+            "token_ids": list(self.token_ids),
+            "pieces": [p.to_dict() for p in self.pieces],
+            "status": self.status.value,
+            "failure_reason": self.failure_reason.value if self.failure_reason else None,
+            "reconstructed": self.reconstructed,
+            "subword_count": self.subword_count,
+            "unknown_id_count": self.unknown_id_count,
+            "detail": self.detail,
+        }
+
+
+def align_chunk(
+    chunk: Chunk,
     tokens: Sequence[str],
     token_ids: Sequence[int] | None = None,
     *,
-    eligibility: Eligibility = Eligibility.UNDECIDED,
-    unk_token: str | None = None,
-    require_resolved_eligibility: bool = True,
-) -> SpanAlignment:
-    """Map `tokens` onto the characters of `span_text`.
+    unk_token_id: int | None = None,
+) -> ChunkAlignment:
+    """Map one chunk's RAW BPE pieces onto its characters.
 
     Args:
-        span_text: the exact base substring that was tokenized.
-        tokens: its pieces, from tokenizing `span_text` alone with no special
-            tokens.
-        eligibility: the B3A verdict for this span.
-        unk_token: the tokenizer's unknown token, so its presence can be
-            detected rather than reconstructed around.
-        require_resolved_eligibility: when true (the default), an `UNDECIDED`
-            span fails rather than being aligned. A scientific run must never
-            attach channels to a span whose candidacy was never resolved.
+        chunk: the whitespace chunk, carrying its global range.
+        tokens: raw pieces from tokenizing the **whole chunk**, no special
+            tokens. Must be the raw strings, not an id round trip, or an OOV
+            surface would already have been destroyed.
+        token_ids: the corresponding vocabulary ids.
+        unk_token_id: the unknown id, so OOV can be *reported* rather than
+            mistaken for a surface failure.
 
     Returns:
-        A `SpanAlignment`. On failure `pieces` is empty and `failure_reason`
-        says why -- no partial or guessed ranges are ever returned.
+        A `ChunkAlignment`. On failure `pieces` is empty — no partial or guessed
+        ranges are ever returned.
     """
-    ids = tuple(token_ids or ())
     tokens = tuple(tokens)
+    ids = tuple(token_ids or ())
 
-    def fail(reason: AlignmentFailureReason, detail: str) -> SpanAlignment:
-        return SpanAlignment(
-            span_text=span_text, tokens=tokens, token_ids=ids, pieces=(),
-            status=SpanAlignmentStatus.ALIGNMENT_FAILURE, failure_reason=reason,
-            eligibility=eligibility, reconstructed=reconstruct_surface(tokens), detail=detail,
-        )
-
-    if require_resolved_eligibility and eligibility is Eligibility.UNDECIDED:
-        return fail(
-            AlignmentFailureReason.UNRESOLVED_ELIGIBILITY,
-            "eligibility is UNDECIDED; resolve the Vietnamese syllable inventory before aligning",
-        )
-
-    if eligibility is Eligibility.NOT_APPLICABLE:
-        return SpanAlignment(
-            span_text=span_text, tokens=tokens, token_ids=ids, pieces=(),
-            status=SpanAlignmentStatus.NOT_APPLICABLE, eligibility=eligibility,
-            reconstructed=reconstruct_surface(tokens),
-            detail="non-Vietnamese span: N/A in both orthography channels (proposal 4.3)",
+    def fail(reason: AlignmentFailureReason, detail: str) -> ChunkAlignment:
+        return ChunkAlignment(
+            chunk=chunk, tokens=tokens, token_ids=ids, pieces=(),
+            status=AlignmentStatusB.ALIGNMENT_FAILURE, failure_reason=reason,
+            reconstructed=reconstruct_surface(tokens), detail=detail,
         )
 
     if not tokens:
         return fail(AlignmentFailureReason.NO_TOKENS, "the tokenizer produced no pieces")
 
-    if unk_token is not None and unk_token in tokens:
-        positions = [i for i, t in enumerate(tokens) if t == unk_token]
-        return fail(
-            AlignmentFailureReason.UNKNOWN_TOKEN,
-            f"unknown token at piece index(es) {positions}; the surface cannot be recovered",
-        )
-
     if tokens[-1].endswith(CONTINUATION_MARKER):
         return fail(
             AlignmentFailureReason.MALFORMED_CONTINUATION,
-            "the final piece still carries the continuation marker, so this span's "
+            "the final piece still carries the continuation marker, so this chunk's "
             "tokenization is not self-contained",
         )
 
     reconstructed = reconstruct_surface(tokens)
-    if reconstructed != span_text:
+    if reconstructed != chunk.text:
         return fail(
             AlignmentFailureReason.SURFACE_MISMATCH,
-            f"pieces reconstruct {reconstructed!r}, which is not the span {span_text!r}",
+            f"raw pieces reconstruct {reconstructed!r}, not the chunk {chunk.text!r}",
         )
 
     pieces: list[PieceAlignment] = []
     cursor = 0
     for index, token in enumerate(tokens):
         surface = piece_surface(token)
+        token_id = ids[index] if index < len(ids) else None
         pieces.append(
             PieceAlignment(
                 index=index,
                 token=token,
-                token_id=ids[index] if index < len(ids) else None,
+                token_id=token_id,
                 surface=surface,
-                start=cursor,
-                end=cursor + len(surface),
+                local_start=cursor,
+                local_end=cursor + len(surface),
+                global_start=chunk.start + cursor,
+                global_end=chunk.start + cursor + len(surface),
+                # Reported, never a failure: the surface above is exact.
+                has_unknown_token_id=(unk_token_id is not None and token_id == unk_token_id),
             )
         )
         cursor += len(surface)
 
-    return SpanAlignment(
-        span_text=span_text, tokens=tokens, token_ids=ids, pieces=tuple(pieces),
-        status=SpanAlignmentStatus.ALIGNED, eligibility=eligibility,
-        reconstructed=reconstructed,
-        detail="exact surface reconstruction; every piece has a half-open character range",
+    problem = _range_problem(pieces, chunk)
+    if problem:
+        return fail(AlignmentFailureReason.RANGE_ERROR, problem)
+
+    return ChunkAlignment(
+        chunk=chunk, tokens=tokens, token_ids=ids, pieces=tuple(pieces),
+        status=AlignmentStatusB.ALIGNED, reconstructed=reconstructed,
+        detail="exact raw-BPE surface reconstruction with monotonic global ranges",
     )
 
 
-def characters_for_piece(alignment: SpanAlignment, piece_index: int) -> str:
-    """The exact characters of the span that produced one piece."""
-    piece = alignment.pieces[piece_index]
-    return alignment.span_text[piece.start : piece.end]
+def _range_problem(pieces: Sequence[PieceAlignment], chunk: Chunk) -> str | None:
+    """Whether the derived ranges tile the chunk monotonically."""
+    previous_end = chunk.start
+    for piece in pieces:
+        if piece.global_start != previous_end:
+            return (
+                f"piece {piece.index} starts at {piece.global_start}, "
+                f"leaving a gap or overlap after {previous_end}"
+            )
+        if piece.global_end < piece.global_start:
+            return f"piece {piece.index} has end before start"
+        previous_end = piece.global_end
+    if previous_end != chunk.end:
+        return f"pieces cover up to {previous_end}, but the chunk ends at {chunk.end}"
+    return None
 
 
-def pieces_for_character(alignment: SpanAlignment, char_index: int) -> list[int]:
-    """Which pieces a character contributes to.
-
-    Character-level letter-diacritic states pool into the subword covering them
-    (proposal §4.4 step 4); this is the lookup that makes that possible.
-    """
-    return [p.index for p in alignment.pieces if p.start <= char_index < p.end]
-
-
+# ---------------------------------------------------------------------------
+# Orthographic overlay
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class SequenceAlignment:
-    """Per-span alignments for one full tokenizer input, plus reconciliation."""
+class OrthographicRegion:
+    """A B1A/B3A region of the base text, with its global range.
 
+    These are **orthographic metadata boundaries, not tokenization boundaries.**
+    A BPE piece may cover part of one, or straddle several.
+    """
+
+    index: int
     text: str
-    spans: tuple[SpanAlignment, ...]
-    full_sequence_tokens: tuple[str, ...] = ()
-    composed_tokens: tuple[str, ...] = ()
-    sequence_consistent: bool | None = None
-    unexplained_tokens: tuple[str, ...] = ()
-    detail: str = ""
-
-    @property
-    def aligned_spans(self) -> int:
-        return sum(1 for s in self.spans if s.aligned)
-
-    @property
-    def failed_spans(self) -> tuple[SpanAlignment, ...]:
-        return tuple(s for s in self.spans if s.status is SpanAlignmentStatus.ALIGNMENT_FAILURE)
-
-    @property
-    def channel_bearing_spans(self) -> int:
-        return sum(1 for s in self.spans if s.carries_channels)
+    start: int
+    end: int
+    eligibility: Eligibility
+    is_syllable: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "text": self.text,
-            "spans": [s.to_dict() for s in self.spans],
-            "full_sequence_tokens": list(self.full_sequence_tokens),
-            "composed_tokens": list(self.composed_tokens),
-            "sequence_consistent": self.sequence_consistent,
-            "unexplained_tokens": list(self.unexplained_tokens),
-            "aligned_spans": self.aligned_spans,
-            "failed_spans": len(self.failed_spans),
-            "channel_bearing_spans": self.channel_bearing_spans,
+            "index": self.index, "text": self.text, "start": self.start, "end": self.end,
+            "eligibility": self.eligibility.value, "is_syllable": self.is_syllable,
+        }
+
+
+@dataclass(frozen=True)
+class PieceContribution:
+    """The characters one orthographic region contributed to one BPE piece."""
+
+    region_index: int
+    eligibility: Eligibility
+    overlap_start: int
+    overlap_end: int
+    is_syllable: bool = True
+
+    @property
+    def length(self) -> int:
+        return self.overlap_end - self.overlap_start
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "region_index": self.region_index,
+            "eligibility": self.eligibility.value,
+            "overlap_start": self.overlap_start,
+            "overlap_end": self.overlap_end,
+            "length": self.length,
+            "is_syllable": self.is_syllable,
+        }
+
+
+@dataclass(frozen=True)
+class PieceOverlay:
+    """A BPE piece together with every orthographic region it draws from."""
+
+    piece_index: int
+    global_start: int
+    global_end: int
+    contributions: tuple[PieceContribution, ...]
+    tone_ownership: ToneOwnership
+    tone_region_index: int | None = None
+    detail: str = ""
+
+    @property
+    def is_mixed(self) -> bool:
+        return self.tone_ownership is ToneOwnership.MIXED
+
+    @property
+    def carries_tone(self) -> bool:
+        return self.tone_ownership is ToneOwnership.VIETNAMESE
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "piece_index": self.piece_index,
+            "global_start": self.global_start,
+            "global_end": self.global_end,
+            "contributions": [c.to_dict() for c in self.contributions],
+            "tone_ownership": self.tone_ownership.value,
+            "tone_region_index": self.tone_region_index,
+            "is_mixed": self.is_mixed,
+            "carries_tone": self.carries_tone,
             "detail": self.detail,
         }
 
 
-def compare_sequences(
-    full_sequence: Sequence[str],
-    composed: Sequence[str],
-    special_tokens: Sequence[str] = (),
-) -> dict[str, Any]:
-    """Compare the authoritative full-sequence tokenization with a composition.
+def overlay_orthography(
+    pieces: Sequence[PieceAlignment],
+    regions: Sequence[OrthographicRegion],
+) -> tuple[PieceOverlay, ...]:
+    """Attribute each BPE piece's characters to orthographic regions.
 
-    Special tokens are excluded from the comparison because they belong to the
-    sequence, not to any span. Everything else must match exactly: a token the
-    composition cannot account for is reported, never ignored.
-
-    Deliberately compares *whole* sequences rather than concatenating only the
-    Vietnamese spans -- punctuation and non-candidate regions are part of the
-    tokenizer input and must be accounted for too, even though they carry no
-    orthography channels.
+    Alignment is by **character-range overlap**, because BPE boundaries and
+    linguistic boundaries do not coincide. Every contributing region is recorded;
+    a piece straddling a Vietnamese candidate and something else is marked
+    `MIXED` and is **not** claimed to be Vietnamese.
     """
-    specials = set(special_tokens)
-    reference = [t for t in full_sequence if t not in specials]
-    candidate = [t for t in composed if t not in specials]
-    consistent = reference == candidate
+    overlays: list[PieceOverlay] = []
+    for piece in pieces:
+        contributions = [
+            PieceContribution(
+                region_index=region.index,
+                eligibility=region.eligibility,
+                overlap_start=max(piece.global_start, region.start),
+                overlap_end=min(piece.global_end, region.end),
+                is_syllable=region.is_syllable,
+            )
+            for region in regions
+            if region.start < piece.global_end and piece.global_start < region.end
+        ]
+        contributions = [c for c in contributions if c.length > 0]
 
-    unexplained: list[str] = []
-    if not consistent:
-        remaining = list(candidate)
-        for token in reference:
-            if token in remaining:
-                remaining.remove(token)
-            else:
-                unexplained.append(token)
+        vietnamese = [c for c in contributions if c.eligibility is Eligibility.VIETNAMESE_CANDIDATE]
+        undecided = [c for c in contributions if c.eligibility is Eligibility.UNDECIDED]
+        other = [c for c in contributions if c not in vietnamese and c not in undecided]
+
+        if undecided:
+            ownership, region_index = ToneOwnership.UNRESOLVED, None
+            detail = "a contributing region has UNDECIDED eligibility; resolve the inventory"
+        elif not vietnamese:
+            ownership, region_index = ToneOwnership.NOT_APPLICABLE, None
+            detail = "no contributing character comes from a Vietnamese candidate span"
+        elif len(vietnamese) == 1 and not other:
+            ownership = ToneOwnership.VIETNAMESE
+            region_index = vietnamese[0].region_index
+            detail = "every contributing character comes from one Vietnamese candidate span"
+        else:
+            ownership, region_index = ToneOwnership.MIXED, None
+            detail = (
+                f"piece draws from {len(contributions)} regions "
+                f"({len(vietnamese)} Vietnamese, {len(other)} other); tone ownership is not "
+                "decided here -- see docs/spec/decisions.md D-B3B1B-002"
+            )
+
+        overlays.append(
+            PieceOverlay(
+                piece_index=piece.index,
+                global_start=piece.global_start,
+                global_end=piece.global_end,
+                contributions=tuple(contributions),
+                tone_ownership=ownership,
+                tone_region_index=region_index,
+                detail=detail,
+            )
+        )
+    return tuple(overlays)
+
+
+def characters_for_piece(text: str, piece: PieceAlignment) -> str:
+    """The exact base-text characters that produced a piece."""
+    return text[piece.global_start : piece.global_end]
+
+
+# ---------------------------------------------------------------------------
+# Composition and the token-grid invariant
+# ---------------------------------------------------------------------------
+def compose(alignments: Sequence[ChunkAlignment]) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """Concatenate the chunks' raw tokens and ids, in order."""
+    tokens: list[str] = []
+    ids: list[int] = []
+    for alignment in alignments:
+        tokens.extend(alignment.tokens)
+        ids.extend(alignment.token_ids)
+    return tuple(tokens), tuple(ids)
+
+
+def verify_token_grid(
+    composed_tokens: Sequence[str],
+    composed_ids: Sequence[int],
+    authoritative_tokens: Sequence[str],
+    authoritative_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Check chunk composition against the authoritative `T(b(x))`.
+
+    Both the raw tokens and the ids must match **exactly**. The authoritative
+    sequence is the token grid; this only verifies that the character map was
+    built over the same units. Any authoritative token the composition cannot
+    account for is reported.
+    """
+    tokens_match = tuple(composed_tokens) == tuple(authoritative_tokens)
+    ids_match = tuple(composed_ids) == tuple(authoritative_ids)
+
+    unexplained: list[dict[str, Any]] = []
+    if not tokens_match:
+        for position, expected in enumerate(authoritative_tokens):
+            actual = composed_tokens[position] if position < len(composed_tokens) else None
+            if actual != expected:
+                unexplained.append({"position": position, "authoritative": expected, "composed": actual})
 
     return {
-        "consistent": consistent,
-        "reference_length": len(reference),
-        "composed_length": len(candidate),
-        "unexplained_tokens": unexplained,
+        "tokens_match": tokens_match,
+        "ids_match": ids_match,
+        "consistent": tokens_match and ids_match,
+        "authoritative_length": len(authoritative_tokens),
+        "composed_length": len(composed_tokens),
+        "unexplained_tokens": unexplained[:20],
         "detail": (
-            "per-span composition reproduces the authoritative sequence"
-            if consistent
-            else f"{len(unexplained)} token(s) in the authoritative sequence are unaccounted for"
+            "chunk composition reproduces the authoritative token grid exactly"
+            if tokens_match and ids_match
+            else f"{len(unexplained)} position(s) differ from the authoritative sequence"
         ),
     }
 
 
-def summarize_alignments(alignments: Sequence[SpanAlignment]) -> dict[str, Any]:
-    """Aggregate span alignments into the numbers the probe reports."""
+def summarize_chunk_alignments(alignments: Sequence[ChunkAlignment]) -> dict[str, Any]:
+    """Aggregate chunk alignments into the numbers the probe reports."""
     aligned = [a for a in alignments if a.aligned]
-    failed = [a for a in alignments if a.status is SpanAlignmentStatus.ALIGNMENT_FAILURE]
-    not_applicable = [a for a in alignments if a.status is SpanAlignmentStatus.NOT_APPLICABLE]
+    failed = [a for a in alignments if a.status is AlignmentStatusB.ALIGNMENT_FAILURE]
     counts = [a.subword_count for a in aligned]
     reasons: dict[str, int] = {}
     for failure in failed:
         key = failure.failure_reason.value if failure.failure_reason else "UNKNOWN"
         reasons[key] = reasons.get(key, 0) + 1
     return {
-        "total": len(alignments),
+        "total_chunks": len(alignments),
         "aligned": len(aligned),
         "failed": len(failed),
-        "not_applicable": len(not_applicable),
         "failure_reasons": reasons,
-        "alignment_rate": (len(aligned) / len(alignments)) if alignments else None,
-        "mean_subwords_per_span": (sum(counts) / len(counts)) if counts else None,
-        "max_subwords_per_span": max(counts) if counts else None,
-        "spans_with_unknown_token": reasons.get(AlignmentFailureReason.UNKNOWN_TOKEN.value, 0),
         "surface_reconstruction_failures": reasons.get(
             AlignmentFailureReason.SURFACE_MISMATCH.value, 0
         ),
+        "range_failures": reasons.get(AlignmentFailureReason.RANGE_ERROR.value, 0),
+        "chunks_with_unknown_token_id": sum(1 for a in aligned if a.unknown_id_count),
+        "unknown_token_ids": sum(a.unknown_id_count for a in aligned),
+        "mean_subwords_per_chunk": (sum(counts) / len(counts)) if counts else None,
+        "max_subwords_per_chunk": max(counts) if counts else None,
     }

@@ -751,7 +751,7 @@ of silently degrading to `UNDECIDED`.
 
 | | |
 |---|---|
-| **Status** | **OPEN — Colab probe required** |
+| **Status** | **SUPERSEDED** by [D-B3B1B-001](#d-b3b1b-001--alignment-runs-over-whitespace-chunks-not-linguistic-spans). The hypothesis was tested and **refuted** at span granularity. |
 | **Owner** | B3B-1 |
 
 The scientific run found `offset_availability = ABSENT` for every path: the
@@ -776,3 +776,122 @@ whose pieces do not reconstruct its surface, is an explicit `ALIGNMENT_FAILURE`
 with a reason. Special tokens, punctuation and non-Vietnamese spans are `N/A` in
 both channels. `UNDECIDED` eligibility fails rather than being labelled. No span
 is ever labelled on a guess.
+
+
+---
+
+## B3B-1B — whitespace-chunk alignment
+
+### D-B3B1B-001 — alignment runs over whitespace chunks, not linguistic spans
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation); real-tokenizer validation **OPEN** pending the corrected probe |
+| **Owner** | B3B-1B |
+| **Date** | 2026-08-20 |
+
+**Original B3B-1A hypothesis.** Tokenize each B1A/B3A linguistic span
+independently with the frozen slow tokenizer and compose the pieces to recover a
+character map.
+
+**Empirical result.** The first real B3B-1 Colab run reported **6/13**
+full-sequence agreement, despite every span reconstructing its own surface
+exactly. 2488/2489 inventory forms "aligned"; the run was correctly marked
+`B3B1_ALIGNMENT_PROBE_INCOMPLETE`.
+
+**Root cause.** PhoBERT's fastBPE operates over **maximal non-whitespace
+chunks**, not over linguistic spans. Punctuation, hyphens, URLs and e-mail
+addresses change the BPE segmentation of the whole chunk they sit in:
+
+```text
+"nhien."   authoritative ["nhi@@", "en@@", "."]   span-composed ["nh@@","ien"]+["."]
+"VNU-HCM"  authoritative ["VN@@", "U-@@", "HCM"]
+"(VAT"     authoritative ["(@@", "VAT"]
+"Viet-Nam" authoritative ["Viet@@", "-@@", "Nam"]
+```
+
+URLs and e-mail addresses reconstructed exactly from their raw pieces when taken
+as whole chunks.
+
+**Follow-up result.** Splitting each sentence's `base_text` on `\S+` and
+tokenizing each whole chunk gave, across the 13 representative sentences:
+
+| | |
+|---|---:|
+| token sequence matches | **13/13** |
+| token-ID matches | **13/13** |
+| non-whitespace chunks | 119 |
+| chunk surface reconstruction failures | **0** |
+
+The 6/13 result was **wrong granularity**, not an inability to reconstruct
+PhoBERT's tokenization.
+
+**Final implementation.**
+
+```text
+authoritative token grid = T(b(x))          <- never defined by the alignment code
+auxiliary character map  = per-chunk raw-BPE reconstruction, then overlaid with
+                           B1A/B3A orthographic spans by character-range overlap
+```
+
+Take `b(x)`; split into maximal non-whitespace chunks with exact global ranges;
+tokenize each **whole chunk**; use **raw** BPE pieces before any id round trip;
+reconstruct and require exact surface equality; derive local then global
+half-open ranges; compose and verify against the authoritative tokens **and**
+ids; overlay the orthographic spans.
+
+**Linguistic spans are orthographic metadata boundaries, not tokenization
+boundaries.** A BPE piece may cover part of a span, several regions, or
+punctuation adjacent to text, so attribution is by character-range overlap.
+
+| | |
+|---|---|
+| **Affected** | §4.4 alignment; Stage-1 and Stage-2 input construction; every later channel-propagation step |
+| **Affected code** | `unmark/alignment/manual.py`, `scripts/b3b1_phobert_alignment_probe.py` |
+| **Proposal source updated** | **YES** — §4.4 step 2 no longer implies native offsets. |
+| **Compiled PDF stale** | **YES** |
+
+**Still open:** validation on the real tokenizer, pending the corrected probe.
+**D-B3B0-001 remains CLOSED** (`RAW_BASE`). **D-B3B0-002 remains OPEN** (final
+backbone lock).
+
+### D-B3B1B-002 — vocabulary OOV is not alignment failure; mixed pieces stay open
+
+| | |
+|---|---|
+| **Status** | **RESOLVED** for the OOV policy; **OPEN** for mixed-contributor tone assignment |
+| **Owner** | B3B-1B (OOV) / B3B (mixed pieces) |
+
+**OOV finding.** The real tokenizer on `khut`:
+
+```text
+tokenizer.tokenize("khut")     -> ["khut"]      raw surface recoverable
+tokenizer.bpe("khut")          -> "khut"
+raw ids                        -> [3]           the unknown id
+convert_ids_to_tokens([3])     -> ["<unk>"]     surface destroyed by the round trip
+surface reconstruction exact   -> TRUE
+```
+
+B3B-1A conflated **unknown vocabulary id** with **unknown alignment surface** and
+reported a failure. They are now separate: such a piece is `ALIGNED` with
+`has_unknown_token_id = True`, and may carry orthography channels when the
+intersecting orthographic region is resolved and valid. This is a **general
+policy**; the string `khut` is nowhere special-cased. `AlignmentFailureReason`
+no longer contains `UNKNOWN_TOKEN`.
+
+True alignment failure is only: raw-surface reconstruction mismatch, malformed
+continuation, impossible or non-monotonic ranges, an unexplained authoritative
+token, or unresolved eligibility where a scientific channel assignment is needed.
+
+**Mixed-contributor pieces — OPEN.** A BPE piece can straddle a Vietnamese
+candidate span and punctuation or non-Vietnamese text within one chunk. The
+alignment records **every** contributing region with its exact overlap range and
+marks the piece `ToneOwnership.MIXED`; it does **not** claim the token is
+Vietnamese. A deterministic tone-assignment rule for such pieces is **not**
+decided here — the evidence does not yet support one, and guessing would attach
+a tone label to characters that did not produce it. The corrected probe reports
+how often this occurs; B3B decides the rule.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** for this entry |

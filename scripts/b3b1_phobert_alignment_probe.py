@@ -46,11 +46,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from unmark.alignment import (  # noqa: E402
-    AlignmentFailureReason,
-    SpanAlignmentStatus,
-    align_span,
-    compare_sequences,
-    summarize_alignments,
+    AlignmentStatusB,
+    OrthographicRegion,
+    align_chunk,
+    compose,
+    overlay_orthography,
+    summarize_chunk_alignments,
+    verify_token_grid,
+    whitespace_chunks,
 )
 from unmark.alignment.contracts import REPO_LOCAL_HF_CACHE, TokenizerContract  # noqa: E402
 from unmark.linguistics import load_inventory, make_classifier  # noqa: E402
@@ -145,83 +148,127 @@ def observe_tokenizer_revision(tokenizer) -> tuple[str | None, tuple[str, ...], 
 # ---------------------------------------------------------------------------
 # Probing
 # ---------------------------------------------------------------------------
-def tokenize_span(tokenizer, text: str) -> tuple[tuple[str, ...], tuple[int, ...]]:
-    """Tokenize one span alone, with no special tokens."""
-    ids = tokenizer.encode(text, add_special_tokens=False)
-    return tuple(tokenizer.convert_ids_to_tokens(ids)), tuple(ids)
+def raw_tokenize(tokenizer, text: str) -> tuple[tuple[str, ...], tuple[int, ...]]:
+    """RAW BPE pieces and their ids, with no special tokens.
+
+    Uses `tokenizer.tokenize()` rather than `convert_ids_to_tokens(encode(...))`:
+    the id round trip replaces an out-of-vocabulary surface with `<unk>` and the
+    characters become unrecoverable. That conflation is what made B3B-1A report
+    `khut` as an alignment failure when its raw surface was exactly recoverable.
+    """
+    tokens = tuple(tokenizer.tokenize(text))
+    ids = tuple(tokenizer.convert_tokens_to_ids(list(tokens)))
+    return tokens, ids
 
 
-def probe_inventory(tokenizer, inventory, unk: str | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Align every unique stripped form in the B3A inventory."""
+def probe_inventory(tokenizer, inventory, unk_id: int | None) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """Align every unique stripped form in the B3A inventory.
+
+    Each form is a single whitespace chunk, so it is aligned as one. An unknown
+    vocabulary id is REPORTED, never counted as a surface failure.
+    """
     alignments = []
     failures: list[dict[str, Any]] = []
+    unknown_id_forms: list[str] = []
     for form in sorted(inventory.forms):
-        tokens, ids = tokenize_span(tokenizer, form)
-        alignment = align_span(
-            form, tokens, ids, eligibility=Eligibility.VIETNAMESE_CANDIDATE, unk_token=unk
-        )
+        chunks = whitespace_chunks(form)
+        if not chunks:
+            continue
+        tokens, ids = raw_tokenize(tokenizer, form)
+        alignment = align_chunk(chunks[0], tokens, ids, unk_token_id=unk_id)
         alignments.append(alignment)
         if not alignment.aligned:
-            failures.append(alignment.to_dict())
-    summary = summarize_alignments(alignments)
+            failures.append({"form": form, **alignment.to_dict()})
+        elif alignment.unknown_id_count:
+            unknown_id_forms.append(form)
+
+    summary = summarize_chunk_alignments(alignments)
     summary["total_unique_stripped_forms"] = len(inventory.forms)
-    summary["tokenizable_forms"] = summary["aligned"]
-    return summary, failures
+    summary["raw_surface_reconstructable_forms"] = summary["aligned"]
+    summary["forms_with_unknown_token_id"] = len(unknown_id_forms)
+    summary["raw_surface_reconstruction_failures"] = summary["surface_reconstruction_failures"]
+    summary["mean_subwords_per_form"] = summary["mean_subwords_per_chunk"]
+    summary["max_subwords_per_form"] = summary["max_subwords_per_chunk"]
+    return summary, failures, unknown_id_forms
 
 
-def probe_sentence(tokenizer, case_id: str, text: str, classifier, unk: str | None) -> dict[str, Any]:
-    """Align every span of one sentence and reconcile with the full sequence."""
+def probe_sentence(tokenizer, case_id: str, text: str, classifier, unk_id: int | None) -> dict[str, Any]:
+    """Align one sentence over whitespace chunks and verify the token grid.
+
+    The authoritative grid is `T(b(x))` on the whole base text. Chunk alignment
+    only reconstructs a character map beside it, and must reproduce it exactly.
+    """
     base_text = decompose(canon(text), eligibility_classifier=classifier).base_text
     parts = decompose(base_text, eligibility_classifier=classifier)
 
-    # The authoritative tokenization of the whole tokenizer input.
-    full_ids = tokenizer.encode(base_text, add_special_tokens=False)
-    full_tokens = tuple(tokenizer.convert_ids_to_tokens(full_ids))
+    authoritative_tokens, authoritative_ids = raw_tokenize(tokenizer, base_text)
 
-    # Compose from EVERY region of the input, not just the Vietnamese spans:
-    # punctuation and non-candidate text are part of the input and must be
-    # accounted for, even though they carry no orthography channels.
-    regions: list[tuple[str, Eligibility]] = []
+    chunks = whitespace_chunks(base_text)
+    alignments = [
+        align_chunk(chunk, *raw_tokenize(tokenizer, chunk.text), unk_token_id=unk_id)
+        for chunk in chunks
+    ]
+    composed_tokens, composed_ids = compose(alignments)
+    grid = verify_token_grid(composed_tokens, composed_ids, authoritative_tokens, authoritative_ids)
+
+    # Orthographic regions: syllable spans plus the gaps between them, so every
+    # character of the base text belongs to exactly one region.
+    regions: list[OrthographicRegion] = []
     cursor = 0
     for span in parts.syllables:
         if span.base_start > cursor:
-            regions.append((base_text[cursor : span.base_start], Eligibility.NOT_APPLICABLE))
-        regions.append((span.base_text, span.eligibility))
+            regions.append(
+                OrthographicRegion(
+                    len(regions), base_text[cursor : span.base_start], cursor, span.base_start,
+                    Eligibility.NOT_APPLICABLE, is_syllable=False,
+                )
+            )
+        regions.append(
+            OrthographicRegion(
+                len(regions), span.base_text, span.base_start, span.base_end, span.eligibility
+            )
+        )
         cursor = span.base_end
     if cursor < len(base_text):
-        regions.append((base_text[cursor:], Eligibility.NOT_APPLICABLE))
-
-    alignments = []
-    composed: list[str] = []
-    for region_text, eligibility in regions:
-        if not region_text:
-            continue
-        tokens, ids = tokenize_span(tokenizer, region_text)
-        composed.extend(tokens)
-        alignments.append(
-            align_span(region_text, tokens, ids, eligibility=eligibility, unk_token=unk)
+        regions.append(
+            OrthographicRegion(
+                len(regions), base_text[cursor:], cursor, len(base_text),
+                Eligibility.NOT_APPLICABLE, is_syllable=False,
+            )
         )
 
-    comparison = compare_sequences(full_tokens, tuple(composed), getattr(tokenizer, "all_special_tokens", ()) or ())
+    overlays = []
+    for alignment in alignments:
+        overlays.extend(o.to_dict() for o in overlay_orthography(alignment.pieces, regions))
+
+    mixed = [o for o in overlays if o["is_mixed"]]
     return {
         "case_id": case_id,
         "text": text,
         "base_text": base_text,
-        "full_sequence_tokens": list(full_tokens),
-        "composed_tokens": composed,
-        "sequence_consistent": comparison["consistent"],
-        "unexplained_tokens": comparison["unexplained_tokens"],
-        "sequence_detail": comparison["detail"],
-        "spans": [a.to_dict() for a in alignments],
-        "eligibility_counts": _count_eligibility(alignments),
-        **{f"summary_{k}": v for k, v in summarize_alignments(alignments).items()},
+        "chunks": [c.to_dict() for c in chunks],
+        "alignments": [a.to_dict() for a in alignments],
+        "authoritative_tokens": list(authoritative_tokens),
+        "authoritative_ids": list(authoritative_ids),
+        "composed_tokens": list(composed_tokens),
+        "composed_ids": list(composed_ids),
+        "tokens_match": grid["tokens_match"],
+        "ids_match": grid["ids_match"],
+        "sequence_consistent": grid["consistent"],
+        "unexplained_tokens": grid["unexplained_tokens"],
+        "grid_detail": grid["detail"],
+        "regions": [r.to_dict() for r in regions],
+        "overlays": overlays,
+        "mixed_pieces": len(mixed),
+        "eligibility_counts": _count_eligibility_regions(regions),
+        **{f"summary_{k}": v for k, v in summarize_chunk_alignments(alignments).items()},
     }
 
 
-def _count_eligibility(alignments: Sequence[Any]) -> dict[str, int]:
+def _count_eligibility_regions(regions: Sequence[Any]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for alignment in alignments:
-        key = alignment.eligibility.value
+    for region in regions:
+        key = region.eligibility.value
         counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -264,14 +311,16 @@ def probe_fast_tokenizer_diagnostic(checkpoint: str, revision: str, slow_tokeniz
 def render_report(config: dict[str, Any], summary: dict[str, Any], sentences: Sequence[dict[str, Any]]) -> str:
     lines: list[str] = []
     a = lines.append
-    a("# B3B-1 manual alignment probe")
+    inv = summary["inventory"]
+    a("# B3B-1 manual alignment probe (whitespace-chunk contract)")
     a("")
     a(f"Run id: `{config['run_id']}`  ")
     a(f"Timestamp (UTC): `{config['timestamp_utc']}`")
     a("")
-    a("> Tests whether fastBPE `@@` reconstruction yields deterministic character ranges")
-    a("> for the slow PhoBERT tokenizer. **The hypothesis is not declared validated by")
-    a("> this script** -- read the numbers below. No model weights were loaded.")
+    a("> The authoritative token grid is `T(b(x))` from the pinned slow tokenizer. This")
+    a("> probe only reconstructs a character map beside it, over the same maximal")
+    a("> non-whitespace chunks the tokenizer uses, and verifies the two agree exactly.")
+    a("> No model weights were loaded.")
     a("")
     a("## Provenance")
     a("")
@@ -284,45 +333,56 @@ def render_report(config: dict[str, Any], summary: dict[str, Any], sentences: Se
     a("")
     a("## B3A inventory coverage")
     a("")
-    inv = summary["inventory"]
     a("| Metric | Value |")
     a("|---|---:|")
     for key in (
-        "total_unique_stripped_forms", "tokenizable_forms", "aligned", "failed",
-        "spans_with_unknown_token", "surface_reconstruction_failures",
-        "mean_subwords_per_span", "max_subwords_per_span",
+        "total_unique_stripped_forms", "raw_surface_reconstructable_forms",
+        "forms_with_unknown_token_id", "raw_surface_reconstruction_failures",
+        "range_failures", "mean_subwords_per_form", "max_subwords_per_form",
     ):
         a(f"| {key} | {inv.get(key)} |")
     a("")
-    if inv.get("failure_reasons"):
-        a("Failure reasons: " + ", ".join(f"`{k}` × {v}" for k, v in inv["failure_reasons"].items()))
+    a("`forms_with_unknown_token_id` counts forms whose raw BPE surface reconstructs exactly")
+    a("but whose vocabulary id is the unknown id. That is **reported, not a failure**: the")
+    a("characters are recoverable, only the vocabulary lookup is not.")
+    if summary.get("forms_with_unknown_token_id_list"):
         a("")
-    a("## Full-sequence consistency")
+        a("Forms: " + ", ".join(f"`{f}`" for f in summary["forms_with_unknown_token_id_list"][:50]))
     a("")
-    a("| Case | spans | aligned | channels | sequence consistent | unexplained |")
-    a("|---|---:|---:|---:|---|---:|")
+    a("## Full-sequence token-grid agreement")
+    a("")
+    a("| Case | chunks | aligned | tokens match | ids match | unexplained | mixed pieces |")
+    a("|---|---:|---:|---|---|---:|---:|")
     for row in sentences:
         a(
-            f"| `{row['case_id']}` | {row['summary_total']} | {row['summary_aligned']} | "
-            f"{sum(1 for s in row['spans'] if s['carries_channels'])} | "
-            f"{row['sequence_consistent']} | {len(row['unexplained_tokens'])} |"
+            f"| `{row['case_id']}` | {row['summary_total_chunks']} | {row['summary_aligned']} | "
+            f"{row['tokens_match']} | {row['ids_match']} | {len(row['unexplained_tokens'])} | "
+            f"{row['mixed_pieces']} |"
         )
     a("")
-    a("Composition covers **every region** of the tokenizer input, including punctuation and")
-    a("non-candidate spans; orthography channels are attached only to eligible Vietnamese")
-    a("spans. An inconsistent row means per-span tokenization does not reproduce the")
-    a("authoritative sequence, which would sink the manual-alignment strategy.")
+    a(f"Tokens: {summary['sentences_tokens_match']}/{summary['sentences_total']} · ")
+    a(f"IDs: {summary['sentences_ids_match']}/{summary['sentences_total']} · ")
+    a(f"chunks aligned {summary['chunks_aligned']}/{summary['total_chunks']}")
     a("")
-    a("## Eligibility resolution")
+    a("A row that does not match means chunk composition failed to reproduce the")
+    a("authoritative grid, which invalidates the alignment strategy.")
     a("")
-    a("| Case | " + " | ".join(e.value for e in Eligibility) + " |")
-    a("|---|" + "---|" * len(Eligibility))
+    a("## Orthographic overlay")
+    a("")
+    a("| Case | " + " | ".join(e.value for e in Eligibility) + " | mixed pieces |")
+    a("|---|" + "---|" * (len(Eligibility) + 1))
     for row in sentences:
         counts = row["eligibility_counts"]
-        a(f"| `{row['case_id']}` | " + " | ".join(str(counts.get(e.value, 0)) for e in Eligibility) + " |")
+        a(
+            f"| `{row['case_id']}` | "
+            + " | ".join(str(counts.get(e.value, 0)) for e in Eligibility)
+            + f" | {row['mixed_pieces']} |"
+        )
     a("")
-    a("`UNDECIDED` must be zero on a resolved run: it means the B3A inventory was not")
-    a("consulted, which is the defect audit 011 repaired.")
+    a("`UNDECIDED` must be zero on a resolved run. `mixed pieces` are BPE pieces drawing")
+    a("from a Vietnamese candidate **and** something else; they are recorded with their")
+    a("contributors and never claimed as Vietnamese -- see `docs/spec/decisions.md`")
+    a("D-B3B1B-002, which is OPEN.")
     a("")
     if config.get("fast_tokenizer_diagnostic"):
         a("## Optional fast-tokenizer diagnostic")
@@ -333,8 +393,10 @@ def render_report(config: dict[str, Any], summary: dict[str, Any], sentences: Se
     a("")
     a(f"**`{config['status']}`**")
     a("")
-    a("Manual alignment is validated only if the inventory shows zero surface-reconstruction")
-    a("failures and every sentence is sequence-consistent. Read both before relying on it.")
+    a("Validated only when: provenance verified, eligibility resolved, every inventory form")
+    a("raw-surface reconstructable with exact ranges, every chunk reconstructed, chunk")
+    a("composition equal to the authoritative tokens **and** ids, and no unexplained token.")
+    a("Unknown vocabulary ids alone never invalidate the result.")
     a("")
     return "\n".join(lines)
 
@@ -392,20 +454,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     unk = getattr(tokenizer, "unk_token", None)
     print(f"  class={type(tokenizer).__name__} fast={getattr(tokenizer, 'is_fast', False)} verified={verified}")
 
-    inventory_summary, inventory_failures = probe_inventory(tokenizer, inventory, unk)
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+    inventory_summary, inventory_failures, unknown_id_forms = probe_inventory(
+        tokenizer, inventory, unk_id
+    )
+
     curated = []
     for group, items in (("tone", TONE_CASES), ("letter", LETTER_CASES), ("case", CASE_CASES)):
         for text in items:
-            for form, label in ((text, "NFC"), (unicodedata.normalize("NFD", text), "NFD")):
-                base = decompose(canon(form), eligibility_classifier=classifier).base_text
-                tokens, ids = tokenize_span(tokenizer, base)
-                alignment = align_span(
-                    base, tokens, ids,
-                    eligibility=classifier(base), unk_token=unk,
-                )
-                curated.append({"group": group, "source": text, "form": label, **alignment.to_dict()})
+            for source_form, label in ((text, "NFC"), (unicodedata.normalize("NFD", text), "NFD")):
+                base = decompose(canon(source_form), eligibility_classifier=classifier).base_text
+                chunks = whitespace_chunks(base)
+                if not chunks:
+                    continue
+                tokens, ids = raw_tokenize(tokenizer, base)
+                alignment = align_chunk(chunks[0], tokens, ids, unk_token_id=unk_id)
+                curated.append({
+                    "group": group, "source": text, "normalisation": label,
+                    "base": base, "eligibility": classifier(base).value,
+                    **alignment.to_dict(),
+                })
 
-    sentences = [probe_sentence(tokenizer, cid, text, classifier, unk) for cid, text in SENTENCES]
+    sentences = [probe_sentence(tokenizer, cid, text, classifier, unk_id) for cid, text in SENTENCES]
 
     fast_diagnostic = (
         probe_fast_tokenizer_diagnostic(args.checkpoint, args.revision, tokenizer)
@@ -413,9 +483,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         else None
     )
 
-    all_consistent = all(row["sequence_consistent"] for row in sentences)
+    # Validation criteria (B3B-1B). An unknown vocabulary id is reported, never
+    # a reason to invalidate: only surface/range/token-grid problems are.
+    all_tokens_match = all(row["tokens_match"] for row in sentences)
+    all_ids_match = all(row["ids_match"] for row in sentences)
     inventory_clean = inventory_summary["failed"] == 0
-    status = STATUS_OK if (all_consistent and inventory_clean) else STATUS_FAIL
+    no_unexplained = all(not row["unexplained_tokens"] for row in sentences)
+    status = (
+        STATUS_OK
+        if (all_tokens_match and all_ids_match and inventory_clean and no_unexplained)
+        else STATUS_FAIL
+    )
 
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = output_root / run_id
@@ -457,13 +535,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     summary = {
         "inventory": inventory_summary,
+        "forms_with_unknown_token_id_list": unknown_id_forms,
         "sentences_total": len(sentences),
+        "sentences_tokens_match": sum(1 for r in sentences if r["tokens_match"]),
+        "sentences_ids_match": sum(1 for r in sentences if r["ids_match"]),
         "sentences_sequence_consistent": sum(1 for r in sentences if r["sequence_consistent"]),
+        "total_chunks": sum(r["summary_total_chunks"] for r in sentences),
+        "chunks_aligned": sum(r["summary_aligned"] for r in sentences),
+        "chunk_surface_failures": sum(r["summary_surface_reconstruction_failures"] for r in sentences),
+        "mixed_pieces": sum(r["mixed_pieces"] for r in sentences),
         "curated_total": len(curated),
-        "curated_aligned": sum(1 for c in curated if c["status"] == SpanAlignmentStatus.ALIGNED.value),
-        "undecided_spans": sum(
-            sum(1 for s in r["spans"] if s["eligibility"] == Eligibility.UNDECIDED.value)
-            for r in sentences
+        "curated_aligned": sum(1 for c in curated if c["status"] == AlignmentStatusB.ALIGNED.value),
+        "undecided_regions": sum(
+            r["eligibility_counts"].get(Eligibility.UNDECIDED.value, 0) for r in sentences
         ),
         "status": status,
     }
@@ -475,6 +559,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     with (run_dir / "inventory_failures.jsonl").open("w", encoding="utf-8") as fh:
         for row in inventory_failures:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with (run_dir / "unknown_token_id_forms.jsonl").open("w", encoding="utf-8") as fh:
+        for form in unknown_id_forms:
+            fh.write(json.dumps({"form": form}, ensure_ascii=False) + "\n")
     with (run_dir / "cases.jsonl").open("w", encoding="utf-8") as fh:
         for row in curated:
             fh.write(json.dumps({"kind": "curated", **row}, ensure_ascii=False) + "\n")
@@ -483,13 +570,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     (run_dir / "report.md").write_text(render_report(config, summary, sentences), encoding="utf-8")
 
     print()
-    print(f"  inventory forms      : {inventory_summary['total_unique_stripped_forms']}")
-    print(f"  aligned              : {inventory_summary['aligned']}")
-    print(f"  failed               : {inventory_summary['failed']} {inventory_summary['failure_reasons'] or ''}")
-    print(f"  mean subwords/form   : {inventory_summary['mean_subwords_per_span']}")
-    print(f"  max subwords/form    : {inventory_summary['max_subwords_per_span']}")
-    print(f"  sentences consistent : {summary['sentences_sequence_consistent']}/{summary['sentences_total']}")
-    print(f"  UNDECIDED spans      : {summary['undecided_spans']} (must be 0)")
+    print(f"  inventory forms          : {inventory_summary['total_unique_stripped_forms']}")
+    print(f"  raw-surface reconstructable: {inventory_summary['raw_surface_reconstructable_forms']}")
+    print(f"  surface failures         : {inventory_summary['raw_surface_reconstruction_failures']}")
+    print(f"  range failures           : {inventory_summary['range_failures']}")
+    print(f"  forms with <unk> id      : {inventory_summary['forms_with_unknown_token_id']} (reported, not a failure)")
+    print(f"  mean subwords/form       : {inventory_summary['mean_subwords_per_form']}")
+    print(f"  max subwords/form        : {inventory_summary['max_subwords_per_form']}")
+    print(f"  chunks aligned           : {summary['chunks_aligned']}/{summary['total_chunks']}")
+    print(f"  sentences tokens match   : {summary['sentences_tokens_match']}/{summary['sentences_total']}")
+    print(f"  sentences ids match      : {summary['sentences_ids_match']}/{summary['sentences_total']}")
+    print(f"  mixed-contributor pieces : {summary['mixed_pieces']} (recorded, see D-B3B1B-002)")
+    print(f"  UNDECIDED regions        : {summary['undecided_regions']} (must be 0)")
     print()
     print(f"Status: {status}")
     print("Manual alignment is validated only by these numbers, not by this script running.")
