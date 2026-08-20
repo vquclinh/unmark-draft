@@ -33,7 +33,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-B3B1C-001 (manual alignment validated; tone ownership by candidate count) |
 | **RESOLVED DECISION** (cont.) | D-B3B2-001 (deterministic B3B COMPLETE), D-B4A-001, D-B4A-007 |
 | **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
-| **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) |
+| **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) — **all confirmed on real PhoBERT, run `20260820T081554Z`, 27/27** |
 | **RESOLVED DECISION** (cont.) | D-B4B-002 — **CLOSED** by the real PhoBERT run: explicit authoritative `position_ids` are required; D-B4B-006 (model provenance verifier repaired) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
 
@@ -1510,9 +1510,9 @@ deterministic metadata and the tensors.
 
 | | |
 |---|---|
-| **Status** | **CLOSED** by the real PhoBERT run, 2026-08-20. The rule was pre-committed; the result is below. |
+| **Status** | **CLOSED** by the real PhoBERT run, 2026-08-20. The rule was pre-committed; the result is below. **Re-confirmed on the final 27/27 rerun** (`20260820T081554Z`), including the wrapper passing the authoritative ids and rejecting a wrong override. |
 | **Owner** | B4B |
-| **Evidence** | first real B4B run — [`docs/experiments/b4b-phobert-adapter-integration-result.md`](../experiments/b4b-phobert-adapter-integration-result.md) |
+| **Evidence** | first real B4B run and the final rerun — [`docs/experiments/b4b-phobert-adapter-integration-result.md`](../experiments/b4b-phobert-adapter-integration-result.md) |
 
 ## RESOLUTION — explicit authoritative `position_ids` are REQUIRED
 
@@ -1679,7 +1679,7 @@ pure Python and **genuinely tested locally** rather than only statically.
 
 | | |
 |---|---|
-| **Status** | **RESOLVED DECISION** (implementation safety) |
+| **Status** | **RESOLVED DECISION** (implementation safety); **confirmed on real PhoBERT**, run `20260820T081554Z` — the encoder stayed in eval across construction, `train()`, `eval()` and `train()` again, with `requires_grad` false throughout |
 | **Owner** | B4B |
 
 **The gap.** `requires_grad = False` freezes *weights*. `eval()` disables
@@ -1728,7 +1728,7 @@ training.
 
 | | |
 |---|---|
-| **Status** | **RESOLVED DECISION** (probe design) |
+| **Status** | **RESOLVED DECISION** (probe design); **confirmed on real PhoBERT**, run `20260820T081554Z` — `encoder_output_requires_grad = true`, encoder gradient count 0, and all eight required adapter components carrying finite gradients |
 | **Owner** | B4B |
 
 **The gap.** The first B4B probe computed its diagnostic scalar as `z.sum()`,
@@ -1780,7 +1780,7 @@ INCOMPLETE.**
 
 | | |
 |---|---|
-| **Status** | **RESOLVED DECISION** (reproducibility engineering) |
+| **Status** | **RESOLVED DECISION** (reproducibility engineering); **confirmed on real PhoBERT**, run `20260820T081554Z` — both tokenizer and model resolved to `01daacda68afe13d83023d16ec647239e344a1e6`, `revision_verified = true` |
 | **Owner** | B4B |
 
 **The defect.** The first real B4B run reported 21/22. The single failure was
@@ -1845,3 +1845,57 @@ The pinned revision is unchanged and remains a **probe** revision;
 | | |
 |---|---|
 | **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+---
+
+## B4B phase closure
+
+### D-B4B-007 — B4B is COMPLETE
+
+| | |
+|---|---|
+| **Status** | **PHASE CLOSURE** |
+| **Owner** | B4B |
+| **Evidence** | run `20260820T081554Z`, HEAD `7f6e26c80c0acfa3cdf9168a9b0e2981e6ae1491`, return code 0, **27/27**, `B4B_PHOBERT_ADAPTER_INTEGRATION_COMPLETE` — [`docs/experiments/b4b-phobert-adapter-integration-result.md`](../experiments/b4b-phobert-adapter-integration-result.md) |
+
+**B4B NEURAL ADAPTER + REAL PHOBERT INTEGRATION: COMPLETE.**
+
+This entry exists to state the phase boundary precisely, because "complete" is
+easy to over-read. It restates no run detail that the experiment record already
+carries.
+
+**What COMPLETE means.**
+
+* An actual PyTorch adapter exists (`unmark/modeling/adapter.py`).
+* It implements the B4A-locked equation — convex combination, input-dependent
+  sigmoid gate, LayerNorm after fusion — with no deviation.
+* Real PhoBERT **weights were loaded**, at a **verified** revision for both
+  tokenizer and model.
+* Frozen-model `input_ids` vs `inputs_embeds` equivalence is **exact** (0.0)
+  with authoritative position ids.
+* `inputs_embeds` position semantics were **measured** and are **enforced** by
+  the integration wrapper, which also rejects a wrong caller-supplied override.
+* The parameter partition is verified: `6d² + 16d` trainable in the adapter,
+  **zero** trainable in the encoder.
+* Gradients route **through the frozen encoder** into `A_φ`.
+* The frozen encoder's eval-mode invariant holds across every mode transition.
+* The deterministic B3 → neural B4 interface was exercised with the real
+  pipeline.
+* **No scientific training has occurred.**
+
+**What COMPLETE does NOT mean.**
+
+* The **Stage-1 objective is not implemented** — §4.6's `L_align` / `L_clean`
+  do not exist in code.
+* **Nothing has been trained.** One diagnostic backward pass is not training.
+* **[D-B3B0-002](#d-b3b0-002) is still OPEN** — the backbone is not selected.
+  The pinned revision remains a *probe* revision.
+* **No downstream task, baseline or evaluation has run.**
+* Two probe sentences are **integration** evidence, not linguistic coverage.
+
+**Stage-1 implementation may begin. Training may not**: it requires the
+repository-wide PRE-TRAIN audit first.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — the run confirms the specification rather than changing it. PDF stale: **YES** (from the earlier v1.4 source changes) |

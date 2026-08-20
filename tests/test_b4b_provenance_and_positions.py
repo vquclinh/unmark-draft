@@ -746,3 +746,42 @@ def test_audit_016_keeps_the_locked_current_state():
     assert "D-B3B0-002](../spec/decisions.md#d-b3b0-002) remains OPEN" in text
     assert "nothing was trained" in text.lower()
     assert "VerifiedPositionProfile" in text
+
+
+# ---------------------------------------------------------------------------
+# 26. The experiment record keeps both runs honestly
+# ---------------------------------------------------------------------------
+B4B_RESULT = REPO / "docs" / "experiments" / "b4b-phobert-adapter-integration-result.md"
+
+
+def test_experiment_record_states_the_final_complete_status():
+    text = B4B_RESULT.read_text(encoding="utf-8")
+    assert "B4B_PHOBERT_ADAPTER_INTEGRATION_COMPLETE" in text
+    assert "27 of 27 checks" in text
+    assert "20260820T081554Z" in text
+    assert "7f6e26c80c0acfa3cdf9168a9b0e2981e6ae1491" in text
+
+
+def test_experiment_record_preserves_the_first_run_failure():
+    """The 21/22 run is not rewritten as COMPLETE. A record that erases its own
+    failures is not evidence."""
+    text = B4B_RESULT.read_text(encoding="utf-8")
+    assert "B4B_PHOBERT_ADAPTER_INTEGRATION_INCOMPLETE" in text
+    assert "21 of 22 checks" in text
+    assert "# Run 1" in text and "# Run 2" in text
+
+
+def test_experiment_record_does_not_overclaim():
+    text = B4B_RESULT.read_text(encoding="utf-8")
+    assert "integration evidence, not linguistic coverage" in text
+    assert "remains **OPEN**" in text or "remains OPEN" in text
+
+
+def test_b4b_closure_decision_scopes_what_complete_means():
+    decisions = (REPO / "docs" / "spec" / "decisions.md").read_text(encoding="utf-8")
+    assert "### D-B4B-007 — B4B is COMPLETE" in decisions
+    closure = decisions[decisions.index("### D-B4B-007") :]
+    assert "Stage-1 objective is not implemented" in closure
+    assert "Nothing has been trained" in closure
+    assert "is still OPEN" in closure
+    assert "PRE-TRAIN audit" in closure
