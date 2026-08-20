@@ -36,6 +36,8 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-S1A-001 … D-S1A-004 (Stage-1 data path and objective) |
 | **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
+| **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
+| **OPEN — RESEARCHER DECISION REQUIRED** (cont.) | D-G1-004 — task/dataset and every classification-head concrete value; §5 names these as blocking **G1** |
 | **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) — **all confirmed on real PhoBERT, run `20260820T081554Z`, 27/27** |
 | **RESOLVED DECISION** (cont.) | D-B4B-002 — **CLOSED** by the real PhoBERT run: explicit authoritative `position_ids` are required; D-B4B-006 (model provenance verifier repaired) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
@@ -2310,3 +2312,232 @@ D-S1A-007 gives: it must inspect the code that trains.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §7's gates are unchanged; this records when they are exercised. PDF stale: **YES** (unchanged, and step 5 exists to fix it) |
+
+---
+
+## G1 — minimal downstream evaluation harness
+
+### D-G1-001 — the pre-G1 Vanilla-vs-Base-only clean-path burden diagnostic
+
+| | |
+|---|---|
+| **Status** | **CLARIFIED** — narrows what the harness measures |
+| **Owner** | G1 |
+
+**Proposal wording.** §7's G1: *"Attach the fusion layer, train briefly on a
+small corpus, force the gate towards identity, evaluate on one classification
+task with `FULL` input. **Pass:** within ≈1 point of the unmodified model."*
+
+§4.5 says why that measurement matters: *"Since `e_i = Emb_θ(b_i)` is computed
+from the **stripped** base stream, `g_i → 0` yields `E_θ(T(b(x)))`, not
+`E_θ(T(x))`. … Whether clean-input performance survives that substitution is not
+a structural guarantee at all — it is exactly hypothesis H1, and exactly what G1
+measures."*
+
+**Implemented decision.** The harness supports **Vanilla vs Base-only**: the same
+frozen encoder on `canon(x)` versus on `b(x)`, with **no adapter**. This is
+recorded as the **isolating lower bound of G1**, not as G1.
+
+**Reason.** G1 as written bundles two things: the pathway substitution, and an
+adapter trained briefly with its gate pushed towards identity. §4.5 identifies
+the *substitution* as the H1 question. Measuring it alone is strictly cheaper and
+strictly more diagnostic: if the frozen encoder cannot accept `T(b(x))` at all,
+G1 cannot pass regardless of how the adapter is trained, and the failure would be
+attributed to the adapter rather than to the pathway.
+
+**Consequence, in both directions.** A Vanilla-vs-Base-only PASS does **not**
+discharge G1 — the adapter-attached measurement is still required. A **FAIL does
+not automatically equal a G1 FAIL either**, and an earlier draft of this entry
+wrongly said it would be "decisive against the input-level design".
+
+That was an over-claim. Base-only runs `b(x)` through the frozen encoder with
+**no channels and no adapter**. The real UNMARK clean pathway is
+`base + tone + letter -> trainable fusion -> frozen encoder`, and the channels
+plus the adapter can recover information the bare base grid loses. So this
+measurement quantifies the **burden** created by replacing the original clean
+token grid with the stripped base grid — it does **not** establish a performance
+ceiling for the trained adapter.
+
+**Name it accordingly:** the *pre-G1 Vanilla-vs-Base-only clean-path burden
+diagnostic*. §7's G1 — attach the fusion layer, train briefly, force the gate
+towards identity, evaluate on `FULL` — is unchanged and still required.
+
+**The G1 threshold does not transfer either.** §7's "within ≈1 point" is stated
+for the fusion-attached measurement. The proposal defines **no** pass criterion
+for a Base-only-only comparison, so none is borrowed: the burden diagnostic is
+**descriptive** — report the clean score gap with uncertainty across the ≥3 seeds
+§6.6 requires — and any gating threshold must be precommitted by the researcher
+**before** the numbers are seen.
+
+**Affected.** `unmark/evaluation/*`; the G1 pilot protocol; Audit 020.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §7 and §4.5 are unchanged; this records which part of G1's measurement the harness isolates. PDF stale: **YES** (unchanged) |
+
+### D-G1-002 — BASE_ONLY runs the frozen encoder directly, not the adapter at g = 0
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation), justified by real-model evidence |
+| **Owner** | G1 |
+
+**The question.** §4.5 defines the base-only pathway as the `g → 0` limit of the
+UNMARK architecture. Should `BASE_ONLY` therefore exercise `UnmarkEncoder` with a
+forced-zero gate, or run the frozen encoder directly on `T(b(x))`?
+
+**Implemented decision.** Direct frozen-encoder execution on `T(b(x))`, with no
+adapter constructed.
+
+**Evidence, from the real B4B run** `20260820T081554Z` rather than from
+reasoning: `model(input_ids=…)` versus
+`model(inputs_embeds=Emb(input_ids), position_ids=authoritative, attention_mask=…)`
+gave `max_abs_diff = 0.0` **exactly**, including padding positions; and the
+forced `g := 0` wiring identity gives `z = g⊙f + (1−g)⊙e = e`. Composing the two:
+the adapter at `g = 0` produces exactly `Emb_θ(T(b(x)))`, and feeding that is
+exactly equivalent to feeding the ids. The simpler implementation is therefore
+not an approximation of the architectural definition — it is numerically the same
+thing.
+
+**The caveat that must travel with it.** `g = 0` is **not attainable** by the
+locked sigmoid gate (D-B4A-004); it is a limit. `BASE_ONLY` implements the
+**architectural limit**, and is **not** the behaviour of any initialised or
+trained adapter. It must never be reported as UNMARK.
+
+**Affected.** `unmark/evaluation/pathways.py`; the future G1 pilot.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-G1-003 — GRR: the two formulations reconcile; no clamping, no epsilon
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — verified against the editable proposal |
+| **Owner** | G1 |
+
+**Proposal wording.** §6.5: `GRR = (S_system − S_FLOOR) / (S_UPPER − S_FLOOR)`.
+§6.4: `UPPER` = "Clean input, unmodified model"; `FLOOR` = "Corrupted input,
+unmodified model".
+
+**Reconciliation.** Both anchors are the **VANILLA** pathway, so §6.5 is
+identical to the per-condition form
+`[S(system,c) − S(vanilla,c)] / [S(vanilla,FULL) − S(vanilla,c)]`. **There is no
+discrepancy between them**, and the implementation follows §6.5 with the anchors
+named explicitly so the identity cannot be lost.
+
+**No clamping.** §6.5 prescribes none, and none is added. `GRR > 1` (the system
+beat clean vanilla) and `GRR < 0` (it did worse than the corrupted unmodified
+model) are both informative outcomes that clamping would erase.
+
+**Degenerate denominator — OPEN.** When `S_UPPER == S_FLOOR`, corruption cost the
+unmodified model nothing and "the fraction of the gap recovered" is not a
+meaningful quantity. §6.5 defines **no** epsilon, clamp or fallback, so none is
+invented: `gap_recovery_rate` raises `UndefinedGRR`, and
+`grr_degenerate_denominator_policy` is registered OPEN.
+
+Verified numerically: `84 / 60 / 72 → 0.5` exactly; floor → `0.0`; upper →
+`1.0`; `90 → 1.25` unclamped; `48 → −0.5`.
+
+**Affected.** `unmark/evaluation/metrics.py`; §6.5 reporting.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — implemented as written. PDF stale: **YES** (unchanged) |
+
+### D-G1-004 — downstream values that remain OPEN before a real G1 run
+
+| | |
+|---|---|
+| **Status** | **OPEN — RESEARCHER DECISION REQUIRED** before any real Vanilla-vs-Base-only measurement |
+| **Owner** | G1 |
+
+§5's open-items table names **"Classification head concrete values"** as blocking
+**G1** specifically, and **"Dataset versions and splits"** as blocking G2 and the
+full grid. §5.2 adds: *"The concrete values (hidden size, pooling, learning rate,
+epochs, patience) are pinned during spec lock; 'identical' is not a specification
+until the numbers are written down."*
+
+Nothing in this task selects any of them. `HeadConfig` requires **every** field;
+`EvaluationRunConfig(purpose=SCIENTIFIC, …)` **cannot be constructed** until
+`resolved_values` covers `SCIENTIFIC_REQUIRED_VALUES`.
+
+| Value | Why open |
+|---|---|
+| task / dataset, and G1's "one classification task" | §6.2 names four *categories*, no dataset; §5 table; §13 item 2 |
+| head architecture, pooling, hidden size | §5.2 pinned during spec lock |
+| head optimizer, learning rate, batch size, epochs, early stopping | §5.2 / not specified |
+| seed list | §6.6 fixes a minimum of three; no list given |
+| `max_length` | §5.3 pins one per task; no value given |
+| checkpoint selection | not specified for the head |
+| G1 pass-threshold precision | §7's "within ≈1 point" — the `≈` is not a decision rule, and the metric it applies to is unstated |
+| GRR degenerate-denominator policy | §6.5 gives none (D-G1-003) |
+| backbone finalisation | D-B3B0-002 |
+
+**The G1 pass threshold deserves separate note, and a scope correction.**
+"Within ≈1 point of the unmodified model" does not say whether the point is
+accuracy or macro-F1, nor what "≈" tolerates across the ≥3 seeds §6.6 requires.
+It must be pinned **before the full-G1 result is observed**, not after.
+
+It is **not** a prerequisite for the pre-G1 Vanilla-vs-Base-only burden
+diagnostic. §7 states that threshold for the **fusion-attached** measurement, and
+the proposal defines **no** pass criterion for a Base-only-only comparison
+(D-G1-001). That diagnostic is descriptive; borrowing the ≈1-point rule for it
+would import a criterion the proposal never stated for it.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-G1-005 — Stage-2 head pooling stays OPEN; Stage-1's rule does not transfer
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation safety). The pooling *value* remains **OPEN**. |
+| **Owner** | G1 |
+
+**Proposal wording, two different places.** §4.6, after the v1.4 clarification:
+*"The pooling is attention-masked mean over non-special content tokens"* — that
+sentence is in the **Stage-1 alignment-loss** section and is about the objective's
+branches. §5.2, separately: the classification head's *"concrete values (hidden
+size, **pooling**, learning rate, epochs, patience) are pinned during spec
+lock"*, and §13 item 4 repeats *"Classification head: hidden size, pooling, …"*.
+
+**The defect.** The first implementation of the G1 harness extracted
+representations by calling `masked_mean_non_special` — the Stage-1 rule —
+returning pooled `[N, d]`. `HeadConfig.pooling` was a required field that
+**nothing read**. That silently promoted a Stage-1 decision into an OPEN Stage-2
+one, and made the field that was supposed to carry the researcher's choice
+decorative.
+
+**Implemented decision.** Scientific extraction is
+`encoder_hidden_states(...) -> HiddenStateSet`, returning **unpooled**
+`[N, L, d]` together with the attention and special-token masks, so whichever
+rule is eventually pinned can be applied correctly by the head.
+
+Exactly one function in the harness pools, it is named
+`TEST_ONLY_masked_mean_pool`, and it **raises** unless called with
+`EvaluationPurpose.DIAGNOSTIC`. A `SCIENTIFIC` `EvaluationRunConfig` additionally
+**refuses** any `HeadConfig.pooling` name prefixed `TEST_ONLY_`. So a scientific
+path cannot reach an implicit masked mean while pooling is OPEN.
+
+**Reason.** These are two decisions about two different things — how the Stage-1
+objective compares two branches, and how a task head reduces a sequence to a
+classification input. The first does not settle the second merely by existing
+first. Inheriting it would have meant §5.2's spec-lock item was quietly answered
+by an implementation convenience.
+
+**No pooling option was invented.** The proposal has not chosen among CLS, mean,
+max or attention pooling, so the harness does not enumerate them; `pooling` is a
+required string carrying whatever the researcher pins.
+
+**Stage-1 is untouched.** `STAGE1_POOLING` and `masked_mean_non_special` are
+unchanged, and a test asserts it.
+
+**Affected.** `unmark/evaluation/pathways.py`, `unmark/evaluation/contracts.py`,
+`tests/test_evaluation_harness.py`; the future Stage-2 head; Audit 020.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.6 and §5.2 are unchanged; this stops one from being read as the other. PDF stale: **YES** (unchanged) |
