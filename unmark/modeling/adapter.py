@@ -32,6 +32,7 @@ classification: `text -> metadata` is the deterministic B1A/B2/B3 pipeline,
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -297,6 +298,189 @@ def base_word_embeddings(encoder: nn.Module, input_ids: Tensor) -> Tensor:
     return table(input_ids)
 
 
+class UnsupportedPositionSemantics(RuntimeError):
+    """Raised when a backbone's `inputs_embeds` position semantics are unverified.
+
+    Loud on purpose. Guessing here reproduces exactly the failure §4.5 calls
+    "the single most likely implementation bug in the project": the model
+    trains, the loss decreases, and every number is wrong.
+    """
+
+
+class PositionContractViolation(ValueError):
+    """Raised when supplied `position_ids` do not match the authoritative ones.
+
+    D-B4B-002 locks the adapted path to position ids reproducing the
+    `input_ids` behaviour. Accepting an arbitrary caller-supplied tensor would
+    reopen exactly the hole the decision closed, and the resulting error is
+    silent.
+    """
+
+
+@dataclass(frozen=True)
+class VerifiedPositionProfile:
+    """One backbone whose `inputs_embeds` position behaviour was **measured**.
+
+    Deliberately a *checkpoint* identity, not a model family. The B4B probe
+    measured `vinai/phobert-base`; it did not measure every checkpoint whose
+    `model_type` happens to be `roberta`. Trusting the family would assert an
+    empirical result that was never obtained -- for weight-tying, resizing or
+    custom embedding subclasses that could change the behaviour.
+
+    The distinction worth keeping straight: the *arithmetic* is ordinary
+    RoBERTa-style and nothing about it is unique to PhoBERT. What is
+    PhoBERT-specific is the **empirical permission** to rely on it.
+    """
+
+    checkpoint: str
+    model_type: str
+    model_class: str
+    position_rule: str
+    evidence: str
+
+    def matches(self, checkpoint: str | None, model_type: str | None, model_class: str) -> bool:
+        return (
+            checkpoint == self.checkpoint
+            and model_type == self.model_type
+            and model_class == self.model_class
+        )
+
+    def describe(self) -> dict[str, str]:
+        return {
+            "checkpoint": self.checkpoint,
+            "model_type": self.model_type,
+            "model_class": self.model_class,
+            "position_rule": self.position_rule,
+            "evidence": self.evidence,
+        }
+
+
+PHOBERT_BASE_POSITION_PROFILE = VerifiedPositionProfile(
+    checkpoint="vinai/phobert-base",
+    model_type="roberta",
+    model_class="RobertaModel",
+    position_rule="roberta_input_ids_offset",
+    evidence="D-B4B-002 (real-model B4B probe)",
+)
+
+VERIFIED_POSITION_PROFILES: tuple[VerifiedPositionProfile, ...] = (
+    PHOBERT_BASE_POSITION_PROFILE,
+)
+"""Backbones cleared for the adapted `inputs_embeds` path.
+
+Exactly one entry, because exactly one was measured. **D-B3B0-002 is OPEN**: a
+new backbone or checkpoint must run its own `inputs_embeds` position validation
+and be registered here with its own recorded evidence before it can be used.
+"""
+
+POSITION_RULES: dict[str, str] = {"roberta_input_ids_offset": "roberta"}
+"""Rule name -> implementation selector, so a future profile can reuse an
+existing rule without implying its own evidence."""
+
+
+def detect_padding_index(encoder: Any) -> int:
+    """The model's padding index, read from the model -- never hardcoded.
+
+    Tried in order of directness: the embedding module's own `padding_idx`, the
+    word-embedding table's, then `config.pad_token_id`.
+    """
+    embeddings = getattr(encoder, "embeddings", None)
+    for holder in (embeddings, getattr(embeddings, "word_embeddings", None)):
+        index = getattr(holder, "padding_idx", None)
+        if isinstance(index, int):
+            return index
+    index = getattr(getattr(encoder, "config", None), "pad_token_id", None)
+    if isinstance(index, int):
+        return index
+    raise UnsupportedPositionSemantics(
+        "cannot determine the padding index from this encoder; refusing to guess "
+        "one, because a wrong padding index silently shifts every position id"
+    )
+
+
+def detect_model_family(encoder: Any) -> str | None:
+    return getattr(getattr(encoder, "config", None), "model_type", None)
+
+
+def detect_checkpoint(encoder: Any) -> str | None:
+    """The checkpoint identity -- the repo id, not the revision.
+
+    `name_or_path` is exactly the wrong source for a *revision* (D-B4B-006: it
+    is the repo id and never a cache path) and exactly the right source for a
+    *checkpoint identity*. The revision is verified separately by the probe's
+    provenance layer, and neither substitutes for the other.
+    """
+    for holder in (encoder, getattr(encoder, "config", None)):
+        for attribute in ("name_or_path", "_name_or_path"):
+            value = getattr(holder, attribute, None)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def resolve_position_profile(encoder: Any) -> VerifiedPositionProfile:
+    """The measured profile for this encoder, or refuse.
+
+    Raises:
+        UnsupportedPositionSemantics: when checkpoint, model type and model class
+            do not jointly match a registered profile.
+    """
+    checkpoint = detect_checkpoint(encoder)
+    model_type = detect_model_family(encoder)
+    model_class = type(encoder).__name__
+    for profile in VERIFIED_POSITION_PROFILES:
+        if profile.matches(checkpoint, model_type, model_class):
+            return profile
+    known = ", ".join(
+        f"{p.checkpoint} ({p.model_type}/{p.model_class})" for p in VERIFIED_POSITION_PROFILES
+    )
+    raise UnsupportedPositionSemantics(
+        f"no verified inputs_embeds position profile for checkpoint {checkpoint!r} "
+        f"(model_type={model_type!r}, class={model_class!r}). Measured: {known}. "
+        "A shared model_type is NOT sufficient evidence -- run the equivalent of the "
+        "B4B position-id probe for this backbone and register it with its own recorded "
+        "result (D-B4B-002, D-B3B0-002 is OPEN)."
+    )
+
+
+def roberta_position_ids_from_input_ids(input_ids: Tensor, padding_idx: int) -> Tensor:
+    """RoBERTa's authoritative position ids, derived from `input_ids`.
+
+    Non-padding positions are numbered from `padding_idx + 1` upward; padding
+    positions all take `padding_idx`::
+
+        [<s>, a, b, c, </s>, pad, pad]  ->  [2, 3, 4, 5, 6, 1, 1]
+
+    This reproduces the ids the model itself computes when given `input_ids`.
+    The `inputs_embeds` path instead numbers **sequentially through padding**
+    (`2, 3, 4, 5, 6, 7, 8`), which is the mismatch the real probe measured in
+    three of four cases (D-B4B-002).
+    """
+    mask = input_ids.ne(padding_idx).int()
+    return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
+
+
+def authoritative_position_ids(encoder: Any, input_ids: Tensor) -> Tensor:
+    """Position ids matching what the encoder would compute from `input_ids`.
+
+    Derived from the **same** `input_ids` used for the frozen word-embedding
+    lookup, so the two cannot drift apart. The attention mask is deliberately
+    *not* used as a substitute: it marks what to attend to, not how the model
+    numbers positions, and the two disagree exactly where it matters.
+
+    Raises:
+        UnsupportedPositionSemantics: for a backbone whose behaviour has not been
+            measured. Failing here is the point -- see D-B4B-002.
+    """
+    profile = resolve_position_profile(encoder)
+    rule = POSITION_RULES.get(profile.position_rule)
+    if rule != "roberta":
+        raise UnsupportedPositionSemantics(
+            f"position rule {profile.position_rule!r} has no implementation"
+        )
+    return roberta_position_ids_from_input_ids(input_ids, detect_padding_index(encoder))
+
+
 class UnmarkEncoder(nn.Module):
     """Frozen encoder + trainable adapter, wired through `inputs_embeds`.
 
@@ -321,6 +505,15 @@ class UnmarkEncoder(nn.Module):
         freeze_encoder(self.encoder)
         for parameter in self.adapter.parameters():
             parameter.requires_grad_(True)
+        # Fail at construction, not deep inside a training run, if this backbone's
+        # inputs_embeds position semantics were never measured. Matching is on the
+        # whole profile -- checkpoint, model type and class -- not the family alone.
+        self.position_profile = resolve_position_profile(encoder)
+        self.padding_index = detect_padding_index(encoder)
+
+    def authoritative_position_ids(self, input_ids: Tensor) -> Tensor:
+        """Position ids for `input_ids`, matching the encoder's own `input_ids` path."""
+        return authoritative_position_ids(self.encoder, input_ids)
 
     def train(self, mode: bool = True) -> UnmarkEncoder:
         """Put the adapter in `mode`; keep the frozen encoder in eval, always.
@@ -364,15 +557,48 @@ class UnmarkEncoder(nn.Module):
     ) -> Any:
         """Run the frozen encoder on the adapted word embeddings.
 
-        `position_ids` is passed straight through when supplied. Whether it
-        *must* be supplied is an empirical question about the real checkpoint,
-        answered by `scripts/b4b_phobert_adapter_probe.py`; nothing is assumed
-        here.
+        **Position ids are supplied automatically** when the caller omits them,
+        derived from the same `input_ids` used for the frozen word-embedding
+        lookup. This is not a convenience: the real probe measured that the
+        `inputs_embeds` path numbers positions sequentially through padding,
+        disagreeing with the authoritative `input_ids` path in three of four
+        cases (D-B4B-002). Leaving it to the caller would make the wrong answer
+        the default, and the resulting error is silent.
+
+        A supplied `position_ids` is **checked, not trusted**: it must equal the
+        authoritative tensor exactly, or `PositionContractViolation` is raised.
+        Honouring an arbitrary tensor would reopen the hole D-B4B-002 closed,
+        and the resulting error is silent. A diagnostic that genuinely needs
+        arbitrary position ids -- the probe's path C -- calls the frozen encoder
+        directly rather than weakening this wrapper.
+
+        Position and token-type embeddings are still added by the encoder,
+        exactly once, downstream of `inputs_embeds`; nothing is added into `z`.
         """
         z = self.adapted_embeddings(input_ids, tone_ids, tone_mask, letter_ids, letter_mask)
-        if position_ids is not None:
-            encoder_kwargs["position_ids"] = position_ids
+        derived = self.authoritative_position_ids(input_ids)
+        if position_ids is None:
+            position_ids = derived
+        else:
+            self._require_authoritative_positions(position_ids, derived)
+        encoder_kwargs["position_ids"] = position_ids
         return self.encoder(inputs_embeds=z, attention_mask=attention_mask, **encoder_kwargs)
+
+    @staticmethod
+    def _require_authoritative_positions(supplied: Tensor, derived: Tensor) -> None:
+        """Exact integer equality. No tolerance -- these are indices, not values."""
+        if tuple(supplied.shape) != tuple(derived.shape):
+            raise PositionContractViolation(
+                f"position_ids shape {tuple(supplied.shape)} != authoritative "
+                f"{tuple(derived.shape)}"
+            )
+        if not torch.equal(supplied.to(derived.device).long(), derived.long()):
+            raise PositionContractViolation(
+                "supplied position_ids do not match the authoritative ids derived from "
+                "input_ids. The adapted path is locked to the authoritative semantics "
+                "(D-B4B-002); omit position_ids to have them derived, or use the frozen "
+                "encoder directly for a diagnostic that needs arbitrary ids."
+            )
 
     def trainable_parameter_count(self) -> int:
         return trainable_parameters(self)

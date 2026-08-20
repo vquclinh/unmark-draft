@@ -138,6 +138,178 @@ def observe_revision(obj: Any, attributes: Sequence[str]) -> tuple[str | None, t
     return revision, tuple(evidence[:5]), "hugging face cache snapshot path"
 
 
+WEIGHT_ARTIFACTS: tuple[str, ...] = (
+    "model.safetensors",
+    "pytorch_model.bin",
+    "model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+)
+"""Weight artifacts to look for, in preference order.
+
+The pinned PhoBERT revision ships `pytorch_model.bin`; sharded and safetensors
+layouts are accepted so the verifier is not silently checkpoint-specific.
+"""
+
+
+def hub_cache_root() -> str | None:
+    """The Hugging Face **hub** cache directory.
+
+    Deliberately taken from `huggingface_hub`'s own constant rather than
+    reconstructed. `HF_HOME=/x/.hf-cache` means the hub cache is
+    `/x/.hf-cache/hub`; passing `HF_HOME` itself as a cache dir makes
+    Transformers look for `HF_HOME/models--...` when the real layout is
+    `HF_HOME/hub/models--...`, and the lookup silently finds nothing.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        return HF_HUB_CACHE
+    except Exception:  # pragma: no cover - very old hub versions
+        import os as _os
+
+        home = _os.environ.get("HF_HOME")
+        return _os.path.join(home, "hub") if home else None
+
+
+def cached_artifact_path(checkpoint: str, filename: str, revision: str) -> str | None:
+    """The **raw** cached path for one file at one revision, or None.
+
+    Raw is the whole point. The snapshot path
+    `.../snapshots/<commit>/pytorch_model.bin` is a symlink into
+    `.../blobs/<sha256>`, and the blob is content-addressed: it carries no
+    revision at all. Calling `Path.resolve()` here would follow the symlink and
+    destroy the only evidence being collected.
+    """
+    try:
+        from transformers.utils import cached_file
+
+        found = cached_file(
+            checkpoint,
+            filename,
+            revision=revision,
+            local_files_only=True,
+            _raise_exceptions_for_missing_entries=False,
+            _raise_exceptions_for_connection_errors=False,
+        )
+        if found:
+            return str(found)
+    except Exception:
+        pass
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        found = try_to_load_from_cache(
+            repo_id=checkpoint,
+            filename=filename,
+            cache_dir=hub_cache_root(),
+            revision=revision,
+        )
+        if isinstance(found, str):
+            return found
+    except Exception:
+        pass
+    return None
+
+
+def read_main_ref(checkpoint: str) -> str | None:
+    """`refs/main`, recorded as context only.
+
+    **Never a verification condition.** The project pins an exact commit;
+    upstream `main` may legitimately move later while the pinned snapshot stays
+    correct and reproducible. Requiring a match would make a valid pinned run
+    start failing for a reason that has nothing to do with it.
+    """
+    root = hub_cache_root()
+    if not root:
+        return None
+    ref = Path(root) / f"models--{checkpoint.replace('/', '--')}" / "refs" / "main"
+    try:
+        return ref.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def verify_model_revision(model: Any, checkpoint: str, revision: str) -> dict[str, Any]:
+    """Prove the loaded model really came from `revision`.
+
+    Audit 015's collector asked `model.name_or_path` for a snapshot path. For a
+    model that attribute is just `"vinai/phobert-base"` -- the repo id, never a
+    cache path -- so it could not verify anything, and the first real run failed
+    this check while the correct weights were in fact loaded.
+
+    Three independent pieces of evidence are collected, and the first two are
+    required:
+
+    1. the **cached config** for the requested revision resolves to a raw path
+       under `snapshots/<revision>/`;
+    2. a **real weight artifact** for the requested revision does the same --
+       config alone would not prove the weights came from there;
+    3. `model.config._commit_hash`, when the library exposes it.
+
+    A *disagreeing* `_commit_hash` fails loudly; a *missing* one does not, since
+    it is a private attribute that transformers is free to drop.
+    """
+    evidence: dict[str, Any] = {
+        "requested_revision": revision,
+        "hub_cache_root": hub_cache_root(),
+        "name_or_path": getattr(model, "name_or_path", None),
+        "name_or_path_is_revision_evidence": False,
+        "refs_main": read_main_ref(checkpoint),
+        "refs_main_is_required": False,
+    }
+
+    commit_hash = getattr(getattr(model, "config", None), "_commit_hash", None)
+    evidence["config_commit_hash"] = commit_hash
+    commit_hash_ok = commit_hash is None or commit_hash == revision
+    evidence["config_commit_hash_matches"] = commit_hash_ok
+    evidence["config_commit_hash_present"] = commit_hash is not None
+
+    config_path = cached_artifact_path(checkpoint, "config.json", revision)
+    evidence["cached_config_raw_path"] = config_path
+    evidence["cached_config_revision"] = extract_snapshot_revision(config_path or "")
+    config_ok = evidence["cached_config_revision"] == revision
+
+    weight_path = weight_kind = None
+    for candidate in WEIGHT_ARTIFACTS:
+        found = cached_artifact_path(checkpoint, candidate, revision)
+        if found and extract_snapshot_revision(found) == revision:
+            weight_path, weight_kind = found, candidate
+            break
+    evidence["cached_weight_raw_path"] = weight_path
+    evidence["cached_weight_kind"] = weight_kind
+    evidence["cached_weight_revision"] = extract_snapshot_revision(weight_path or "")
+    evidence["weight_artifacts_searched"] = list(WEIGHT_ARTIFACTS)
+    weight_ok = weight_path is not None
+
+    # Forensic only. The blob is content-addressed and carries no revision;
+    # it is recorded so a later reader can identify the exact bytes, and is
+    # deliberately not used to derive the revision.
+    if weight_path:
+        import os as _os
+
+        evidence["weight_blob_realpath"] = _os.path.realpath(weight_path)
+        evidence["weight_blob_is_not_revision_evidence"] = True
+
+    verified = bool(config_ok and weight_ok and commit_hash_ok)
+    evidence["config_in_requested_snapshot"] = config_ok
+    evidence["weight_in_requested_snapshot"] = weight_ok
+    evidence["verified"] = verified
+    evidence["resolved_revision"] = revision if verified else None
+    evidence["evidence_source"] = (
+        "raw hugging face cache snapshot paths for config and weights, plus "
+        "model.config._commit_hash when available"
+    )
+    reasons = []
+    if not config_ok:
+        reasons.append(f"cached config not under snapshots/{revision}/ (got {config_path!r})")
+    if not weight_ok:
+        reasons.append(f"no weight artifact found under snapshots/{revision}/")
+    if not commit_hash_ok:
+        reasons.append(f"config._commit_hash is {commit_hash!r}, not {revision!r}")
+    evidence["failure_reasons"] = reasons
+    return evidence
+
+
 # ---------------------------------------------------------------------------
 # Channel tensors from the real deterministic pipeline
 # ---------------------------------------------------------------------------
@@ -365,6 +537,10 @@ def render_report(config: dict[str, Any], summary: dict[str, Any], detail: dict[
     a("")
     a(f"**Explicit `position_ids` required: {summary['explicit_position_ids_required']}**")
     a("")
+    a("The adapted path derives them from `input_ids` automatically (D-B4B-002); the")
+    a("wrapper cannot fall back to the sequential `inputs_embeds` numbering, and a")
+    a("wrong caller-supplied override is rejected rather than honoured.")
+    a("")
     a("## Frozen-model control")
     a("")
     a("`input_ids` vs base `inputs_embeds`, same frozen encoder, no adapter,")
@@ -450,8 +626,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from unmark.modeling.adapter import (
         OrthographyInputAdapter,
+        PositionContractViolation,
         UnmarkEncoder,
         convex_combination,
+        detect_padding_index,
+        roberta_position_ids_from_input_ids,
         trainable_parameters,
     )
     from unmark.modeling.collate import build_example, collate_examples
@@ -466,15 +645,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     model = AutoModel.from_pretrained(args.checkpoint, revision=args.revision)
     model.eval()
 
+    # The tokenizer keeps real file paths on the instance, so the audit-010
+    # snapshot-path reading still applies to it. The model does not -- see
+    # verify_model_revision.
     tok_rev, tok_evidence, tok_source = observe_revision(
         tokenizer, ("vocab_file", "merges_file", "tokenizer_file", "name_or_path")
     )
-    model_rev, model_evidence, model_source = observe_revision(model, ("name_or_path",))
-    for label, observed in (("tokenizer", tok_rev), ("model", model_rev)):
-        if observed is not None and observed != args.revision:
-            print(f"REFUSING: {label} resolved to {observed}, not {args.revision}", file=sys.stderr)
-            return 3
-    revision_verified = tok_rev == args.revision and model_rev == args.revision
+    model_evidence_record = verify_model_revision(model, args.checkpoint, args.revision)
+    model_rev = model_evidence_record["resolved_revision"]
+
+    if tok_rev is not None and tok_rev != args.revision:
+        print(f"REFUSING: tokenizer resolved to {tok_rev}, not {args.revision}", file=sys.stderr)
+        return 3
+    if model_evidence_record["config_commit_hash_present"] and not model_evidence_record[
+        "config_commit_hash_matches"
+    ]:
+        print(
+            f"REFUSING: model config._commit_hash is "
+            f"{model_evidence_record['config_commit_hash']}, not {args.revision}",
+            file=sys.stderr,
+        )
+        return 3
+    revision_verified = tok_rev == args.revision and model_evidence_record["verified"]
+    if not revision_verified:
+        for reason in model_evidence_record["failure_reasons"]:
+            print(f"  model provenance: {reason}", file=sys.stderr)
 
     hidden_size = int(model.config.hidden_size)
     pad_token_id = tokenizer.pad_token_id
@@ -545,6 +740,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             model(input_ids=case_batch["input_ids"], attention_mask=case_batch["attention_mask"])
         return torch.tensor(capture.last, dtype=torch.long, device=device)
 
+    # -- does our helper reproduce the model's own position ids? -----------
+    # D-B4B-002 requires explicit ids; this checks the ids we generate are the
+    # ones the model itself would compute from input_ids, not merely *some* ids.
+    padding_index = detect_padding_index(model)
+    derived_positions = roberta_position_ids_from_input_ids(batch["input_ids"], padding_index)
+    with torch.no_grad(), PositionCapture(position_module) as capture_auth:
+        model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"])
+    model_positions = capture_auth.last
+    derived_matches_model = derived_positions.detach().cpu().tolist() == model_positions
+    position_helper = {
+        "padding_index": padding_index,
+        "padding_index_source": "model (embeddings.padding_idx or config.pad_token_id)",
+        "derived_position_ids": derived_positions.detach().cpu().tolist(),
+        "model_authoritative_position_ids": model_positions,
+        "derived_matches_model": derived_matches_model,
+    }
+
     # -- frozen-model control ----------------------------------------------
     positions = authoritative_positions(batch)
     with torch.no_grad():
@@ -587,6 +799,53 @@ def main(argv: Sequence[str] | None = None) -> int:
         pooled = masked_mean_non_special(
             out_a.last_hidden_state, batch["attention_mask"], batch["special_tokens_mask"]
         )
+
+    # The wrapper matched a *measured* profile, not merely a model family.
+    position_helper["verified_profile"] = wrapped.position_profile.describe()
+    position_helper["wrapper_padding_index"] = wrapped.padding_index
+
+    # The wrapper must pass the authoritative ids to the encoder, and must reject
+    # a wrong caller-supplied override rather than honouring it.
+    passed_positions: dict[str, Any] = {}
+    original_forward = model.forward
+
+    def capture_forward(*f_args, **f_kwargs):
+        supplied = f_kwargs.get("position_ids")
+        passed_positions["ids"] = None if supplied is None else supplied.detach().cpu().tolist()
+        return original_forward(*f_args, **f_kwargs)
+
+    model.forward = capture_forward  # type: ignore[method-assign]
+    try:
+        with torch.no_grad():
+            wrapped(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                tone_ids=batch["tone_ids"],
+                tone_mask=batch["tone_mask"],
+                letter_ids=batch["letter_ids"],
+                letter_mask=batch["letter_mask"],
+            )
+    finally:
+        model.forward = original_forward  # type: ignore[method-assign]
+    wrapper_passes_authoritative = passed_positions.get("ids") == model_positions
+
+    wrong_positions = derived_positions + 1
+    try:
+        with torch.no_grad():
+            wrapped(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                tone_ids=batch["tone_ids"],
+                tone_mask=batch["tone_mask"],
+                letter_ids=batch["letter_ids"],
+                letter_mask=batch["letter_mask"],
+                position_ids=wrong_positions,
+            )
+        override_rejected = False
+    except PositionContractViolation:
+        override_rejected = True
+    position_helper["wrapper_passes_authoritative_ids"] = wrapper_passes_authoritative
+    position_helper["wrong_override_rejected"] = override_rejected
 
     expected_params = 6 * hidden_size**2 + 16 * hidden_size
     adapter_params = trainable_parameters(adapter)
@@ -642,7 +901,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         tone_mask=batch["tone_mask"],
         letter_ids=batch["letter_ids"],
         letter_mask=batch["letter_mask"],
-        position_ids=positions,
+        # position_ids deliberately omitted: this exercises the wrapper's own
+        # derivation, which is the production-safety property D-B4B-002 requires.
     )
     grad_hidden = grad_outputs.last_hidden_state
     hidden_requires_grad = bool(grad_hidden.requires_grad)
@@ -689,6 +949,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "special token ids recorded": bool(batch["special_tokens_mask"].sum() > 0),
         "position-id behaviour determined": position_module is not None,
         "explicit position_ids recover the authoritative path when needed": explicit_recovers,
+        "derived position ids match the model's authoritative ids": derived_matches_model,
+        "padding index derived from the model, not hardcoded": isinstance(padding_index, int),
+        "wrapper passes the authoritative ids to the encoder": wrapper_passes_authoritative,
+        "wrapper rejects a wrong caller-supplied position_ids": override_rejected,
+        "backbone matched a verified position profile, not just a family": (
+            wrapped.position_profile.checkpoint == args.checkpoint
+        ),
         "input_ids vs inputs_embeds control equivalent": baseline_ok,
         "tone NA is exactly zero": na_tone_zero,
         "empty letter channel is exactly zero": empty_letter_zero,
@@ -716,8 +983,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "revision": args.revision,
         "resolved_tokenizer_revision": tok_rev,
         "resolved_model_revision": model_rev,
-        "revision_evidence": {"tokenizer": list(tok_evidence), "model": list(model_evidence)},
-        "revision_evidence_source": {"tokenizer": tok_source, "model": model_source},
+        "revision_verified": revision_verified,
         "tokenizer_class": type(tokenizer).__name__,
         "tokenizer_is_fast": bool(getattr(tokenizer, "is_fast", False)),
         "model_class": type(model).__name__,
@@ -771,6 +1037,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     detail = {
         "position_cases": position_cases,
+        "position_helper": position_helper,
         "baseline_equivalence": baseline,
         "sentences": sentence_detail,
     }
@@ -779,10 +1046,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.json").write_text(json.dumps(config_record, indent=2, ensure_ascii=False), encoding="utf-8")
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
-    (run_dir / "position_ids.json").write_text(json.dumps(position_cases, indent=2, ensure_ascii=False), encoding="utf-8")
+    (run_dir / "position_ids.json").write_text(
+        json.dumps(
+            {"cases": position_cases, "helper": position_helper},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     (run_dir / "equivalence.json").write_text(json.dumps(baseline, indent=2, ensure_ascii=False), encoding="utf-8")
     (run_dir / "gradients.json").write_text(json.dumps(summary["gradients"], indent=2, ensure_ascii=False), encoding="utf-8")
     (run_dir / "module_modes.json").write_text(json.dumps(mode_steps, indent=2, ensure_ascii=False), encoding="utf-8")
+    (run_dir / "provenance.json").write_text(
+        json.dumps(
+            {
+                "requested_revision": args.revision,
+                "checkpoint": args.checkpoint,
+                "tokenizer": {
+                    "resolved_revision": tok_rev,
+                    "evidence": list(tok_evidence),
+                    "evidence_source": tok_source,
+                },
+                "model": model_evidence_record,
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     (run_dir / "channels.json").write_text(json.dumps(sentence_detail, indent=2, ensure_ascii=False), encoding="utf-8")
     (run_dir / "report.md").write_text(render_report(config_record, summary, detail), encoding="utf-8")
 

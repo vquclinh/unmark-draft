@@ -34,7 +34,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-B3B2-001 (deterministic B3B COMPLETE), D-B4A-001, D-B4A-007 |
 | **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
 | **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) |
-| **OPEN — EMPIRICAL PROBE REQUIRED** (cont.) | D-B4B-002 (`position_ids` under `inputs_embeds`) — decision *rule* pre-committed, result pending the Colab probe |
+| **RESOLVED DECISION** (cont.) | D-B4B-002 — **CLOSED** by the real PhoBERT run: explicit authoritative `position_ids` are required; D-B4B-006 (model provenance verifier repaired) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
 
 ---
@@ -1510,8 +1510,117 @@ deterministic metadata and the tensors.
 
 | | |
 |---|---|
-| **Status** | **OPEN — EMPIRICAL PROBE REQUIRED.** The *rule* is fixed here; the *result* needs the real model. |
+| **Status** | **CLOSED** by the real PhoBERT run, 2026-08-20. The rule was pre-committed; the result is below. |
 | **Owner** | B4B |
+| **Evidence** | first real B4B run — [`docs/experiments/b4b-phobert-adapter-integration-result.md`](../experiments/b4b-phobert-adapter-integration-result.md) |
+
+## RESOLUTION — explicit authoritative `position_ids` are REQUIRED
+
+The pre-committed rule said: if **any** required case differs, the adapted
+`inputs_embeds` path must pass explicit `position_ids` reproducing the
+authoritative `input_ids` behaviour. Three of four cases differed.
+
+| Case | Implicit `inputs_embeds` ids vs authoritative `input_ids` ids |
+|---|---|
+| 1 — one sentence, no padding | **identical** |
+| 2 — right-padded batch | **DIFFERENT** |
+| 3 — unequal-length batch | **DIFFERENT** |
+| 4 — real special-token batch | **DIFFERENT** |
+
+**Where the mismatch lives.** For a right-padded sequence the authoritative
+`input_ids` path produced
+
+```
+2, 3, 4, 5, 6, 1, 1, 1        <- padding positions take the padding index
+```
+
+while the implicit `inputs_embeds` path produced
+
+```
+2, 3, 4, 5, 6, 7, 8, 9        <- numbering continues straight through padding
+```
+
+This is exactly the failure Audit 014 flagged and could not verify locally.
+Case 1 matching is what makes it dangerous: a single unpadded sentence looks
+correct, so the bug does not appear until batching.
+
+**After supplying explicit authoritative `position_ids`**, the frozen-model
+control was **exactly** equal — `max_abs_diff = 0.0`, `mean_abs_diff = 0.0`,
+`max_abs_diff_content = 0.0`, `max_abs_diff_padding = 0.0` — between
+`model(input_ids=…)` and `model(inputs_embeds=Emb(input_ids), position_ids=…,
+attention_mask=…)`. Real-model evidence, not a local assumption, and not a
+tolerance.
+
+**Implementation.** `UnmarkEncoder.forward` **derives and passes**
+authoritative `position_ids` whenever the caller omits them, from the *same*
+`input_ids` used for the frozen word-embedding lookup, so the two cannot drift.
+Omission can no longer produce the sequential fallback; documenting "callers
+should remember" would have left the wrong answer as the default.
+
+`roberta_position_ids_from_input_ids` implements the verified rule; the padding
+index is read from the model (`embeddings.padding_idx`, the word-embedding
+table's, or `config.pad_token_id`) and **never hardcoded**. The attention mask is
+deliberately not used as a substitute: it marks what to attend to, not how the
+model numbers positions, and they disagree precisely where it matters.
+
+**Caller-supplied ids are checked, not trusted.** A supplied `position_ids` must
+equal the authoritative tensor **exactly** — same shape, exact integer equality,
+no floating tolerance, because these are indices — or `PositionContractViolation`
+is raised. Honouring an arbitrary tensor would reopen precisely the hole this
+decision closes, and the resulting error is silent. A diagnostic that genuinely
+needs arbitrary position ids (the probe's path C) calls the **frozen encoder
+directly** rather than weakening the production wrapper.
+
+**Backbone scope — checkpoint-specific, not family-wide.** An earlier form of
+this entry cleared any model whose `model_type` was `roberta`. That was too
+broad: the probe measured **`vinai/phobert-base`**, not every checkpoint sharing
+a family, and weight-tying, resizing or a custom embedding subclass could change
+the behaviour. Permission is now a `VerifiedPositionProfile` matching
+**checkpoint, model type and model class together**:
+
+```
+VerifiedPositionProfile(
+    checkpoint="vinai/phobert-base",
+    model_type="roberta",
+    model_class="RobertaModel",
+    position_rule="roberta_input_ids_offset",
+)
+```
+
+`roberta-base`, `xlm-roberta-base` and `vinai/phobert-large` are all **rejected**
+until separately validated. A non-matching backbone raises
+`UnsupportedPositionSemantics` **at wrapper construction**, not deep inside a
+training run.
+
+The distinction worth keeping straight: the *arithmetic* is ordinary
+RoBERTa-style and nothing about it is unique to PhoBERT. What is
+PhoBERT-specific is the **empirical permission** to rely on it.
+
+**Profile identity and revision are separate obligations.** The profile
+identifies the *checkpoint* (via `name_or_path`, which is the repo id);
+[D-B4B-006](#d-b4b-006--modelname_or_path-is-not-revision-evidence) verifies the
+exact *revision* from cache snapshot paths. Neither substitutes for the other,
+and the real probe must prove **both**.
+
+[D-B3B0-002](#d-b3b0-002) remains **OPEN**; a future backbone must validate its
+own `inputs_embeds` position semantics and be registered with its own recorded
+evidence. All checkpoint-specific logic lives in the encoder integration layer —
+`OrthographyInputAdapter` stays backbone-independent and contains no position
+logic at all, which a test enforces.
+
+**Affected.** `unmark/modeling/adapter.py` (`UnmarkEncoder.forward`,
+`authoritative_position_ids`, `roberta_position_ids_from_input_ids`,
+`detect_padding_index`, `detect_model_family`, `UnsupportedPositionSemantics`);
+`scripts/b4b_phobert_adapter_probe.py`; all future Stage-1 and Stage-2 forward
+passes on the adapted path.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.5 already requires position embeddings to be supplied by the encoder exactly once; this is how that is achieved against a real model API. PDF stale: **YES** (unchanged) |
+
+---
+
+**The original framing, preserved.**
 
 Audit 014 flagged that PhoBERT is RoBERTa-family, whose position ids are derived
 from `input_ids` through a padding-aware offset, while passing only
@@ -1662,6 +1771,76 @@ INCOMPLETE.**
 **Affects.** `scripts/b4b_phobert_adapter_probe.py`; the artifact records
 `gradient_loss_source = "encoder_final_hidden_state"` and
 `gradient_path_includes_encoder = true` so the run proves which path was tested.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-B4B-006 — `model.name_or_path` is not revision evidence
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (reproducibility engineering) |
+| **Owner** | B4B |
+
+**The defect.** The first real B4B run reported 21/22. The single failure was
+`revision verified (tokenizer and model)`, and the model was **not** at fault:
+the collector read `model.name_or_path` looking for a cache snapshot path, but
+for a model that attribute is the repo id — `"vinai/phobert-base"` — and never a
+path. It could not have verified anything. The tokenizer passed only because
+tokenizers keep real resolved file paths on the instance.
+
+An independent offline diagnostic on the same runtime confirmed the requested
+revision **was** loaded: the exact snapshot directory existed, `config.json` and
+`pytorch_model.bin` both sat under `snapshots/01daacda…`, transformers'
+`cached_file` and `huggingface_hub.try_to_load_from_cache` independently returned
+those paths, and `AutoConfig` reported `_commit_hash =
+01daacda68afe13d83023d16ec647239e344a1e6`. Status:
+`MODEL_REVISION_CACHE_PROVENANCE_CONFIRMED`.
+
+**The repaired policy.**
+
+| Evidence | Role |
+|---|---|
+| Cached **config** raw path under `snapshots/<revision>/` | **required** |
+| Cached **weight artifact** raw path under `snapshots/<revision>/` | **required** |
+| `model.config._commit_hash` | required to *agree* when present; absence is not failure |
+| `model.name_or_path` | **not evidence** — recorded, flagged as such |
+| `refs/main` | recorded as context, **never required** |
+
+Config alone is insufficient: it would not show the *weights* came from that
+revision. `pytorch_model.bin`, `model.safetensors` and both sharded index
+layouts are accepted, so the verifier is not silently checkpoint-specific.
+
+**Two traps, both recorded because both are easy to walk into.**
+
+1. **Never resolve the symlink before extracting the revision.**
+   `snapshots/<commit>/pytorch_model.bin` is a symlink into `blobs/<sha256>`,
+   and the blob is *content-addressed* — it carries no revision at all. Calling
+   `Path.resolve()` first destroys the only evidence being collected. The blob
+   path is recorded separately as forensic information and explicitly flagged
+   `weight_blob_is_not_revision_evidence`. A test asserts the extractor is never
+   fed a resolved path.
+
+2. **`HF_HOME` is not the hub cache root.** `HF_HOME=/x/.hf-cache` means the hub
+   cache is `/x/.hf-cache/hub`. Passing `HF_HOME` itself makes transformers look
+   for `HF_HOME/models--…` when the layout is `HF_HOME/hub/models--…`, and the
+   lookup silently finds nothing. The verifier takes
+   `huggingface_hub.constants.HF_HUB_CACHE` rather than reconstructing it.
+
+**Why `refs/main` is not required.** The project pins an exact commit. Upstream
+`main` may legitimately move later while the pinned snapshot stays correct and
+reproducible; requiring a match would fail a valid pinned run for a reason that
+has nothing to do with it.
+
+**Affected.** `scripts/b4b_phobert_adapter_probe.py`
+(`verify_model_revision`, `cached_artifact_path`, `hub_cache_root`,
+`read_main_ref`); a new `provenance.json` artifact records the structured
+evidence rather than collapsing it into one opaque boolean.
+
+**Scope.** Reproducibility engineering, not a scientific architecture change.
+The pinned revision is unchanged and remains a **probe** revision;
+[D-B3B0-002](#d-b3b0-002) remains **OPEN**.
 
 | | |
 |---|---|

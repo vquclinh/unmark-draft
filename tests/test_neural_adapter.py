@@ -233,7 +233,7 @@ def test_adapter_does_not_import_the_deterministic_pipeline():
     assert "unmark.corruption" not in body
     assert "unmark.linguistics" not in body
     assert "unmark.alignment" not in body
-    assert modules <= {"__future__", "typing", "torch", "unmark"}
+    assert modules <= {"__future__", "dataclasses", "typing", "torch", "unmark"}
 
 
 @pytest.mark.parametrize("name", NEURAL_MODULES)
