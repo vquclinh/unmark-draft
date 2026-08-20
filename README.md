@@ -452,6 +452,55 @@ benchmark, not a training corpus. Nothing is downloaded.
 
 ---
 
+## PhoBERT input contract (B3B-0) — open question
+
+Before any encoder integration, one assumption needs testing. The proposal writes the
+token grid as `T(b(x))` — the frozen tokenizer applied straight to the stripped base text
+(§4.4) — and propagates channel labels "by tracking character offsets through
+tokenization". PhoBERT's published contract expects **word-segmented** input
+(`nghiên_cứu`), i.e. `T(S(b(x)))`.
+
+That difference decides what distribution the frozen encoder sees, whether the base token
+grid survives corruption, and whether segmentation quietly becomes a diacritic restorer.
+**No policy is chosen yet.** `scripts/b3b0_phobert_input_probe.py` measures the candidates;
+`docs/spec/decisions.md` D-B3B0-001 records the question as OPEN.
+
+### Running the probe (Colab only)
+
+The local `.venv` is deliberately ML-free, so the probe refuses locally and prints these
+instructions. In Colab, inside the cloned repository:
+
+```bash
+pip install "transformers==4.57.6"
+pip install py_vncorenlp          # optional; needs a JVM, which Colab provides
+export HF_HOME="$PWD/.hf-cache"
+python scripts/fetch_vietnamese_syllable_inventory.py   # for B3A eligibility
+python scripts/b3b0_phobert_input_probe.py --checkpoint vinai/phobert-base
+```
+
+It loads the **tokenizer only** — never `AutoModel` — and writes
+`results/b3b0/<run_id>/` with `config.json`, `environment.json`, `cases.jsonl`,
+`summary.json` and `report.md`. If VnCoreNLP is unavailable the segmentation paths are
+reported `UNAVAILABLE_SEGMENTER` rather than faked.
+
+| Path | Pipeline |
+|---|---|
+| `RAW_BASE` | `T(b(x))` — the proposal's notation, no segmentation |
+| `CLEAN_SEGMENT_THEN_BASE` | segment clean text, then strip — not deployable |
+| `BASE_THEN_SEGMENT` | strip, then segment the base |
+| `OBSERVED_SEGMENT_THEN_BASE` | segment what is observed, then strip |
+| `PRESEGMENTED_DATASET` | dataset-supplied segmentation |
+
+The decisive column is **grid invariance**: §4.5 requires identical base token ids across
+`FULL`…`STRIP_ALL`. A path that fails it is unusable however well it matches PhoBERT's
+training distribution.
+
+Two related items are open: the backbone checkpoint is named (`PhoBERT-base`) but not
+pinned to a repository or revision anywhere (D-B3B0-002), and `py_vncorenlp`'s model
+download is not revision-pinned, which the probe reports as a reproducibility risk.
+
+---
+
 ## Cleanup
 
 Every environment and cache in this project is disposable and repository-local.
@@ -488,11 +537,13 @@ scripts/
   b2_corruption_self_check.py # B2 corruption self-check (local, curated examples)
   fetch_vietnamese_syllable_inventory.py  # B3A: fetch + verify the pinned inventory
   b3a_eligibility_check.py    # B3A: eligibility check against the real inventory
+  b3b0_phobert_input_probe.py # B3B-0: PhoBERT input-contract probe (COLAB ONLY)
 tests/
   test_orthography_signature.py
   test_orthography_decompose.py
   test_restore_smoke_utils.py
 unmark/
+  alignment/                  # B3B-0: tokenizer input contract + probe analysis
   corruption/                 # B2: conditions, deterministic scoring, corrupt()
   linguistics/                # B3A: pinned syllable inventory + eligibility rule
   orthography/

@@ -29,6 +29,7 @@ apart at a glance:
 | **RESOLVED DECISION** | D-001 (canonical tone placement) |
 | **RESOLVED DECISION** (cont.) | D-B3A-001 (Vietnamese eligibility, closes GAP-2) |
 | **KNOWN DEFERRED GAP** | D-B2-005 (`VARIANT`) |
+| **OPEN — EMPIRICAL PROBE REQUIRED** | D-B3B0-001 (PhoBERT word segmentation), D-B3B0-002 (backbone checkpoint not locked) |
 
 ---
 
@@ -279,3 +280,109 @@ implementation follows it rather than changing it. Nothing needed clarifying.
 |---|---|
 | **Affected code** | `unmark/linguistics/{inventory,classify}.py`, `unmark/orthography/{marks,decompose}.py`, `unmark/corruption/{eligibility,corrupt,models}.py`, `scripts/fetch_vietnamese_syllable_inventory.py`, `scripts/b3a_eligibility_check.py`, `configs/linguistics/vietnamese_syllables.yaml` |
 | **PDF stale** | Unchanged by this task; still stale from §4.2 and §5.3 edits. |
+
+
+---
+
+## B3B-0 — PhoBERT input contract
+
+### D-B3B0-001 — PhoBERT expects word-segmented input; the proposal writes `T(b(x))`
+
+| | |
+|---|---|
+| **Status** | **OPEN — empirical feasibility probe required** |
+| **Owner** | B3B-0 (probe) → B3B (decision and implementation) |
+| **Date raised** | 2026-08-19 |
+
+**Original proposal wording.** §4.4: "The **base stream** defines the token grid.
+All positions are indexed by `T(b(x))`." §4.3 records the base stream as "fully
+stripped letters; tokenized by the frozen tokenizer", and §5.1 locks it as
+"stripped text, frozen tokenizer, frozen embedding table". §4.4 step 2 assigns
+channel labels "by tracking character offsets through tokenization". No section
+mentions word segmentation.
+
+**Official PhoBERT input requirement.** PhoBERT's published usage contract states
+that input must be Vietnamese **word-segmented** before tokenization —
+underscore-joined compounds such as `nghiên_cứu` — produced by the
+VnCoreNLP/RDRSegmenter preprocessing used during pretraining. §6.1 itself
+describes PhoBERT-base as "word/syllable-level BPE", so the proposal is aware of
+the tokenizer's granularity without stating where segmentation happens.
+
+Operationally the pipeline is therefore `T(S(b(x)))`, not `T(b(x))`.
+
+**Why this is a specification question, not a coding detail.** `S` decides what
+distribution the frozen encoder sees, and it sits between two things the design
+depends on. Four constraints pull against each other:
+
+| Constraint | Source |
+|---|---|
+| **Deployability** — inference cannot require clean text | §1.3, the whole premise |
+| **Corruption invariance** — the base token grid must be identical across conditions | §4.5, §4.4 ("corrupting the input changes the tone labels but never the base ids") |
+| **PhoBERT compatibility** — input should match the pretraining distribution | PhoBERT model card |
+| **No hidden restoration** — segmentation must not become an implicit diacritic restorer | §3.2 N-claims; a segmenter reading diacritics would leak exactly the signal `RESTORE` is supposed to own |
+| **Reproducibility** — the segmenter and its model must be version-pinned | §5.3's determinism requirement |
+
+**Possible operational choices**, enumerated in
+`unmark/alignment/contracts.py::PreprocessingPath` and all measured by the probe:
+
+| Path | Description | Principal risk |
+|---|---|---|
+| `RAW_BASE` | `T(b(x))`, no segmentation | ignores PhoBERT's stated contract; possible distribution mismatch and heavy fragmentation |
+| `CLEAN_SEGMENT_THEN_BASE` | segment clean text, then strip | **not deployable** (needs clean text at inference) and a hidden-restoration risk |
+| `BASE_THEN_SEGMENT` | strip, then segment the base | deployable, but the segmenter runs out of distribution on undiacritized text |
+| `OBSERVED_SEGMENT_THEN_BASE` | segment whatever is observed, then strip | deployable and honest, but segmentation output may vary with corruption level, breaking grid invariance |
+| `PRESEGMENTED_DATASET` | use dataset-supplied segmentation | reproducible, but ties the pipeline to per-dataset preprocessing |
+
+**Scientific risks if this is decided wrongly.**
+
+* A path whose token ids differ between `FULL` and `STRIP_ALL` silently violates
+  §4.5's central claim, and UNMARK's contribution ("the base grid is invariant by
+  construction") would be false.
+* A path that segments clean text turns word segmentation into an unmeasured
+  restoration step, contaminating the comparison against `RESTORE`.
+* A path chosen without pinning the segmenter makes every downstream number
+  irreproducible.
+* If the tokenizer exposes no usable offsets, §4.4 step 2 is not implementable as
+  written and a deterministic manual alignment must be designed — which is B3B's
+  work, not something to improvise.
+
+**Affected.** Tokenizer contract; §4.4 alignment; base-grid invariance; Stage-1
+self-supervised training; Stage-2 head training; and every PhoBERT-based baseline
+(`FLOOR`, `RESTORE`, `ALIGN`, `UPPER`), since they share the backbone.
+
+**Proposal source updated?** **NO.** Deliberately not, until the probe returns
+and a policy is locked. Writing any of these paths into §4.4 now would make an
+unmeasured guess look normative.
+
+**What closes it.** Run `scripts/b3b0_phobert_input_probe.py` on Colab, read the
+per-path grid-invariance and offset-availability columns, choose a path against
+the five constraints above, record the choice here, and only then amend §4.4.
+
+### D-B3B0-002 — the first backbone checkpoint is not locked
+
+| | |
+|---|---|
+| **Status** | **OPEN — SPEC LOCK ITEM** |
+| **Owner** | B3B / spec lock |
+
+**Original proposal wording.** §6.1: "At least two […] **PhoBERT-base**
+(word/syllable-level BPE, trained on formal diacritized text) and **ViSoBERT**".
+§5.1 locks the *architecture* around a frozen encoder but names no repository.
+
+**Gap.** No Hugging Face repository id, no checkpoint revision, and no tokenizer
+revision is pinned anywhere — and unlike the `RESTORE` checkpoint, the backbone
+is **not** listed in §5's open-items table either. It is therefore neither locked
+nor tracked as open, which is the worst of the two states.
+
+**Why it matters.** §5.2 requires baselines to be fixed before any UNMARK number
+is seen; the backbone is shared by all five systems, so an unpinned backbone makes
+the whole comparison unreproducible. G−1 already established the pattern for
+`RESTORE`: repo id plus exact revision, verified at load.
+
+**Implemented now.** `scripts/b3b0_phobert_input_probe.py` defaults to
+`vinai/phobert-base` with `--revision` available and unset. That default is a
+**probe convenience, not a lock** — the probe records whatever it actually loaded.
+
+**Proposal source updated?** **NO.** Adding a checkpoint to §6.1 would be locking
+it by side effect. The researcher should either pin it in §5.1 or add it to §5's
+open-items table with the gate it blocks.
