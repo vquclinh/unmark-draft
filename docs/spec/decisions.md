@@ -29,7 +29,8 @@ apart at a glance:
 | **RESOLVED DECISION** | D-001 (canonical tone placement) |
 | **RESOLVED DECISION** (cont.) | D-B3A-001 (Vietnamese eligibility, closes GAP-2) |
 | **KNOWN DEFERRED GAP** | D-B2-005 (`VARIANT`) |
-| **OPEN — EMPIRICAL PROBE REQUIRED** | D-B3B0-001 (PhoBERT word segmentation), D-B3B0-002 (backbone checkpoint not locked) |
+| **OPEN — EMPIRICAL PROBE REQUIRED** | D-B3B0-002 (backbone checkpoint not locked) |
+| **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
 
 ---
 
@@ -290,8 +291,8 @@ implementation follows it rather than changing it. Nothing needed clarifying.
 
 | | |
 |---|---|
-| **Status** | **OPEN — empirical feasibility probe required** |
-| **Owner** | B3B-0 (probe) → B3B (decision and implementation) |
+| **Status** | **CLOSED** by [D-B3B1A-001](#d-b3b1a-001--raw_base-selected-as-the-main-unmark-base-path). *Was:* OPEN — empirical feasibility probe required. |
+| **Owner** | B3B-0 (probe) → B3B (decision) — both discharged |
 | **Date raised** | 2026-08-19 |
 
 **Original proposal wording.** §4.4: "The **base stream** defines the token grid.
@@ -625,3 +626,153 @@ checkpoint lock**.
 
 **Still open, unchanged:** **D-B3B0-001** (segmentation vs `T(b(x))`) and
 **D-B3B0-002** (backbone checkpoint not locked).
+
+
+---
+
+## B3B-1A — input path locked, alignment preflight
+
+### D-B3B1A-001 — RAW_BASE selected as the main UNMARK base path
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — closes D-B3B0-001 |
+| **Owner** | B3B-1A — discharged |
+| **Date** | 2026-08-20 |
+
+**Original proposal wording.** §4.4: "The **base stream** defines the token grid.
+All positions are indexed by `T(b(x))`." §4.3: base is "fully stripped letters;
+tokenized by the frozen tokenizer". §5.1: "stripped text, frozen tokenizer,
+frozen embedding table". No section mentioned word segmentation.
+
+**Discovered PhoBERT requirement.** PhoBERT's published usage contract expects
+Vietnamese **word-segmented** input (underscore-joined compounds) from the
+VnCoreNLP/RDRSegmenter preprocessing used in pretraining — operationally
+`T(S(b(x)))`, not `T(b(x))`. D-B3B0-001 recorded this as an open scientific
+question rather than resolving it by assumption.
+
+**Scientific probe evidence.** A provenance-verified Colab run
+(`20260820T031644Z`, `scientifically_usable: true`) measured four pipelines over
+18 cases × 6 conditions; full record in
+[`docs/experiments/b3b0-input-contract-result.md`](../experiments/b3b0-input-contract-result.md).
+
+| Path | Grid invariant | Mean fragmentation | Unknown | Offsets |
+|---|---|---:|---:|---|
+| `RAW_BASE` | 18/18 | 1.5674 | 12 | ABSENT |
+| `BASE_THEN_SEGMENT` | 18/18 | 1.5424 | 12 | ABSENT |
+| `CLEAN_SEGMENT_THEN_BASE` | 18/18 | 1.6192 | 12 | ABSENT |
+| `OBSERVED_SEGMENT_THEN_BASE` | 9/18 | 1.5763 | 12 | ABSENT |
+
+**Selected policy.**
+
+```text
+MAIN UNMARK BASE PATH = RAW_BASE
+tokenizer_input = b(x)
+token_grid      = T(b(x))
+```
+
+No VnCoreNLP segmentation sits between `b(x)` and `T` on the main UNMARK base
+stream. This makes the proposal's notation literal.
+
+**Reasons.** Deployable; requires no clean text at inference; exactly
+corruption-invariant; introduces no hidden restoration or clean-segmentation side
+information; minimal preprocessing; free of post-strip segmenter side effects;
+and `BASE_THEN_SEGMENT` offered no compelling empirical benefit (1.5424 vs
+1.5674 fragmentation, identical unknown-token count, while recovering little of
+the segmentation obtainable from clean text — a diagnostic 8 underscores versus
+39).
+
+**Path status.**
+
+| Path | Status |
+|---|---|
+| `RAW_BASE` | **SELECTED** — main UNMARK base/deployment path |
+| `BASE_THEN_SEGMENT` | **NOT SELECTED FOR MAIN METHOD.** Retained only as a possible later ablation/diagnostic; no compute spent on it now. |
+| `CLEAN_SEGMENT_THEN_BASE` | **DIAGNOSTIC ONLY.** Non-deployable — requires clean text. May serve as an upper-bound preprocessing diagnostic, never as a system. |
+| `OBSERVED_SEGMENT_THEN_BASE` | **REJECTED.** Violates base-token-grid invariance (9/18). |
+
+**PhoBERT preprocessing trade-off, stated plainly.** Standard PhoBERT usage
+expects pre-word-segmented Vietnamese. UNMARK **intentionally departs** from that
+standard preprocessing on its base branch, because every clean or observed
+segmentation alternative conflicts with deployability, invariance, or the
+empirical probe. This is a deliberate experiment-design choice and **a possible
+source of distribution shift**; it is not claimed that `RAW_BASE` matches
+PhoBERT's pretraining preprocessing. Clean-reference and baseline preprocessing
+is a separate question, to be locked when those pathways are implemented.
+
+| | |
+|---|---|
+| **Affected** | Stage-1 self-supervised training input; Stage-2 head input; §4.4 alignment; every PhoBERT-based UNMARK measurement |
+| **Affected code** | `unmark/alignment/`, `scripts/b3b1_phobert_alignment_probe.py` |
+| **Proposal source updated** | **YES** — §4.4 now states the PhoBERT branch explicitly. |
+| **Compiled proposal PDF stale** | **YES** |
+
+### D-B3B1A-002 — eligibility metadata was not resolved in the B3B-0 probe
+
+| | |
+|---|---|
+| **Status** | **IMPLEMENTATION REPAIR** |
+| **Owner** | B3B-1A — discharged |
+
+**Observed.** Every one of the 432 artifact observations recorded
+`Eligibility.UNDECIDED` (3960 labels; zero `VIETNAMESE_CANDIDATE`, zero
+`NOT_APPLICABLE`), contradicting B3A's resolved semantics.
+
+**Actual cause**, reproduced locally rather than assumed: `DEFAULT_MANIFEST` in
+`unmark/linguistics/inventory.py` was the *relative* string
+`configs/linguistics/vietnamese_syllables.yaml`. `py_vncorenlp.VnCoreNLP()`
+`chdir()`s into its resource directory before the probe's case loop, so
+`try_load_inventory()` resolved the manifest against the wrong directory,
+returned `None`, and no classifier was injected. The same class of bug as audit
+007's output-path drift — fixed there for outputs, still latent in the library's
+own default.
+
+**Consequence beyond the labels.** The probe's B2 corruption also failed to load
+the inventory and therefore ran under the provisional candidate-span policy.
+That affects only `OBSERVED_SEGMENT_THEN_BASE`, whose input is corrupted text;
+the other three paths tokenize `base_text` or clean text, which is invariant
+under both corruption and the eligibility policy. The path decision above is
+therefore unaffected, and this is recorded in the experiment record rather than
+glossed.
+
+**Fix.** `DEFAULT_MANIFEST` is now anchored to the repository via `__file__`, so
+inventory loading — and with it `corrupt()`'s policy resolution — no longer
+depends on the caller's working directory. **B3A's scientific eligibility
+semantics are unchanged.** The B3B-1 probe additionally calls `load_inventory()`
+rather than `try_load_inventory()`, so a missing inventory fails loudly instead
+of silently degrading to `UNDECIDED`.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/linguistics/inventory.py`, `scripts/b3b1_phobert_alignment_probe.py` |
+| **Proposal updated** | **NO** |
+
+### D-B3B1A-003 — offsets are absent; manual alignment is the hypothesis
+
+| | |
+|---|---|
+| **Status** | **OPEN — Colab probe required** |
+| **Owner** | B3B-1 |
+
+The scientific run found `offset_availability = ABSENT` for every path: the
+authoritative tokenizer is `PhobertTokenizer` (`is_fast = false`) and returns no
+`offset_mapping`. Proposal §4.4 step 2 propagates channel labels "by tracking
+character offsets through tokenization", which is therefore not implementable as
+written for this tokenizer.
+
+**The token-grid authority does not move.** The frozen token ids produced by the
+pinned slow tokenizer remain authoritative; no scientific path switches to a fast
+implementation merely because it offers offsets.
+
+**Hypothesis to test:** tokenizing each base span independently and stripping the
+fastBPE `@@` continuation marker reconstructs the span's exact surface, yielding
+deterministic half-open character ranges per piece. Implemented in
+`unmark/alignment/manual.py`; **not validated** until
+`scripts/b3b1_phobert_alignment_probe.py` runs on Colab against the real
+tokenizer.
+
+**Failure policy.** An eligible Vietnamese syllable that produces `<unk>`, or
+whose pieces do not reconstruct its surface, is an explicit `ALIGNMENT_FAILURE`
+with a reason. Special tokens, punctuation and non-Vietnamese spans are `N/A` in
+both channels. `UNDECIDED` eligibility fails rather than being labelled. No span
+is ever labelled on a guess.

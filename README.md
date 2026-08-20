@@ -262,6 +262,25 @@ never move off their base letter.
 tone marks where the input put them; it is no longer the default.
 `TonePlacement.TRADITIONAL` is not implemented and raises.
 
+### Input path: RAW_BASE (locked)
+
+The PhoBERT base branch tokenizes the stripped base stream directly — `T(b(x))`, with **no
+word segmenter** between `b` and `T`. Selected from a provenance-verified probe comparing
+four pipelines; see [`docs/experiments/b3b0-input-contract-result.md`](docs/experiments/b3b0-input-contract-result.md)
+and `docs/spec/decisions.md` D-B3B1A-001.
+
+| Path | Status |
+|---|---|
+| `RAW_BASE` | **selected** — deployable, exactly corruption-invariant |
+| `BASE_THEN_SEGMENT` | not selected; possible later ablation |
+| `CLEAN_SEGMENT_THEN_BASE` | diagnostic only — needs clean text, so not deployable |
+| `OBSERVED_SEGMENT_THEN_BASE` | rejected — breaks base-grid invariance (9/18) |
+
+Standard PhoBERT usage expects pre-word-segmented Vietnamese. UNMARK departs from that on
+its base branch deliberately, because every segmentation alternative conflicts with
+deployability, invariance, or the probe. `RAW_BASE` is **not** claimed to match PhoBERT's
+pretraining preprocessing, and that mismatch is a possible source of distribution shift.
+
 ### Deferred: Vietnamese-candidate eligibility (GAP-2)
 
 Proposal §4.3 decides candidacy by matching "the Vietnamese syllable inventory after
@@ -580,6 +599,7 @@ scripts/
   fetch_vietnamese_syllable_inventory.py  # B3A: fetch + verify the pinned inventory
   b3a_eligibility_check.py    # B3A: eligibility check against the real inventory
   b3b0_phobert_input_probe.py # B3B-0: PhoBERT input-contract probe (COLAB ONLY)
+  b3b1_phobert_alignment_probe.py # B3B-1: manual alignment probe (COLAB ONLY)
 tests/
   test_orthography_signature.py
   test_orthography_decompose.py

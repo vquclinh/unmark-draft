@@ -50,7 +50,16 @@ denominator. It is recorded in every scientific artifact so such a change can
 never become invisible.
 """
 
-DEFAULT_MANIFEST = "configs/linguistics/vietnamese_syllables.yaml"
+# Anchored to the repository, NOT to the current working directory.
+#
+# It used to be the relative string "configs/linguistics/vietnamese_syllables.yaml",
+# which silently resolved against whatever cwd happened to be. The B3B-0 probe
+# loads VnCoreNLP, and `py_vncorenlp.VnCoreNLP()` chdir()s into its resource
+# directory, so every later `try_load_inventory()` looked in the wrong place,
+# returned None, and every eligibility label came out UNDECIDED. Library
+# behaviour must not depend on the caller's cwd.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MANIFEST = str(_REPO_ROOT / "configs" / "linguistics" / "vietnamese_syllables.yaml")
 
 
 class InventoryUnavailable(RuntimeError):
