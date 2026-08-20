@@ -31,6 +31,8 @@ apart at a glance:
 | **KNOWN DEFERRED GAP** | D-B2-005 (`VARIANT`) |
 | **OPEN — EMPIRICAL PROBE REQUIRED** | D-B3B0-002 (backbone checkpoint not locked) |
 | **RESOLVED DECISION** (cont.) | D-B3B1C-001 (manual alignment validated; tone ownership by candidate count) |
+| **RESOLVED DECISION** (cont.) | D-B3B2-001 (deterministic B3B COMPLETE), D-B4A-001, D-B4A-007 |
+| **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
 
 ---
@@ -977,3 +979,474 @@ open.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §4.4 is satisfied as written; the offset mechanism is an implementation detail already recorded in D-B3B1A-003. PDF stale: **YES** (unchanged from B3B-1B) |
+
+---
+
+## B3B-2 — deterministic B3B closure
+
+### D-B3B2-001 — deterministic B3B is COMPLETE
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | B3B-2 |
+| **Evidence** | [`docs/experiments/b3b2-channel-projection-result.md`](../experiments/b3b2-channel-projection-result.md), run `20260820T041812Z`, HEAD `c09516e03300e670fc20ac10173d7c346106fd6a`, status `B3B2_CHANNEL_PROJECTION_COMPLETE`; and [`b3b1-manual-alignment-result.md`](../experiments/b3b1-manual-alignment-result.md), run `20260820T035339Z` |
+
+**Deterministic B3B: COMPLETE.** Both closing probes ran against the real pinned
+slow tokenizer, with no model weights loaded and nothing trained.
+
+**The validated structural contract.** For the locked corruption conditions,
+
+```
+b(C_c(x)) = b(x)      hence      T(b(C_c(x))) = T(b(x))
+```
+
+and the deterministic raw-BPE character-range structure is identical. **Only
+orthographic channel values change.** Measured across 7 cases × 6 conditions:
+42/42 token-id matches against the per-case `FULL` authoritative grid, 42/42
+piece-range matches, 42/42 sequence consistency, and 0 multi-candidate pieces.
+
+**The locked contract.**
+
+| Element | Locked value |
+|---|---|
+| Input path | `RAW_BASE` — no post-strip word segmenter |
+| Authoritative grid | `T(b(x))`, from the frozen slow tokenizer |
+| Tokenizer authority | slow `PhobertTokenizer`; alignment metadata **never** defines or changes token ids |
+| Character map | deterministic raw-BPE range reconstruction over maximal non-whitespace chunks |
+| Channel metadata | B1A orthography + B3A eligibility overlay |
+| Tone ownership | unique-candidate rule (D-B3B1C-001) |
+| Ambiguity | ≥ 2 distinct candidates → tone `NA`, contributors recorded, never resolved |
+| Letter channel | `NONE` **included**, `NA` **excluded**, mean in embedding space |
+| Structural invariance | grid and ranges corruption-invariant; channel values alone degrade |
+
+**Scope of the monotonic result.** Monotonic marked-tone degradation is an
+**observed** result under the locked deterministic B2 protocol and these seven
+probe cases — **not** a universal theorem about arbitrary corruption processes.
+The structural equality above is the load-bearing invariant; it holds by
+construction.
+
+**Special-token integration** is an integration test for B4/B5, **not** an open
+B3B scientific blocker. B3B-2 operated on ordinary tokenizer positions.
+
+**D-B3B0-001: CLOSED.** **[D-B3B0-002](#d-b3b0-002): REMAINS OPEN** — the probe
+revision is reproducibility evidence, not the final backbone decision.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+---
+
+## B4A — neural adapter contract preflight
+
+Full extraction: [`docs/spec/neural-adapter.md`](neural-adapter.md).
+**No `nn.Module` was written; torch is not installed.**
+
+### D-B4A-001 — the gate is a projection, not a vector; fusion is convex, not residual
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — proposal over project history |
+| **Owner** | B4A |
+
+Project history summarised the adapter as "a 3d → d fusion projection; LayerNorm;
+a per-dimension gate", suggesting a raw trainable `g ∈ R^d` and a residual form
+`e + g ⊙ LN(W[e;t;l] + b)`. **The proposal specifies neither.** §4.5:
+
+```
+f_i = LN( W_f [ e_i ; t_i ; l_i ] + c_f )
+g_i = σ( W_g [ e_i ; t_i ; l_i ] + c_g ) ∈ (0,1)^d
+z_i = g_i ⊙ f_i + (1 − g_i) ⊙ e_i
+```
+
+The gate is a **second `3d → d` projection** followed by `σ`, input-dependent per
+position; §5.1's "per-dimension" describes its **output shape**, not a
+position-independent parameter. Combination is **convex**, not residual.
+
+**Decided in favour of the proposal**, on three independent grounds: §4.5 states
+it; §5.1 locks `σ(W_g[·])`; and §4.7's budget bills a *"Gate projection (3d → d)
+≈ 1.8M"*, which a `d`-sized vector cannot account for. The derived formula
+`|φ| = 6d² + (4 + n_τ + n_λ)d` reproduces §4.7's ≈3.6M exactly at `d = 768`,
+`n_τ = 7`, `n_λ = 10` — **only** under the projection reading.
+
+The forms are not interchangeable: under the convex form `g → 1` *replaces* the
+base embedding; under the residual form the base term is always at full strength.
+
+### D-B4A-002 — tone `NA` is a fixed zero vector outside the 7-slot table
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION.** Was OPEN and blocking when Audit 014 was written. |
+| **Owner** | B4A |
+| **Resolved** | 2026-08-20, researcher decision |
+
+**RESOLUTION: `NA` is not a trainable table row. It is the fixed zero vector.**
+
+```
+t_i = 0 in R^d
+```
+
+at non-Vietnamese positions, special tokens, padding, and multi-candidate
+ambiguous pieces. The tone table stays at **exactly 7 trainable rows for every H4
+policy**. `UNMARKED` remains a genuine learned observable row, distinct from
+`NA`. No learned `NA` row; no eighth row.
+
+**Reason.** `NA` is *structural non-applicability*, not an observable tone state.
+Reading (c) below was the only one preserving both the §5.1 7-slot lock and the
+H4 equalization; the decision adopts it and makes it explicit rather than
+implicit.
+
+**Mathematical consequence.** `NA` costs zero parameters, so `|φ|` is identical
+across all three policies and the H4 fairness argument holds exactly. At an `NA`
+position the fusion still receives `[e_i ; 0 ; l_i]` — the position is **not
+inert**, it is fused with a zero tone contribution. Under `OBSERVABLE` the 7-row
+table is still allocated in full even though slot B is never indexed; dropping
+the unused row would itself break the equalization.
+
+**Batching contract.** `tone_ids: [B, L]` with valid rows `0..6`, plus
+`tone_mask: [B, L]`. `NA` may be carried as an out-of-table sentinel (`-1`).
+**A torch implementation must never feed that sentinel to `nn.Embedding`** — it
+must use a safe placeholder lookup plus masking, or an equivalent safe mechanism,
+and force the result to exact zero.
+
+**Affects.** `unmark/modeling/contracts.py` (`TONE_NA_SENTINEL`,
+`TONE_NA_IS_ZERO_VECTOR`, `ToneChannelContract.require_locked`); the B4B tone
+embedding lookup; the H4 parameter-equality test. The rejected alternatives are
+retained in `ToneNaTreatment` and rejected **by name**, so a later reader sees
+them refused rather than rediscovering them as plausible.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.3's 7 slots were already correct; the gap was that `N/A` had no stated representation, which is now recorded here. PDF stale: **YES** |
+
+---
+
+**The original ambiguity, preserved.** §4.3 and §5.1 lock **7 tone slots = 5
+marked + 2 policy slots**. §4.3's table assigns slot A and slot B per H4 policy — for `OBSERVABLE`,
+slot A = `UNMARKED` and slot B is *unused*; for `ORACLE`, slot A = *ngang* and
+slot B = `MISSING`. §4.3 and §4.4 separately require non-Vietnamese subwords to
+carry `N/A` in both channels. **No slot is allocated to `N/A`.**
+
+The repository's `TokenToneLabel` also has 7 members, but a different seven:
+`5 marked + UNMARKED + NA`. The counts coincide; the compositions do not.
+
+**Competing reasonable choices.**
+
+| Option | Consequence |
+|---|---|
+| **(a)** `NA` takes unused slot B | Works for `OBSERVABLE`/`FORCED-NGANG`; **breaks `ORACLE`**, which needs slot B for `MISSING` |
+| **(b)** `NA` becomes an 8th row | Contradicts the §5.1 7-slot lock; gives `ORACLE` 8 rows against 7 — **defeats the H4 equalization**, whose stated purpose is to remove "any objection that the oracle was granted extra capacity" |
+| **(c)** `NA` is not a row: fixed zero vector or masked contribution | Preserves 7 rows **and** H4 equalization for all three policies. The proposal never states it |
+
+**Mathematical consequence.** Under (c) with a zero vector, `t_i = 0` at
+non-Vietnamese positions, so `[e_i ; 0 ; l_i]` still passes through `W_f`/`W_g`
+and `c_f`/`c_g` — the position is *not* inert, it is fused with a zero tone
+contribution. Under (a)/(b) the position gets a **learned** vector, and the model
+can allocate capacity to "this is not Vietnamese". These are materially different
+inductive biases and different parameter counts.
+
+**This also subsumed the general `NA`-embedding question** for both channels:
+learned row, fixed zero, or masked. It **blocked B4B** at the time — no tensor
+could be built without it. *(Resolved above: fixed zero vector.)*
+
+### D-B4A-003 — gate initialisation: `W_g = 0`, `c_g = logit(0.01)`
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION.** Was OPEN and blocking when Audit 014 was written. |
+| **Owner** | B4A |
+| **Resolved** | 2026-08-20, researcher decision |
+
+**RESOLUTION.**
+
+```
+W_g = 0
+c_g = logit(0.01) = ln(0.01 / 0.99) ~= -4.59511985013459
+```
+
+for every output dimension, so at initialisation `g_i = 0.01` for every token and
+every dimension, before any learning. The locked sigmoid-gate architecture is
+unchanged.
+
+**Reason.** Start close to the pretrained base-only pathway; avoid `c_g = 0 →
+g = 0.5`, which would inject a **randomly initialised** fusion branch at half
+weight on step zero; retain a nonzero sigmoid derivative so the gate projection
+can still learn.
+
+**Mathematical consequence.** `W_g = 0` makes the gate input-independent at step
+zero — the concatenated channels drop out and every position starts at `σ(c_g)`.
+The derivative `g(1−g) ≈ 0.0099` stays usable; an initialisation driving `g` to
+machine zero would drive the derivative there too and the gate could never open.
+**No exact base-only equality is claimed**: `g = 0.01` is close to that pathway,
+not equal to it (see D-B4A-004).
+
+**Affects.** `GATE_INIT_WEIGHT`, `GATE_INIT_BIAS`, `GATE_INIT_TARGET`,
+`GateContract.initial_gate_value`, `AdapterConfig.initialisation_plan()`; B4B's
+module construction, which must log this explicitly; G1's "force the gate towards
+identity" criterion, which this initialisation now starts near.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — the proposal locks the transform and is silent on initialisation; recorded here. PDF stale: **YES** |
+
+---
+
+**The original ambiguity, preserved.** The gate **transform** is locked (`σ`).
+Its **initialisation** appears nowhere in the proposal.
+
+| Option | Consequence at step 0 |
+|---|---|
+| `c_g = 0`, `W_g` standard | `g ≈ 0.5` — the adapter starts **halfway**, immediately perturbing every embedding the frozen encoder sees |
+| `c_g` strongly negative | `g ≈ 0` — training starts near the **base-only pathway** and must learn to open the gate |
+| `c_g` strongly positive | `g ≈ 1` — starts at **full fusion**, base term suppressed |
+
+**Mathematical consequence.** G1's pass criterion is "attach the fusion layer,
+train briefly, **force the gate towards identity**, evaluate on `FULL`, pass
+within ≈1 point". A `g ≈ 0.5` initialisation starts far from that operating
+point; a negative-bias initialisation starts at it. The choice materially affects
+whether G1 measures the architecture or the initialisation. It **blocked B4B**
+at the time. *(Resolved above: `W_g = 0`, `c_g = logit(0.01)`, initial `g = 0.01`
+— the negative-bias family, made exact.)*
+
+Note the interaction with D-B4A-004: "initialised at zero" and "initialised so
+its *effect* is zero" are different requests, and under `σ` **only the first is
+achievable** — as a bias value, not as a gate output.
+
+### D-B4A-004 — gate-zero recovery is a limit, not an attainable value
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION.** Was OPEN (test design) when Audit 014 was written. |
+| **Owner** | B4A |
+| **Resolved** | 2026-08-20, researcher decision |
+
+**RESOLUTION: forced `g := 0` is a wiring test only.** Under an explicit test
+override, `z == e` must hold **exactly**, up to ordinary floating-point
+arithmetic. It is **not** a trainable parameterization, **not** an experiment
+condition, **not** a claim that `σ` attains zero, and **not** evidence that the
+initialised module is identity.
+
+**No casual production "gate zero mode" may be exposed**, since such a mode could
+silently enter an experiment. B4B should test the fusion-combination primitive or
+internal path directly rather than adding a public flag.
+
+**Separately, B4B must measure the real initialised gate at `g = 0.01` against
+the base-only pathway and report the difference — expected to be nonzero.**
+Reporting zero there would mean something is wrong.
+
+**Mathematical consequence.** The wiring identity is exact and trivial:
+`z = g·f + (1−g)·e` at `g = 0` gives `z = e` for any `f`. That is what the
+override checks — the plumbing, not the parameterization.
+
+**Affects.** B4B's test suite; `GATE_ZERO_IS_WIRING_TEST_ONLY`. A test asserts no
+public gate-zero flag exists on the config.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** |
+
+---
+
+**The original finding, preserved.**
+
+**Confirmed against the proposal:** `g → 0` recovers the **base-only pathway**
+(same authoritative `T(b(x))` ids, same special tokens, same attention mask, same
+frozen encoder, no tone/letter contribution) — **not** the clean-text pathway
+`E_θ(T(x))`. §4.5 corrects an earlier false claim to exactly this effect.
+
+**The exact numerical condition.** `z_i = e_i` requires, per position and
+dimension, `g_i[k] · (f_i[k] − e_i[k]) = 0` — so `g_i[k] = 0` **or**
+`f_i[k] = e_i[k]`. **Neither is attainable:**
+
+1. `g = σ(·) ∈ (0,1)^d`, an **open** interval; `σ(u) = 0` only as `u → −∞`.
+2. `f = LN(·)` is normalised per position; `e_i = Emb_θ(b_i)` is not. Equality
+   for all `i` would require the LN affine parameters to invert normalisation for
+   every token at once.
+
+**This is not an inconsistency in the proposal**, which writes `g_i → 0` — a
+limit — and never claims exact recovery. It is a consequence for the test plan:
+the "gate-zero numerical equivalence" check cannot be an exact equality test on
+the trained parameterization.
+
+| Option | What it tests |
+|---|---|
+| Forced override `g := 0` on a test-only path | the **wiring** — that `z = e` reproduces base-only bit-for-bit. Exact, but proves plumbing, not the parameterization |
+| Tolerance test, `c_g` driven very negative | approach to the limit. Requires choosing a tolerance |
+| Reparameterize the gate to attain `0` exactly | **changes the locked architecture** — researcher's call |
+
+It was **not decided** at the time, and did not block implementation, the
+equation being fully specified. *(Resolved above: the forced-override wiring
+test.)*
+
+### D-B4A-005 — the empty letter channel is the exact zero vector
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION.** Was OPEN and blocking when Audit 014 was written. |
+| **Owner** | B4A |
+| **Resolved** | 2026-08-20, researcher decision |
+
+**RESOLUTION: the exact zero vector.** For a token with applicable contributor
+set `A_i`:
+
+```
+|A_i| > 0   ->   l_i = (1 / |A_i|) * sum_{j in A_i} W_lambda[label_ij]
+|A_i| = 0   ->   l_i = 0 in R^d
+```
+
+`NONE` is included in the arithmetic mean; `NA` contributors are excluded;
+`NA` is **not** a trainable letter row.
+
+**Reason.** Symmetric with D-B4A-002: non-applicability is structural, not a
+learned state. It also keeps `n_lambda = 5` (D-B4A-007).
+
+**Mathematical consequence.** The implementation must **explicitly prevent
+`0/0`**. A torch implementation may clamp the denominator for vectorisation, but
+**only if the zero-contributor output is then explicitly forced to exact zero** —
+clamping alone leaves `sum(empty)/1 = 0` true by accident rather than by
+contract, and the accident stops holding the moment the numerator stops being
+empty-safe. B3B-2 recorded 25 `NA` positions per condition, so real batches
+exercise this on every step; an unguarded `NaN` would poison the batch silently.
+
+**Affects.** `LETTER_EMPTY_IS_ZERO_VECTOR`, `LETTER_NA_SENTINEL`,
+`LetterChannelContract.require_locked`; B4B's pooling implementation.
+`MASKED_OUT` is rejected by name — it changes the concatenation *width* and is
+incompatible with a fixed `W_f in R^(d x 3d)`.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.4 specifies the pooling, not the empty case. PDF stale: **YES** |
+
+---
+
+**The original ambiguity, preserved.** D-B3B1C-001 locks the *label-space*
+semantics: zero applicable contributors → token-level letter channel `NA`. It does **not** say what vector `l_i ∈ R^d` the
+fusion receives there, and the proposal does not either.
+
+| Option | Consequence |
+|---|---|
+| Fixed zero vector | `l_i = 0`; position still fused via `W_f`, `c_f` |
+| Learned `NA` row of `W_λ` | model can represent "no applicable letter"; couples to D-B4A-002 |
+| Masked out of the concatenation | changes the input **width** at those positions — incompatible with a fixed `W_f ∈ R^(d×3d)` |
+
+**Mathematical consequence.** A masked mean over zero applicable contributors is
+`0/0`. Left unguarded it yields `NaN` and silently poisons the batch — the same
+class of silent failure §4.5 warns about for double position encoding. B3B-2
+recorded 25 `NA` tone positions per condition, so **this path is exercised by
+real data on every batch**, not a rare edge case. It **blocked B4B** at the time.
+*(Resolved above: the exact zero vector, with `0/0` explicitly prevented.)*
+
+### D-B4A-006 — Stage-1 pooling: attention-masked mean over non-special content
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION.** Was OPEN when Audit 014 was written. |
+| **Owner** | B4A |
+| **Resolved** | 2026-08-20, researcher decision |
+
+**RESOLUTION: attention-masked mean over non-special content tokens**, from the
+final encoder hidden state. For `H in R^[B, L, d]`:
+
+```
+m_i = attention_mask_i * (1 - special_tokens_mask_i)
+
+h   = sum_i m_i H_i / sum_i m_i
+```
+
+computed **independently for each branch**. Excludes `<s>`, `</s>`, `<pad>` and
+every other tokenizer/model special token.
+
+**An example with zero content positions after masking FAILS LOUD.** No silent
+fallback to `<s>`, to an unmasked mean, or to a zero vector.
+
+**Reason.** The proposal locks pooled-representation alignment but not a
+particular pool. Mean pooling is defined across **unequal branch lengths**, which
+is the actual situation. Excluding padding prevents a bias that varies with batch
+composition. Excluding special tokens prevents the alignment objective from
+receiving an artificially easy shared signal: those positions are near-invariant
+between branches, so a cosine objective including them partly measures agreement
+that was never in question.
+
+**Mathematical consequence.** The two branches map to `R^d` independently and **no
+per-token correspondence is assumed** — consistent with §4.6 deferring per-token
+alignment. A zero denominator is an error rather than a defined value.
+
+**Affects.** `Stage1PoolingContract`, `Stage1PoolingError`; Stage-1 training when
+it is implemented; the `L_align` / `L_clean` objective inputs.
+
+| | |
+|---|---|
+| **Proposal updated** | **YES** — §4.6 in v1.4 now states the pooling, because this is a scientific decision rather than an implementation detail. PDF stale: **YES** |
+
+---
+
+**The original ambiguity, preserved.** §4.6 locked *"pooled representations only,
+with `D` the cosine distance"* but never said **which** pooling. §5.2 lists head
+"pooling" among values pinned during spec lock, and §13 item 4 left it open.
+
+Options were: `CLS`/`<s>` vector; mean over all positions; **attention-masked**
+mean. They differ materially under padding — an unmasked mean averages `<pad>`
+embeddings into the representation, which for a cosine objective is a silent
+systematic bias that varies with batch composition.
+
+It was marked open rather than chosen. A structural constraint on any choice: the
+reference branch `h(x)` and the adapted branch `h′(·)` do **not** share a
+sequence length (§4.6 defers per-token alignment for exactly this reason), so the
+pooling must map both to `R^d` independently. *(Resolved above: attention-masked
+mean over non-special content tokens.)*
+
+### D-B4A-007 — letter-table cardinality, and the superseded §8.2 sketch
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — confirmed by researcher decision 2026-08-20 |
+| **Owner** | B4A |
+
+**RESOLUTION: `n_lambda = 5`.** The trainable letter table contains exactly
+`NONE`, `BREVE`, `CIRCUMFLEX`, `HORN`, `STROKE`. `NA` is not a row.
+
+**Updated symbolic parameter count.** With `n_tau = 7` and `n_lambda = 5`:
+
+```
+|phi| = 6 d^2 + (4 + n_tau + n_lambda) d
+      = 6 d^2 + 16 d
+```
+
+For arithmetic sanity only, at `d = 768`: **3,551,232**. **`d = 768` is not
+locked** — D-B3B0-002 remains OPEN and `hidden_size` has no default.
+
+**Affects.** `LETTER_TABLE_ROWS`, `PARAMETER_FORMULA`,
+`AdapterConfig.parameter_count()`; proposal §4.7 and §8.2, corrected in v1.4. The
+orthographic taxonomy is **unchanged**.
+
+| | |
+|---|---|
+| **Proposal updated** | **YES** — §4.7's budget line becomes `5 × d` ≈ 4K and §8.2's sketch becomes `n_letter=5`, both narrow corrections of stale estimates. PDF stale: **YES** |
+
+---
+
+**The original ambiguity, preserved.**
+
+**Cardinality.** §4.7 bills *"~10 × d"* and §8.2 defaults `n_letter=10`; §4.3
+writes `{NONE, breve, circumflex, horn, stroke, circumflex+…}`. B1A determined the
+applicable closed set is **5** (`NONE, BREVE, CIRCUMFLEX, HORN, STROKE`) plus
+`NA`. The anticipated `circumflex+…` combinations do not arise: Vietnamese places
+**at most one** letter-forming mark per character (`ă â ê ô ơ ư`, `đ` stroke).
+`~10` is a budget estimate, not a lock — §5.1 says only "closed set". `n_λ`
+follows the implemented inventory; the cost difference is `(10−5)·d ≈ 3.8K`
+against ≈3.6M. The §4.7 table should be corrected when `n_λ` is finalised.
+
+**The §8.2 sketch is superseded.** It returns `letter_ids: list[int]` — one id per
+token — which is **incompatible** with embedding-space pooling: pooling needs the
+character labels *and* `W_λ`, which lives inside the module. §4.4 step 4 and §5.1
+are the locked specification; §8.2 is illustrative. Recorded so B4B does not
+implement the sketch. Contributors are ragged; padded-dense, flat-segment and
+sparse-matrix batchings are all equivalent by linearity of the mean, so the
+choice is an implementation decision, not a scientific one.
+
+**Proposal update summary for the B4A block.** D-B4A-006 and D-B4A-007 changed
+`unmark-proposal.md` (v1.3 → **v1.4**): §4.6 now states the Stage-1 pooling, and
+§4.7 / §8.2 correct the letter-table cardinality from the stale `~10` to `5`. The
+remaining B4A entries are extractions and recorded decisions, not proposal
+changes. **Compiled PDF stale: YES.**

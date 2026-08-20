@@ -2,7 +2,7 @@
 
 **Tone-Factored Input Adaptation for Diacritic-Robust Vietnamese Language Understanding**
 
-Research Proposal · **Version 1.3** · 19 August 2026
+Research Proposal · **Version 1.4** · 20 August 2026
 
 | | |
 |---|---|
@@ -265,6 +265,16 @@ L_align = D( h′(x̃ₚ), h(x) )
 
 **Locked for v1: pooled representations only**, with `D` the cosine distance. Per-token alignment is deferred. The reason is stated in §4.4: the clean and corrupted strings do not share a token grid, so per-token alignment is itself an alignment problem, and it should not be solved before it is known whether the module works at all.
 
+**The pooling is attention-masked mean over non-special content tokens**, taken from the final encoder hidden state and computed independently for each branch. For `H ∈ R^(B×L×d)`:
+
+```
+m_i = attention_mask_i · (1 − special_tokens_mask_i)
+
+h   = Σ_i m_i · H_i  /  Σ_i m_i
+```
+
+`<s>`, `</s>`, `<pad>` and every other tokenizer or model special token are excluded. Three reasons, in order of weight. Mean pooling is defined when the two branches have different sequence lengths, which they do — the reference branch runs the encoder's own tokenization of clean text and the adapted branch runs the base grid, so no per-token correspondence exists to exploit. Excluding padding prevents a bias that would otherwise vary with batch composition. Excluding special tokens prevents the alignment objective from being handed an artificially easy shared signal: those positions are near-invariant between branches, and a cosine objective that includes them is partly measuring agreement that was never in question. An example with no content positions after masking is an **error**, not a case for falling back to `<s>`, to an unmasked mean, or to a zero vector.
+
 **Clean-preservation loss.** Force near-identity behaviour on uncorrupted input:
 
 ```
@@ -282,7 +292,7 @@ D( h_UNMARK(x), h_UNMARK(x̃) )  <  D( h_base(x), h_base(x̃) )
 | Component | Parameters |
 |---|---|
 | Tone embedding table (7 × d) | ≈ 5K |
-| Letter-diacritic table (~10 × d, per character) | ≈ 8K |
+| Letter-diacritic table (5 × d, per character) | ≈ 4K |
 | Fusion projection (3d → d) | ≈ 1.8M |
 | Gate projection (3d → d) | ≈ 1.8M |
 | Layer norms | ≈ 2K |
@@ -570,7 +580,7 @@ def propagate(d: Decomposition, tokenizer) -> tuple[list[int], list[int], list[i
 # unmark/modules/unmark.py
 class UnmarkEncoder(nn.Module):
     """Frozen encoder + trainable input-side module."""
-    def __init__(self, encoder, d_model, n_tone=7, n_letter=10,
+    def __init__(self, encoder, d_model, n_tone=7, n_letter=5,
                  fusion="linear", use_gate=True,
                  tone_policy="observable"):   # observable | forced_ngang | oracle
         # n_tone = 5 marked + 2 policy slots, identical for all three policies
@@ -674,6 +684,8 @@ Most of what was open in v1.0 is now locked in §5. What remains, to be settled 
 5. Whether to include a retrieval task if time permits, or stay entirely within classification. (Default: stay.)
 
 ### Changelog
+
+**v1.4 (20 Aug 2026).** Narrow corrections from the B4A adapter-contract preflight, each recorded in `docs/spec/decisions.md`. Stage-1 pooling was locked to attention-masked mean over non-special content tokens; §4.6 previously locked "pooled representations only" without saying which pool, which is a scientific choice and not a detail. The letter-diacritic table is **5 rows**, not the `~10` the parameter budget estimated: Vietnamese places at most one letter-forming mark per character, so the anticipated combination states do not arise, and §8.2's `n_letter=10` sketch was stale. The budget line and the sketch are corrected. Nothing about the orthographic taxonomy, the fusion equation, the gate, or the tone table changed.
 
 **v1.3 (19 Aug 2026).** Corrected a false structural claim: the gate recovers the *base-only pathway*, not the unmodified model, because `e_i` is computed from the stripped stream. The consequences are now stated positively (the base grid is invariant by construction, so corruption is channel-level inside UNMARK) and negatively (clean input forgoes the encoder's original tokenization; `UPPER` is a different pathway). Tone table enlarged to 7 slots so all three H4 policies share one architecture. Main fusion fixed as a single linear projection, resolving the disagreement between the architecture lock and the parameter budget. Letter channel pools in embedding space rather than label space. Stage-2 head locked to clean-only training. Deterministic rule added for deciding whether an alphabetic span is Vietnamese. §5 relabelled *partially* locked, with a table of what each open item blocks.
 
