@@ -30,6 +30,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-B3A-001 (Vietnamese eligibility, closes GAP-2) |
 | **KNOWN DEFERRED GAP** | D-B2-005 (`VARIANT`) |
 | **OPEN — EMPIRICAL PROBE REQUIRED** | D-B3B0-002 (backbone checkpoint not locked) |
+| **RESOLVED DECISION** (cont.) | D-B3B1C-001 (manual alignment validated; tone ownership by candidate count) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
 
 ---
@@ -883,7 +884,11 @@ True alignment failure is only: raw-surface reconstruction mismatch, malformed
 continuation, impossible or non-monotonic ranges, an unexplained authoritative
 token, or unresolved eligibility where a scientific channel assignment is needed.
 
-**Mixed-contributor pieces — OPEN.** A BPE piece can straddle a Vietnamese
+**Mixed-contributor pieces — CLOSED** by
+[D-B3B1C-001](#d-b3b1c-001--manual-alignment-is-validated-tone-ownership-is-decided-by-candidate-count).
+The paragraph below records what was open at the time of writing.
+
+**Mixed-contributor pieces — OPEN (superseded).** A BPE piece can straddle a Vietnamese
 candidate span and punctuation or non-Vietnamese text within one chunk. The
 alignment records **every** contributing region with its exact overlap range and
 marks the piece `ToneOwnership.MIXED`; it does **not** claim the token is
@@ -895,3 +900,80 @@ how often this occurs; B3B decides the rule.
 | | |
 |---|---|
 | **Proposal updated** | **NO** for this entry |
+
+---
+
+## B3B-1C — alignment validated; channel projection
+
+### D-B3B1C-001 — manual alignment is validated; tone ownership is decided by candidate count
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**. Closes the validation gap left open by [D-B3B1B-001](#d-b3b1b-001--alignment-runs-over-whitespace-chunks-not-linguistic-spans) and the mixed-piece question left open by [D-B3B1B-002](#d-b3b1b-002--vocabulary-oov-is-not-alignment-failure-mixed-pieces-stay-open). |
+| **Owner** | B3B-1C |
+| **Evidence** | [`docs/experiments/b3b1-manual-alignment-result.md`](../experiments/b3b1-manual-alignment-result.md), run `20260820T035339Z` |
+
+**Part 1 — alignment is a validated component, not a hypothesis.** The corrected
+probe aligned **2,489 / 2,489** sentences against the real pinned
+`PhobertTokenizer`, with 13/13 token-sequence consistency, 13/13 token-**id**
+consistency, 119/119 exact chunk reconstructions, 42/42 curated sentences and
+**0** `UNDECIDED` eligibility labels. Whitespace-chunk manual alignment is
+therefore adopted as the B3B channel-propagation mechanism. Proposal §4.4 step 2
+("tracking character offsets through tokenization") is satisfied by exact
+reconstructed ranges rather than by `offset_mapping`, which this tokenizer does
+not provide.
+
+**Part 2 — tone ownership is decided by counting distinct candidate
+contributors**, replacing the conservative audit-012 rule:
+
+| Distinct Vietnamese candidates overlapping the piece | Tone |
+|---|---|
+| 0 | `NA` — `NOT_APPLICABLE` |
+| exactly 1 | **that candidate's observed tone**, even when the piece also covers punctuation or non-Vietnamese characters |
+| ≥ 2 | `NA` — `MULTI_CANDIDATE_AMBIGUOUS`, every contributor recorded |
+
+*Why the change.* Of 191 overlays, 2 were mixed and **both** mixed a single
+candidate with punctuation (`en` + `-`; `.` + `com`). **Zero** pieces spanned two
+distinct candidates. The old rule discarded information that was never
+ambiguous: when only one candidate is present, nothing competes to own the tone.
+
+*What is never done.* A multi-candidate piece is never resolved — not by
+majority overlap length, not by first or last contributor, and never by
+averaging categorical tone ids. This holds **even when the candidates carry the
+same tone**: sharing a value is not the same as having one source, and a
+"they agree, so take it" rule has no principled extension to the disagreeing
+case. No URL, e-mail, or literal piece is special-cased anywhere.
+
+**Part 3 — deterministic channel projection** (`unmark/alignment/channels.py`).
+Pure data: no torch, no trainable parameters, no model weights, no pooling.
+
+* `TokenToneLabel` projects `ObservedTone` and adds a token-level `NA` that no
+  syllable can have. Lexical `NGANG` is **not** in it — the deploy pathway keeps
+  an unmarked syllable ambiguous, and `UNMARKED` ≠ `NA`.
+* The letter channel publishes every contributing character with its label.
+  `NONE` is an applicable contributor ("a letter that could carry a Vietnamese
+  letter diacritic and does not"); only `NA` is excluded. A token with zero
+  applicable contributors has letter channel `NA`.
+* **Letter pooling rule, recorded not implemented:** arithmetic mean *in
+  embedding space* over the applicable contributors, `NONE` included, `NA`
+  excluded. Persisted as `LETTER_POOLING_RULE` so the adapter implements the
+  decided rule rather than re-deciding it.
+* Special tokens carry `NA` in both channels and **no fabricated source range**.
+  Whitespace never becomes a model token.
+* Character structure has exactly one source of truth: labels are read from the
+  canonical `unmark.orthography` decomposition, never re-derived from a BPE
+  token string, and no second Unicode implementation exists in the alignment
+  package. Enforced by AST tests.
+
+**Corruption invariance.** `b(x)` is invariant under all six B2 conditions
+(FULL / P25 / P50 / P75 / P100 / STRIP_ALL), so one token grid and one set of
+character ranges serve every condition; only the channel *values* degrade.
+Verified locally against the real B2 engine.
+
+**Scope.** This entry does **not** lock the paper's backbone checkpoint. The
+probe pinned a revision for reproducibility; [D-B3B0-002](#d-b3b0-002) stays
+open.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.4 is satisfied as written; the offset mechanism is an implementation detail already recorded in D-B3B1A-003. PDF stale: **YES** (unchanged from B3B-1B) |

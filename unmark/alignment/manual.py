@@ -90,20 +90,33 @@ class AlignmentFailureReason(Enum):
 
 
 class ToneOwnership(Enum):
-    """Whether a BPE piece can be assigned a syllable's tone label."""
+    """Which Vietnamese candidate span, if any, owns a BPE piece's tone.
 
-    VIETNAMESE = "VIETNAMESE"
-    """Every contributing character comes from one Vietnamese candidate span."""
+    Decided by counting **distinct Vietnamese candidate contributors**, not by
+    whether the piece is "pure". The real probe showed why: of 191 piece
+    overlays, only 2 straddled a candidate and a non-candidate, and in both the
+    non-candidate part was punctuation (`en` + `-`, `.` + `com`). A single
+    candidate contributor has no competing tone source, so the earlier
+    conservative rule discarded a tone that was never ambiguous.
+    """
 
     NOT_APPLICABLE = "NOT_APPLICABLE"
-    """No contributing character comes from a Vietnamese candidate span."""
+    """Zero Vietnamese candidate contributors. Token tone label is NA."""
 
-    MIXED = "MIXED"
-    """The piece straddles a Vietnamese candidate and something else. Recorded,
-    never resolved by guessing -- see `docs/spec/decisions.md` D-B3B1B-002."""
+    SINGLE_CANDIDATE = "SINGLE_CANDIDATE"
+    """Exactly one Vietnamese candidate contributes. Its tone propagates, even
+    if the piece also covers punctuation or other non-applicable characters --
+    there is no competing tone source."""
+
+    MULTI_CANDIDATE_AMBIGUOUS = "MULTI_CANDIDATE_AMBIGUOUS"
+    """Two or more distinct Vietnamese candidates contribute. Tone label is NA
+    and every contributor is recorded. Never resolved by majority length, by
+    first/last, or by averaging categorical tone ids -- including when the
+    candidates happen to share an observed tone."""
 
     UNRESOLVED = "UNRESOLVED"
-    """A contributing span's eligibility was `UNDECIDED`."""
+    """A contributing span's eligibility was `UNDECIDED`: the inventory was not
+    consulted, so nothing may be labelled."""
 
 
 # ---------------------------------------------------------------------------
@@ -391,12 +404,24 @@ class PieceOverlay:
     detail: str = ""
 
     @property
-    def is_mixed(self) -> bool:
-        return self.tone_ownership is ToneOwnership.MIXED
+    def is_multi_candidate(self) -> bool:
+        return self.tone_ownership is ToneOwnership.MULTI_CANDIDATE_AMBIGUOUS
 
     @property
     def carries_tone(self) -> bool:
-        return self.tone_ownership is ToneOwnership.VIETNAMESE
+        return self.tone_ownership is ToneOwnership.SINGLE_CANDIDATE
+
+    @property
+    def candidate_region_indices(self) -> tuple[int, ...]:
+        """Distinct Vietnamese candidate regions contributing to this piece."""
+        seen: list[int] = []
+        for contribution in self.contributions:
+            if (
+                contribution.eligibility is Eligibility.VIETNAMESE_CANDIDATE
+                and contribution.region_index not in seen
+            ):
+                seen.append(contribution.region_index)
+        return tuple(seen)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -406,7 +431,8 @@ class PieceOverlay:
             "contributions": [c.to_dict() for c in self.contributions],
             "tone_ownership": self.tone_ownership.value,
             "tone_region_index": self.tone_region_index,
-            "is_mixed": self.is_mixed,
+            "candidate_region_indices": list(self.candidate_region_indices),
+            "is_multi_candidate": self.is_multi_candidate,
             "carries_tone": self.carries_tone,
             "detail": self.detail,
         }
@@ -438,26 +464,35 @@ def overlay_orthography(
         ]
         contributions = [c for c in contributions if c.length > 0]
 
-        vietnamese = [c for c in contributions if c.eligibility is Eligibility.VIETNAMESE_CANDIDATE]
         undecided = [c for c in contributions if c.eligibility is Eligibility.UNDECIDED]
-        other = [c for c in contributions if c not in vietnamese and c not in undecided]
+        vietnamese = [c for c in contributions if c.eligibility is Eligibility.VIETNAMESE_CANDIDATE]
+        distinct_candidates: list[int] = []
+        for contribution in vietnamese:
+            if contribution.region_index not in distinct_candidates:
+                distinct_candidates.append(contribution.region_index)
 
+        # The rule is a COUNT of distinct candidate contributors, not a purity
+        # test: punctuation sharing a piece with one candidate does not create a
+        # competing tone source (D-B3B1C-002).
         if undecided:
             ownership, region_index = ToneOwnership.UNRESOLVED, None
             detail = "a contributing region has UNDECIDED eligibility; resolve the inventory"
-        elif not vietnamese:
+        elif not distinct_candidates:
             ownership, region_index = ToneOwnership.NOT_APPLICABLE, None
             detail = "no contributing character comes from a Vietnamese candidate span"
-        elif len(vietnamese) == 1 and not other:
-            ownership = ToneOwnership.VIETNAMESE
-            region_index = vietnamese[0].region_index
-            detail = "every contributing character comes from one Vietnamese candidate span"
-        else:
-            ownership, region_index = ToneOwnership.MIXED, None
+        elif len(distinct_candidates) == 1:
+            ownership = ToneOwnership.SINGLE_CANDIDATE
+            region_index = distinct_candidates[0]
+            others = len(contributions) - len(vietnamese)
             detail = (
-                f"piece draws from {len(contributions)} regions "
-                f"({len(vietnamese)} Vietnamese, {len(other)} other); tone ownership is not "
-                "decided here -- see docs/spec/decisions.md D-B3B1B-002"
+                "exactly one Vietnamese candidate contributes"
+                + (f"; {others} non-applicable contributor(s) carry no competing tone" if others else "")
+            )
+        else:
+            ownership, region_index = ToneOwnership.MULTI_CANDIDATE_AMBIGUOUS, None
+            detail = (
+                f"{len(distinct_candidates)} distinct Vietnamese candidates contribute "
+                f"(regions {distinct_candidates}); tone is NA and no contributor is chosen"
             )
 
         overlays.append(

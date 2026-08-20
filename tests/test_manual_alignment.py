@@ -277,15 +277,21 @@ def test_overlay_attributes_pieces_to_orthographic_regions():
     ]
     overlays = overlay_orthography(alignment.pieces, regions)
     assert [o.tone_ownership for o in overlays] == [
-        ToneOwnership.VIETNAMESE, ToneOwnership.VIETNAMESE, ToneOwnership.NOT_APPLICABLE
+        ToneOwnership.SINGLE_CANDIDATE,
+        ToneOwnership.SINGLE_CANDIDATE,
+        ToneOwnership.NOT_APPLICABLE,
     ]
     assert overlays[0].tone_region_index == 0
     assert overlays[0].carries_tone and not overlays[2].carries_tone
 
 
-def test_piece_crossing_two_regions_is_recorded_not_collapsed():
-    """A BPE piece may straddle a Vietnamese candidate and punctuation. It must
-    not be silently claimed as Vietnamese."""
+def test_piece_mixing_one_candidate_with_punctuation_keeps_the_tone():
+    """A BPE piece may straddle a Vietnamese candidate and punctuation.
+
+    Only one candidate contributes, so nothing competes for the tone label and
+    the piece keeps it. The punctuation is still recorded as a contributor -- it
+    is excluded from the channels, not from the evidence.
+    """
     text = "nhien."
     alignment = align_chunk(one_chunk(text), ["nhien."], [1])
     regions = [
@@ -293,12 +299,56 @@ def test_piece_crossing_two_regions_is_recorded_not_collapsed():
         OrthographicRegion(1, ".", 5, 6, NA, is_syllable=False),
     ]
     overlay = overlay_orthography(alignment.pieces, regions)[0]
-    assert overlay.tone_ownership is ToneOwnership.MIXED
-    assert overlay.is_mixed and not overlay.carries_tone
-    assert overlay.tone_region_index is None
+    assert overlay.tone_ownership is ToneOwnership.SINGLE_CANDIDATE
+    assert overlay.carries_tone and not overlay.is_multi_candidate
+    assert overlay.tone_region_index == 0
+    assert overlay.candidate_region_indices == (0,)
     assert len(overlay.contributions) == 2
     assert [c.length for c in overlay.contributions] == [5, 1]
-    assert "D-B3B1B-002" in overlay.detail
+
+
+def test_piece_spanning_two_candidates_is_ambiguous_and_never_resolved():
+    """Two distinct candidates in one piece: no tone, both recorded."""
+    text = "nhien-hoc"
+    alignment = align_chunk(one_chunk(text), ["nhien-hoc"], [1])
+    regions = [
+        OrthographicRegion(0, "nhien", 0, 5, VN),
+        OrthographicRegion(1, "-", 5, 6, NA, is_syllable=False),
+        OrthographicRegion(2, "hoc", 6, 9, VN),
+    ]
+    overlay = overlay_orthography(alignment.pieces, regions)[0]
+    assert overlay.tone_ownership is ToneOwnership.MULTI_CANDIDATE_AMBIGUOUS
+    assert overlay.is_multi_candidate and not overlay.carries_tone
+    assert overlay.tone_region_index is None
+    assert overlay.candidate_region_indices == (0, 2)
+    assert len(overlay.contributions) == 3
+
+
+def test_ambiguity_is_about_source_count_not_label_agreement():
+    """Two candidates that would yield the same tone are still ambiguous.
+
+    Sharing a value is not the same as having one source. Collapsing this case
+    would smuggle in a "they agree, so pick it" rule that has no principled
+    extension to the disagreeing case.
+    """
+    alignment = align_chunk(one_chunk("hoc-hoc"), ["hoc-hoc"], [1])
+    regions = [
+        OrthographicRegion(0, "hoc", 0, 3, VN),
+        OrthographicRegion(1, "-", 3, 4, NA, is_syllable=False),
+        OrthographicRegion(2, "hoc", 4, 7, VN),
+    ]
+    overlay = overlay_orthography(alignment.pieces, regions)[0]
+    assert overlay.tone_ownership is ToneOwnership.MULTI_CANDIDATE_AMBIGUOUS
+    assert overlay.candidate_region_indices == (0, 2)
+
+
+def test_repeated_contributions_from_one_region_stay_single_candidate():
+    """Candidate counting is over DISTINCT regions, not contribution records."""
+    alignment = align_chunk(one_chunk("nhien"), ["nhien"], [1])
+    regions = [OrthographicRegion(0, "nhien", 0, 5, VN)]
+    overlay = overlay_orthography(alignment.pieces, regions)[0]
+    assert overlay.tone_ownership is ToneOwnership.SINGLE_CANDIDATE
+    assert overlay.candidate_region_indices == (0,)
 
 
 def test_undecided_eligibility_cannot_silently_carry_channels():
@@ -372,7 +422,8 @@ def test_overlay_serialises():
     alignment = align_chunk(one_chunk("nhien."), ["nhien."], [1])
     regions = [OrthographicRegion(0, "nhien", 0, 5, VN), OrthographicRegion(1, ".", 5, 6, NA)]
     payload = overlay_orthography(alignment.pieces, regions)[0].to_dict()
-    assert payload["tone_ownership"] == "MIXED"
+    assert payload["tone_ownership"] == "SINGLE_CANDIDATE"
+    assert payload["candidate_region_indices"] == [0]
     assert len(payload["contributions"]) == 2
 
 

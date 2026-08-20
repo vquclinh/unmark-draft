@@ -241,7 +241,7 @@ def probe_sentence(tokenizer, case_id: str, text: str, classifier, unk_id: int |
     for alignment in alignments:
         overlays.extend(o.to_dict() for o in overlay_orthography(alignment.pieces, regions))
 
-    mixed = [o for o in overlays if o["is_mixed"]]
+    ambiguous = [o for o in overlays if o["is_multi_candidate"]]
     return {
         "case_id": case_id,
         "text": text,
@@ -259,7 +259,7 @@ def probe_sentence(tokenizer, case_id: str, text: str, classifier, unk_id: int |
         "grid_detail": grid["detail"],
         "regions": [r.to_dict() for r in regions],
         "overlays": overlays,
-        "mixed_pieces": len(mixed),
+        "multi_candidate_pieces": len(ambiguous),
         "eligibility_counts": _count_eligibility_regions(regions),
         **{f"summary_{k}": v for k, v in summarize_chunk_alignments(alignments).items()},
     }
@@ -351,13 +351,13 @@ def render_report(config: dict[str, Any], summary: dict[str, Any], sentences: Se
     a("")
     a("## Full-sequence token-grid agreement")
     a("")
-    a("| Case | chunks | aligned | tokens match | ids match | unexplained | mixed pieces |")
+    a("| Case | chunks | aligned | tokens match | ids match | unexplained | multi-cand |")
     a("|---|---:|---:|---|---|---:|---:|")
     for row in sentences:
         a(
             f"| `{row['case_id']}` | {row['summary_total_chunks']} | {row['summary_aligned']} | "
             f"{row['tokens_match']} | {row['ids_match']} | {len(row['unexplained_tokens'])} | "
-            f"{row['mixed_pieces']} |"
+            f"{row['multi_candidate_pieces']} |"
         )
     a("")
     a(f"Tokens: {summary['sentences_tokens_match']}/{summary['sentences_total']} · ")
@@ -369,20 +369,21 @@ def render_report(config: dict[str, Any], summary: dict[str, Any], sentences: Se
     a("")
     a("## Orthographic overlay")
     a("")
-    a("| Case | " + " | ".join(e.value for e in Eligibility) + " | mixed pieces |")
+    a("| Case | " + " | ".join(e.value for e in Eligibility) + " | multi-cand |")
     a("|---|" + "---|" * (len(Eligibility) + 1))
     for row in sentences:
         counts = row["eligibility_counts"]
         a(
             f"| `{row['case_id']}` | "
             + " | ".join(str(counts.get(e.value, 0)) for e in Eligibility)
-            + f" | {row['mixed_pieces']} |"
+            + f" | {row['multi_candidate_pieces']} |"
         )
     a("")
-    a("`UNDECIDED` must be zero on a resolved run. `mixed pieces` are BPE pieces drawing")
-    a("from a Vietnamese candidate **and** something else; they are recorded with their")
-    a("contributors and never claimed as Vietnamese -- see `docs/spec/decisions.md`")
-    a("D-B3B1B-002, which is OPEN.")
+    a("`UNDECIDED` must be zero on a resolved run. `multi-cand` counts BPE pieces drawing")
+    a("from **two or more distinct** Vietnamese candidates; their tone is `NA` and every")
+    a("contributor is recorded, never resolved by length, position or averaging -- see")
+    a("`docs/spec/decisions.md` D-B3B1C-001. A piece mixing exactly one candidate with")
+    a("punctuation keeps that candidate\'s tone.")
     a("")
     if config.get("fast_tokenizer_diagnostic"):
         a("## Optional fast-tokenizer diagnostic")
@@ -543,7 +544,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "total_chunks": sum(r["summary_total_chunks"] for r in sentences),
         "chunks_aligned": sum(r["summary_aligned"] for r in sentences),
         "chunk_surface_failures": sum(r["summary_surface_reconstruction_failures"] for r in sentences),
-        "mixed_pieces": sum(r["mixed_pieces"] for r in sentences),
+        "multi_candidate_pieces": sum(r["multi_candidate_pieces"] for r in sentences),
         "curated_total": len(curated),
         "curated_aligned": sum(1 for c in curated if c["status"] == AlignmentStatusB.ALIGNED.value),
         "undecided_regions": sum(
@@ -580,7 +581,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  chunks aligned           : {summary['chunks_aligned']}/{summary['total_chunks']}")
     print(f"  sentences tokens match   : {summary['sentences_tokens_match']}/{summary['sentences_total']}")
     print(f"  sentences ids match      : {summary['sentences_ids_match']}/{summary['sentences_total']}")
-    print(f"  mixed-contributor pieces : {summary['mixed_pieces']} (recorded, see D-B3B1B-002)")
+    print(f"  multi-candidate pieces   : {summary['multi_candidate_pieces']} (tone NA, see D-B3B1C-001)")
     print(f"  UNDECIDED regions        : {summary['undecided_regions']} (must be 0)")
     print()
     print(f"Status: {status}")
