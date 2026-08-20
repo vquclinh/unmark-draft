@@ -35,6 +35,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
 | **RESOLVED DECISION** (cont.) | D-S1A-001 … D-S1A-004 (Stage-1 data path and objective) |
 | **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter |
+| **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) — **all confirmed on real PhoBERT, run `20260820T081554Z`, 27/27** |
 | **RESOLVED DECISION** (cont.) | D-B4B-002 — **CLOSED** by the real PhoBERT run: explicit authoritative `position_ids` are required; D-B4B-006 (model provenance verifier repaired) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
@@ -2174,3 +2175,138 @@ step 1, which uses explicit diagnostic-only values and runs no optimizer.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §7's gate discipline is unchanged; this records where the PRE-TRAIN audit sits relative to code that did not exist when the gates were written. PDF stale: **YES** (unchanged) |
+
+### D-S1A-008 — a scientific Stage-1 run must persist syllable-inventory provenance
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (requirement). **BLOCKING for scientific Stage-1 training and the PRE-TRAIN audit.** Non-blocking for the completed diagnostic. |
+| **Owner** | Stage-1A |
+| **Evidence** | run `20260820T093520Z` — [`docs/experiments/stage1-real-phobert-diagnostic-result.md`](../experiments/stage1-real-phobert-diagnostic-result.md) |
+
+**Prior assumption.** B4B established a strong provenance standard for the
+*model and tokenizer* (D-B4B-006), and the Stage-1 diagnostic inherited it
+intact: `provenance.json` verifies both against raw cache snapshot paths.
+
+**What inspecting the real artifact showed.** The run used the pinned Vietnamese
+syllable inventory — a fresh Colab runtime fetched it through the repository's
+checksum-verifying fetcher before the run — but `provenance.json` records only
+model, tokenizer and position-profile provenance. **The inventory is absent from
+the artifact.**
+
+**Implemented decision.** A **scientific** Stage-1 run must additionally persist,
+from the committed manifest `configs/linguistics/vietnamese_syllables.yaml`:
+
+| Field | Value |
+|---|---|
+| `inventory_schema_version` | `vn-syllables-v1` |
+| `source_name` | `all-vietnamese-syllables.txt` |
+| `source_author` | `hieuthi` |
+| `source_revision` | `135a4d9716e49a981624474156d6f247b9b46f6a` |
+| `sha256` | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| `size_bytes` | `116290` |
+| `license_status` | `NO_EXPLICIT_LICENSE` (not vendored; fetched and checksum-verified) |
+
+**Reason.** The inventory decides which spans are eligible, and therefore every
+corruption denominator and every channel projection. The manifest itself states
+that changing `source_revision` or `sha256` is a **scientific spec change**. A
+training run whose artifact cannot name the inventory it used is not reproducible
+in the sense the project has held itself to everywhere else.
+
+**Why this does not fail the diagnostic.** The resource was fetched and
+checksum-verified before the run by the repository's own fetcher, and the library
+code is pinned exactly by a matching HEAD and a clean tree. The gap is in what the
+*artifact records*, not in what the run *did*.
+
+**Affected.** The future Stage-1 training runner and its run artifact; the
+PRE-TRAIN audit checklist.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §11 already requires reproducibility; this names one concrete obligation. PDF stale: **YES** (unchanged) |
+
+### D-S1A-008a — no dedicated diagnostic driver was committed (NON-BLOCKING)
+
+| | |
+|---|---|
+| **Status** | **RECORDED OBSERVATION — NON-BLOCKING.** Corrects an over-broad claim in the first draft of D-S1A-008. |
+| **Owner** | Stage-1A |
+
+**The observation.** At `6eb053f` the Stage-1 *library* (`unmark/stage1/*`) is
+committed and the working tree was clean, but there is no `scripts/stage1_*`
+driver for the diagnostic. Earlier phases each committed a probe script
+(`b3b0`, `b3b1`, `b3b2`, `b4b`).
+
+**Correction.** The first draft of D-S1A-008 treated this as **blocking for
+scientific training**. That was wrong, and it was wrong in a specific way worth
+naming: **no logged decision in this repository requires a dedicated driver
+script per phase.** The pattern in `scripts/` is precedent, not a recorded
+requirement, and generalising precedent into a blocker invents an obligation
+nobody adopted. **Retroactively writing a script to reproduce a historical
+dry-run is not required and is not a precondition for anything.**
+
+**What the diagnostic's reproducibility actually rests on**, which is intact:
+the library code is pinned by a matching HEAD and a clean tree; the artifact
+records the run id, repository HEAD, exact checkpoint revision, sample ids,
+canonical and corrupted texts, corruption rates, diagnostic seed and visit. The
+inputs are recoverable; only the assembly step is not scripted.
+
+**What *is* required before scientific training**, already covered and not
+duplicated here: the future **Stage-1 training runner** must be committed and
+reproducible, must fully encode the actual scientific data-assembly and training
+path, and must persist the provenance named in D-S1A-008 — and the mandatory
+PRE-TRAIN audit must inspect **that runner** before any scientific optimizer
+step. That obligation is
+[D-S1A-007](#d-s1a-007--the-pre-train-audit-runs-after-the-training-runner-exists)
+and is unchanged.
+
+**Affected.** Audit 019 §L wording. No code, no scientific value.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-S1A-009 — revised roadmap: downstream viability is measured before Stage-1 is tuned
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (process ordering). Extends [D-S1A-007](#d-s1a-007--the-pre-train-audit-runs-after-the-training-runner-exists); its core invariant is unchanged. |
+| **Owner** | Stage-1A |
+
+**Prior ordering.** D-S1A-007 set: dry run → resolve OPEN values → implement
+runner → PRE-TRAIN audit → first scientific training run.
+
+**Revised ordering.** The real-model dry run is now complete, and two steps are
+inserted *before* Stage-1 values are resolved:
+
+1. build a minimal downstream / Stage-2 evaluation harness;
+2. run a **Vanilla vs Base-only** downstream diagnostic;
+3. design and **precommit** the Stage-1 HPO / scientific configuration;
+4. implement the Stage-1 training runner — **no scientific training run**;
+5. regenerate and synchronise the compiled proposal PDF;
+6. run the mandatory repository-wide proposal-vs-code **PRE-TRAIN audit**;
+7. **only a PASS** allows scientific Stage-1 training.
+
+**Reason.** This is the proposal's own gate discipline, applied earlier rather
+than later. §4.5 states plainly that `g → 0` recovers the **base-only pathway**,
+not the unmodified model, and that whether clean-input performance survives that
+substitution "is not a structural guarantee at all — it is exactly hypothesis H1,
+and exactly what G1 measures". §7's G1 is a *fail-fast* gate: if the frozen
+encoder rejects the base-grid input distribution, the input-level design is in
+trouble regardless of how Stage-1 is tuned. Measuring Vanilla vs Base-only first
+answers that cheaply; tuning Stage-1 before knowing it would be spending effort
+on a pathway that might not clear its own gate.
+
+Step 5 is added because the PDF has been stale since the v1.4 source changes, and
+a proposal-vs-code audit against a stale compiled artifact would compare code to
+the wrong document.
+
+**Unchanged invariant.** The PRE-TRAIN audit still runs **after** the training
+runner exists and **before** the first scientific optimizer step, for the reason
+D-S1A-007 gives: it must inspect the code that trains.
+
+**Affected.** Phase sequencing; Audit 019 §M; the PRE-TRAIN checklist.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §7's gates are unchanged; this records when they are exercised. PDF stale: **YES** (unchanged, and step 5 exists to fix it) |

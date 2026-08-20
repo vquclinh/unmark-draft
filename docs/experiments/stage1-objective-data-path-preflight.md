@@ -125,20 +125,27 @@ configuration does not exist as an object yet.
 
 ## Next required steps, in order
 
-1. **Real-model Stage-1 dry run** on Colab — real PhoBERT, all three branches,
-   one diagnostic backward permitted, **no optimizer and no parameter update**,
-   `purpose = DIAGNOSTIC`. Confirms finite loss components, correct branch shapes
-   with `L_ref ≠ L_base`, and gradient routing into `A_φ` with none into `θ`.
-2. **Resolve the scientific values** needed to define the runner and its run
-   configuration.
-3. **Implement the Stage-1 training runner.** Optimizer, scheduler and
-   checkpointing may exist *in code*; **no scientific training is run**.
-4. **The repository-wide PRE-TRAIN audit**, which inspects the runner from step 3.
-   It comes *after* the runner because its purpose is to check the **complete
-   training path** — auditing a repository with no runner would inspect
-   everything except the part that trains (D-S1A-007).
-5. **Only if that audit PASSes:** the first scientific Stage-1 training run.
+**Step 1 is now COMPLETE** — see
+[`stage1-real-phobert-diagnostic-result.md`](stage1-real-phobert-diagnostic-result.md),
+run `20260820T093520Z`, 31/31, `STAGE1_REAL_PHOBERT_DIAGNOSTIC_COMPLETE`.
 
-**The OPEN values and the PRE-TRAIN audit block scientific Stage-1 training. They
-do not block step 1**, which is a real-model integration dry run with explicit
-diagnostic-only values and no optimizer.
+The remaining order was revised by [D-S1A-009](../spec/decisions.md): downstream
+viability is measured **before** Stage-1 is tuned, following §7's fail-fast gate
+discipline.
+
+1. ~~**Real-model Stage-1 dry run**~~ — **DONE**, diagnostic-only, no optimizer,
+   no parameter update, no scientific value resolved.
+2. Build a minimal downstream / Stage-2 evaluation harness.
+3. Run a **Vanilla vs Base-only** downstream diagnostic — this is what §4.5 and
+   §7's G1 actually ask: does the frozen encoder accept the base-grid input
+   distribution at all?
+4. Design and **precommit** the Stage-1 HPO / scientific configuration.
+5. Implement the Stage-1 training runner. **No scientific training is run.**
+6. Regenerate and synchronise the compiled proposal PDF (stale since v1.4).
+7. Run the mandatory repository-wide **PRE-TRAIN audit**, which inspects the
+   runner from step 5.
+8. **Only if that audit PASSes:** the first scientific Stage-1 training run.
+
+**The OPEN values and the PRE-TRAIN audit block scientific Stage-1 training.**
+They did not block step 1, and they do not block steps 2–3, which are
+diagnostics.
