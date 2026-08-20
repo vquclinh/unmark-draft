@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Committed reproducibility pin for the VnCoreNLP word segmenter used by the",
+    "B3B-0 PhoBERT input-contract probe.",
+    "",
+    "PINNED. The revision and the three SHA-256 values below were extracted by the",
+    "researcher from the provisioned Colab checkout with `git rev-parse HEAD`,",
+    "`git tag --points-at HEAD` and sha256 over the three required resources.",
+    "See docs/audits/009-b3b0-provenance-closure.md.",
+    "",
+    "The probe verifies BOTH at run time: the checkout's HEAD must equal `revision`,",
+    "and every file's digest must equal the value below. Either mismatch fails",
+    "closed. A checkout without .git metadata still has its hashes checked, but",
+    "cannot be marked pinned, because this manifest pins a revision.",
+    "",
+    "Changing release_tag, revision, required_jar or any sha256 is an EXPERIMENT",
+    "DEPENDENCY CHANGE and must be recorded in docs/spec/decisions.md.",
+    "",
+    "This is neither a dataset nor a model checkpoint. It is a pin for the",
+    "word-segmentation dependency of PhoBERT preprocessing feasibility work."
+  ],
+
+  "schema_version": "vncorenlp-pin-v1",
+  "status": "PINNED",
+
+  "source": "VnCoreNLP",
+  "source_repository": "https://github.com/vncorenlp/VnCoreNLP.git",
+  "release_tag": "v1.2",
+  "revision": "62bbc58fe5d113c898eae112656be97dcf50b3a0",
+
+  "required_jar": "VnCoreNLP-1.2.jar",
+
+  "files": {
+    "VnCoreNLP-1.2.jar": "9e2811cdbc2ddfc71d04be5dc36e185c88dcd1ad4d5d69e4ff2e1369dccf7793",
+    "models/wordsegmenter/vi-vocab": "0a47c5b55bbce163029d37730a67b9479740388695c29c106c112b815613eaa5",
+    "models/wordsegmenter/wordsegmenter.rdr": "9e62f96bd93e37a24f364238e8d8ae986fa5dad6dbc9f4eae622ab3651b7fa06"
+  }
+}

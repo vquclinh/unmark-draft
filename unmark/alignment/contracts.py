@@ -123,9 +123,29 @@ class TokenizerContract:
     """
 
     checkpoint: str
-    revision: str | None
-    tokenizer_class: str
-    is_fast: bool
+
+    revision_requested: str | None
+    """The full immutable commit SHA the caller asked for. Supplying it is
+    necessary but NOT sufficient: `revision=` is an argument, not a
+    verification."""
+
+    revision_observed: str | None = None
+    """The commit actually resolved, read back from the loaded tokenizer's own
+    files after loading. `None` when it could not be determined -- never
+    fabricated from the request."""
+
+    revision_verified: bool = False
+    """True only when `revision_observed` was recoverable AND equals
+    `revision_requested`."""
+
+    revision_evidence: tuple[str, ...] = ()
+    """The resolved file paths the observed revision was read from."""
+
+    revision_evidence_source: str = ""
+    """How the revision was recovered, or why it could not be."""
+
+    tokenizer_class: str = ""
+    is_fast: bool = False
     vocab_size: int | None = None
     unk_token: str | None = None
     special_tokens: tuple[str, ...] = ()
@@ -138,7 +158,11 @@ class TokenizerContract:
     def to_dict(self) -> dict[str, Any]:
         return {
             "checkpoint": self.checkpoint,
-            "revision": self.revision,
+            "revision_requested": self.revision_requested,
+            "revision_observed": self.revision_observed,
+            "revision_verified": self.revision_verified,
+            "revision_evidence": list(self.revision_evidence),
+            "revision_evidence_source": self.revision_evidence_source,
             "tokenizer_class": self.tokenizer_class,
             "is_fast": self.is_fast,
             "vocab_size": self.vocab_size,
@@ -160,9 +184,33 @@ class SegmenterContract:
     package_version: str | None = None
     model_resource: str | None = None
     model_version: str | None = None
+    jar_name: str | None = None
+    """The jar actually loaded. Equal to `required_jar` or the load was refused."""
+    required_jar: str | None = None
+    """The jar named by the committed pin. Never discovered by globbing."""
+    other_jars_present: tuple[str, ...] = ()
+    """Any other VnCoreNLP jars in the directory, reported but never substituted."""
+    manifest_path: str | None = None
+
+    manifest_revision: str | None = None
+    """The Git revision the committed pin names."""
+    observed_revision: str | None = None
+    """`git rev-parse HEAD` of the provisioned checkout, or None when .git is absent."""
+    revision_verified: bool = False
+    """True only when the observed revision equals the pinned one. Never inferred."""
+    observed_tags_at_head: tuple[str, ...] = ()
+    """Diagnostic only. Tag text alone never constitutes verification."""
+
+    expected_hashes: dict[str, str] = field(default_factory=dict)
+    """Digests the pin requires."""
+    resource_hashes: dict[str, str] = field(default_factory=dict)
+    """SHA-256 of every required resource file, as observed by this run."""
+    hashes_verified: bool = False
+    """True only when every observed digest equalled the pinned one."""
     pinned: bool = False
-    """False means the version was not pinned -- a reproducibility risk that must
-    be reported rather than absorbed."""
+    """True ONLY when this run verified every observed resource against externally
+    supplied hashes. Files merely existing never counts as pinned -- the first
+    Colab run was invalidated precisely because provenance was assumed."""
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -173,6 +221,17 @@ class SegmenterContract:
             "package_version": self.package_version,
             "model_resource": self.model_resource,
             "model_version": self.model_version,
+            "jar_name": self.jar_name,
+            "required_jar": self.required_jar,
+            "other_jars_present": list(self.other_jars_present),
+            "manifest_path": self.manifest_path,
+            "manifest_revision": self.manifest_revision,
+            "observed_revision": self.observed_revision,
+            "revision_verified": self.revision_verified,
+            "observed_tags_at_head": list(self.observed_tags_at_head),
+            "expected_hashes": dict(self.expected_hashes),
+            "resource_hashes": dict(self.resource_hashes),
+            "hashes_verified": self.hashes_verified,
             "pinned": self.pinned,
             "notes": self.notes,
         }

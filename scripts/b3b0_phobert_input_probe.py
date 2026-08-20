@@ -27,17 +27,35 @@ It never loads model weights: tokenizer only, no `AutoModel`.
 Usage (Colab, inside the cloned repository)
 -------------------------------------------
     pip install "transformers==4.57.6"
-    # optional, for the segmentation paths:
-    #   pip install py_vncorenlp     (needs a JVM; Colab provides one)
+    # optional, for the segmentation paths (needs a JVM; Colab provides one):
+    #   pip install py_vncorenlp
     export HF_HOME="$PWD/.hf-cache"
-    python scripts/b3b0_phobert_input_probe.py --checkpoint vinai/phobert-base
+    python scripts/b3b0_phobert_input_probe.py \
+        --checkpoint vinai/phobert-base \
+        --revision <FULL_SHA> \
+        --vncorenlp-dir .vncorenlp \
+        --vncorenlp-hashes configs/linguistics/vncorenlp_v1.2_hashes.json
+
+Two things it will NOT do, both learned from the first real run:
+
+* it never downloads VnCoreNLP -- `download_model()` is absent, the resource must
+  be provisioned externally, and `pinned=true` is claimed only when this run
+  verified every file against supplied SHA-256 hashes;
+* it never writes outside the repository -- output paths are resolved absolutely
+  before any dependency runs, because `py_vncorenlp.VnCoreNLP()` chdir()s into
+  its resource directory and the first run's artifacts landed in
+  `.vncorenlp/results/b3b0/` as a result.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import platform
+import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +124,106 @@ SEED = 20260819
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
+FULL_SHA_LENGTH = 40
+_SNAPSHOT_PATTERN = re.compile(r"[/\\]snapshots[/\\]([0-9a-f]{40})(?:[/\\]|$)")
+
+
+def is_full_commit_sha(value: str | None) -> bool:
+    """Whether `value` is a full immutable Git commit SHA.
+
+    Branch names, tags and abbreviated SHAs are all mutable or ambiguous: `main`
+    moves, a tag can be re-pointed, and a short SHA is a prefix. A scientific
+    probe must name the exact commit.
+    """
+    # Lowercase only: the hub emits lowercase, and accepting mixed case here
+    # would turn an argument-format problem into a confusing comparison failure
+    # later.
+    return (
+        isinstance(value, str)
+        and len(value) == FULL_SHA_LENGTH
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def extract_snapshot_revision(path: str) -> str | None:
+    """Pull the commit SHA out of a Hugging Face cache path.
+
+    The hub caches as `models--org--name/snapshots/<commit_sha>/<file>`, and the
+    snapshot directory is always the *resolved commit* -- passing `main` still
+    lands under the SHA it resolved to. Reading it back from a file the
+    tokenizer actually loaded is therefore genuine post-load evidence, not a
+    restatement of the request.
+    """
+    if not isinstance(path, str):
+        return None
+    match = _SNAPSHOT_PATTERN.search(path)
+    return match.group(1) if match else None
+
+
+def _candidate_resolved_paths(tokenizer) -> list[str]:
+    """Paths of files the tokenizer actually loaded from.
+
+    Drawn from documented attributes and `init_kwargs`, not from a guessed
+    private field: anything that looks like an existing file path is considered,
+    and paths that carry no snapshot component are simply ignored.
+    """
+    candidates: list[str] = []
+
+    def consider(value: Any) -> None:
+        if isinstance(value, str) and value and os.sep in value:
+            candidates.append(value)
+
+    for attribute in ("vocab_file", "merges_file", "tokenizer_file"):
+        consider(getattr(tokenizer, attribute, None))
+    init_kwargs = getattr(tokenizer, "init_kwargs", None)
+    if isinstance(init_kwargs, dict):
+        for value in init_kwargs.values():
+            consider(value)
+    for attribute in ("name_or_path", "_tokenizer_file"):
+        consider(getattr(tokenizer, attribute, None))
+    # Preserve order, drop duplicates.
+    seen: list[str] = []
+    for path in candidates:
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def observe_tokenizer_revision(tokenizer) -> tuple[str | None, tuple[str, ...], str]:
+    """Read the resolved commit back off the loaded tokenizer.
+
+    Returns `(revision, evidence_paths, source_description)`. `revision` is None
+    when no snapshot path could be found, or when the paths disagree -- either
+    way the probe must not claim verification.
+
+    Deliberately does no network I/O and issues no second download: re-resolving
+    the repository would either restate the request or introduce a floating
+    lookup, and neither is evidence.
+    """
+    paths = _candidate_resolved_paths(tokenizer)
+    found: dict[str, list[str]] = {}
+    for path in paths:
+        revision = extract_snapshot_revision(path)
+        if revision:
+            found.setdefault(revision, []).append(path)
+
+    if not found:
+        return (
+            None,
+            tuple(paths[:5]),
+            "no Hugging Face snapshot path was found among the tokenizer's resolved files; "
+            "the tokenizer may have been loaded from a local directory rather than the hub cache",
+        )
+    if len(found) > 1:
+        return (
+            None,
+            tuple(p for group in found.values() for p in group)[:5],
+            f"resolved files disagree about the snapshot revision: {sorted(found)}",
+        )
+    revision, evidence = next(iter(found.items()))
+    return revision, tuple(evidence[:5]), "hugging face cache snapshot path of the loaded tokenizer files"
+
+
 def load_tokenizer(checkpoint: str, revision: str | None, use_fast: bool):
     """Tokenizer only. `AutoModel` is never called anywhere in this script."""
     from transformers import AutoTokenizer
@@ -119,9 +237,16 @@ def load_tokenizer(checkpoint: str, revision: str | None, use_fast: bool):
 def describe_tokenizer(tokenizer, checkpoint: str, revision: str | None) -> TokenizerContract:
     import transformers
 
+    observed, evidence, source = observe_tokenizer_revision(tokenizer)
+    verified = bool(revision) and observed is not None and observed == revision
+
     return TokenizerContract(
         checkpoint=checkpoint,
-        revision=revision,
+        revision_requested=revision,
+        revision_observed=observed,
+        revision_verified=verified,
+        revision_evidence=evidence,
+        revision_evidence_source=source,
         tokenizer_class=type(tokenizer).__name__,
         is_fast=bool(getattr(tokenizer, "is_fast", False)),
         vocab_size=getattr(tokenizer, "vocab_size", None),
@@ -138,45 +263,355 @@ def describe_tokenizer(tokenizer, checkpoint: str, revision: str | None) -> Toke
     )
 
 
-def load_segmenter(save_dir: Path) -> tuple[Any, SegmenterContract]:
-    """Try to bring up VnCoreNLP. Never fakes segmentation when unavailable."""
+REQUIRED_SEGMENTER_FILES: tuple[str, ...] = (
+    "models/wordsegmenter/vi-vocab",
+    "models/wordsegmenter/wordsegmenter.rdr",
+)
+JAR_GLOB = "VnCoreNLP-*.jar"
+DEFAULT_REQUIRED_JAR = "VnCoreNLP-1.2.jar"
+
+
+def git_head_revision(checkout: Path) -> str | None:
+    """`git rev-parse HEAD` for a checkout, or None when unavailable.
+
+    A local subprocess; no network. Returns None rather than raising so a
+    non-Git provisioning (an unpacked archive, say) still gets its resource
+    hashes checked -- it simply cannot be marked pinned.
+    """
+    if not (checkout / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def git_tags_at_head(checkout: Path) -> tuple[str, ...]:
+    """Tags pointing at HEAD. Diagnostic only -- never verification."""
+    if not (checkout / ".git").exists():
+        return ()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "tag", "--points-at", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if result.returncode != 0:
+        return ()
+    return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+PLACEHOLDER_MARKER = "PENDING"
+_SHA256_LENGTH = 64
+DEFAULT_VNCORENLP_MANIFEST = "configs/linguistics/vncorenlp_v1.2.json"
+
+REQUIRED_MANIFEST_KEYS = (
+    "schema_version",
+    "source",
+    "source_repository",
+    "release_tag",
+    "revision",
+    "required_jar",
+    "files",
+)
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == _SHA256_LENGTH
+        and all(c in "0123456789abcdef" for c in value.lower())
+    )
+
+
+class ManifestIncomplete(SystemExit):
+    """Raised when the committed pin still carries unresolved placeholders."""
+
+
+def load_vncorenlp_manifest(path: Path | None) -> dict[str, Any]:
+    """Read and validate the committed VnCoreNLP pin.
+
+    Fails closed on anything short of a complete pin: a manifest with a
+    placeholder digest is worse than no manifest, because it *looks* like
+    provenance.
+    """
+    if path is None:
+        return {}
+    if not path.is_file():
+        raise SystemExit(f"VnCoreNLP manifest not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: manifest must be a JSON object")
+
+    missing = [key for key in REQUIRED_MANIFEST_KEYS if key not in data]
+    if missing:
+        raise SystemExit(f"{path}: manifest is missing required key(s): {', '.join(missing)}")
+
+    files = data["files"]
+    if not isinstance(files, dict) or not files:
+        raise SystemExit(f"{path}: 'files' must be a non-empty object of relpath -> sha256")
+
+    required_jar = data["required_jar"]
+    if required_jar not in files:
+        raise SystemExit(f"{path}: required_jar {required_jar!r} has no entry in 'files'")
+    for rel in REQUIRED_SEGMENTER_FILES:
+        if rel not in files:
+            raise SystemExit(f"{path}: 'files' is missing the required resource {rel!r}")
+
+    unresolved = [name for name, digest in files.items() if not _is_sha256(digest)]
+    if not _is_sha256(data["revision"]) and len(str(data["revision"])) != 40:
+        unresolved.append("revision")
+    if unresolved:
+        raise ManifestIncomplete(
+            f"{path} is not a usable pin: {', '.join(sorted(unresolved))} "
+            f"still carr{'ies' if len(unresolved) == 1 else 'y'} a placeholder.\n\n"
+            "The exact VnCoreNLP v1.2 Git revision and the SHA-256 of\n"
+            "  VnCoreNLP-1.2.jar\n"
+            "  models/wordsegmenter/vi-vocab\n"
+            "  models/wordsegmenter/wordsegmenter.rdr\n"
+            "must be supplied from the Colab provisioning cells that fetched the pinned\n"
+            "checkout. They cannot be derived here: .vncorenlp/ is a Colab-side runtime\n"
+            "directory, and inventing a digest would defeat the purpose of the pin.\n\n"
+            "Fill them into the manifest, then rerun. Until then the probe refuses to\n"
+            "load the segmenter and no run can be marked scientifically usable."
+        )
+    return data
+
+
+def load_expected_hashes(path: Path | None) -> dict[str, Any]:
+    """Legacy `--vncorenlp-hashes` reader, retained for compatibility.
+
+    The committed manifest is the canonical path; this exists so an ad-hoc
+    hashes file still works, and so a conflict between the two can be detected.
+    """
+    if path is None:
+        return {}
+    if not path.is_file():
+        raise SystemExit(f"--vncorenlp-hashes file not found: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or "files" not in data:
+        raise SystemExit(f"{path}: expected an object with a 'files' mapping")
+    return data
+
+
+def reconcile_provenance(
+    manifest: dict[str, Any],
+    hashes: dict[str, Any],
+    supplied_revision: str | None,
+) -> dict[str, Any]:
+    """Merge the provenance sources, refusing on any contradiction.
+
+    The committed manifest wins nothing by default -- a disagreement is an error,
+    not a precedence question. Silently preferring one source would let a stale
+    CLI value quietly override the repository's pin.
+    """
+    if not manifest:
+        return hashes
+
+    revision = manifest["revision"]
+    if supplied_revision and supplied_revision != revision:
+        raise SystemExit(
+            f"--vncorenlp-revision {supplied_revision!r} contradicts the committed manifest "
+            f"revision {revision!r}. Resolve the disagreement rather than overriding: if the "
+            "pin changed, update configs/linguistics/vncorenlp_v1.2.json and record the "
+            "change in docs/spec/decisions.md."
+        )
+    if hashes:
+        hash_revision = hashes.get("revision")
+        if hash_revision and hash_revision != revision:
+            raise SystemExit(
+                f"--vncorenlp-hashes revision {hash_revision!r} contradicts the committed "
+                f"manifest revision {revision!r}."
+            )
+        conflicts = [
+            name
+            for name, digest in (hashes.get("files") or {}).items()
+            if name in manifest["files"] and manifest["files"][name] != digest
+        ]
+        if conflicts:
+            raise SystemExit(
+                "--vncorenlp-hashes contradicts the committed manifest for: "
+                f"{', '.join(sorted(conflicts))}."
+            )
+    return manifest
+
+
+def load_segmenter(
+    resource_dir: Path | None,
+    expected: dict[str, Any],
+    supplied_revision: str | None,
+) -> tuple[Any, SegmenterContract]:
+    """Load VnCoreNLP from an ALREADY-PRESENT, externally provisioned directory.
+
+    Never downloads. `py_vncorenlp.download_model()` is deliberately absent from
+    this script: the first Colab run showed that an automatic downloader makes the
+    segmentation model unpinned, which silently invalidates every number that
+    depends on segmentation. The resource must be provisioned and verified
+    outside the probe, and `pinned=True` is claimed only when this run actually
+    checked the files against supplied hashes.
+    """
+    if resource_dir is None:
+        return None, SegmenterContract(
+            available=False,
+            name="VnCoreNLP",
+            package="py_vncorenlp",
+            notes="no --vncorenlp-dir supplied; segmentation paths not probed",
+        )
+
+    if not resource_dir.is_dir():
+        return None, SegmenterContract(
+            available=False, name="VnCoreNLP", package="py_vncorenlp",
+            model_resource=str(resource_dir),
+            notes=(
+                f"resource directory does not exist: {resource_dir}. The probe never "
+                "downloads it; provision VnCoreNLP externally and pass --vncorenlp-dir."
+            ),
+        )
+
+    # The jar is named by the pin, never discovered. Picking "the first matching
+    # VnCoreNLP-*.jar" would silently choose a version when several are present
+    # (audit 007 N2).
+    required_jar = str(expected.get("required_jar") or DEFAULT_REQUIRED_JAR)
+    jar = resource_dir / required_jar
+    other_jars = sorted(p.name for p in resource_dir.glob(JAR_GLOB) if p.name != required_jar)
+
+    missing = [rel for rel in REQUIRED_SEGMENTER_FILES if not (resource_dir / rel).is_file()]
+    if not jar.is_file():
+        missing.append(required_jar)
+    if missing:
+        note = f"missing required resource(s) under {resource_dir}: {', '.join(missing)}"
+        if other_jars:
+            note += (
+                f". Other VnCoreNLP jars are present ({', '.join(other_jars)}) but are NOT "
+                "substituted: the pin names exactly one."
+            )
+        return None, SegmenterContract(
+            available=False, name="VnCoreNLP", package="py_vncorenlp",
+            model_resource=str(resource_dir), required_jar=required_jar,
+            other_jars_present=tuple(other_jars),
+            notes=note,
+        )
+    observed: dict[str, str] = {required_jar: sha256_of(jar)}
+    for rel in REQUIRED_SEGMENTER_FILES:
+        observed[rel] = sha256_of(resource_dir / rel)
+
+    expected_files = dict(expected.get("files") or {})
+    mismatches = [
+        name for name, digest in expected_files.items()
+        if name in observed and observed[name] != digest
+    ]
+    unverified = [name for name in observed if name not in expected_files]
+    # Hashes verified only when EVERY observed resource was checked against a
+    # pinned digest and matched. Existence alone never counts.
+    hashes_verified = bool(expected_files) and not mismatches and not unverified
+
+    # Revision verification (audit 008 N1). The manifest pins a Git revision, so
+    # content hashes alone are not sufficient for scientific usability.
+    manifest_revision = expected.get("revision")
+    observed_revision = git_head_revision(resource_dir)
+    observed_tags = git_tags_at_head(resource_dir)
+    revision_verified = bool(
+        manifest_revision and observed_revision and observed_revision == manifest_revision
+    )
+
+    # pinned is the conjunction: both the checkout identity and its contents.
+    verified = hashes_verified and revision_verified
+
+    # Provenance describes the FILES ON DISK, so it is recorded on every return
+    # path below -- including failures. Whether the library imported is a
+    # separate fact from what the checkout contains.
+    resolved_revision = expected.get("revision") or supplied_revision
+
+    def contract(available: bool, note: str, package_version: str | None = None) -> SegmenterContract:
+        return SegmenterContract(
+            available=available,
+            name="VnCoreNLP",
+            package="py_vncorenlp",
+            package_version=package_version,
+            model_resource=str(resource_dir),
+            model_version=resolved_revision,
+            jar_name=required_jar if available else None,
+            required_jar=required_jar,
+            other_jars_present=tuple(other_jars),
+            manifest_path=str(expected.get("_manifest_path") or "") or None,
+            manifest_revision=manifest_revision,
+            observed_revision=observed_revision,
+            revision_verified=revision_verified,
+            observed_tags_at_head=observed_tags,
+            expected_hashes=expected_files,
+            resource_hashes=observed,
+            hashes_verified=hashes_verified,
+            # `pinned` reflects verification of the files, so it stays true even
+            # if the library then fails to load.
+            pinned=verified,
+            notes=note,
+        )
+
+    if mismatches:
+        return None, contract(
+            False,
+            "REFUSING: resource SHA-256 mismatch against the pin for "
+            f"{', '.join(sorted(mismatches))}. The checkout is not the pinned one.",
+        )
+
+    if manifest_revision and observed_revision and observed_revision != manifest_revision:
+        return None, contract(
+            False,
+            f"REFUSING: checkout HEAD {observed_revision} != pinned revision "
+            f"{manifest_revision}. Check out the pinned revision, or update "
+            "configs/linguistics/vncorenlp_v1.2.json and record the dependency change "
+            "in docs/spec/decisions.md.",
+        )
+
     try:
         import py_vncorenlp
     except Exception as exc:  # noqa: BLE001
-        return None, SegmenterContract(
-            available=False,
-            name="VnCoreNLP",
-            package="py_vncorenlp",
-            notes=f"import failed: {type(exc).__name__}: {exc}",
-        )
+        return None, contract(False, f"import failed: {type(exc).__name__}: {exc}")
+
     try:
-        version = getattr(py_vncorenlp, "__version__", None)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        py_vncorenlp.download_model(save_dir=str(save_dir))
-        segmenter = py_vncorenlp.VnCoreNLP(annotators=["wseg"], save_dir=str(save_dir))
-        jars = sorted(p.name for p in save_dir.rglob("*.jar"))
-        return segmenter, SegmenterContract(
-            available=True,
-            name="VnCoreNLP",
-            package="py_vncorenlp",
-            package_version=version,
-            model_resource=", ".join(jars) or str(save_dir),
-            model_version=None,
-            # py_vncorenlp.download_model fetches whatever is current upstream.
-            pinned=False,
-            notes=(
-                "REPRODUCIBILITY RISK: download_model() is not revision-pinned, so the "
-                "segmentation model can change between runs. Record the jar checksums and "
-                "pin them before any result depends on segmentation."
-            ),
-        )
+        # NOTE: this call chdir()s into save_dir. Every output path is resolved
+        # to an absolute Path before we get here, so it cannot move artifacts.
+        segmenter = py_vncorenlp.VnCoreNLP(annotators=["wseg"], save_dir=str(resource_dir))
     except Exception as exc:  # noqa: BLE001
-        return None, SegmenterContract(
-            available=False,
-            name="VnCoreNLP",
-            package="py_vncorenlp",
-            notes=f"initialisation failed: {type(exc).__name__}: {exc}",
+        return None, contract(
+            False,
+            f"initialisation failed: {type(exc).__name__}: {exc}",
+            getattr(py_vncorenlp, "__version__", None),
         )
+
+    return segmenter, contract(
+        True,
+        (
+            "resources externally provisioned and verified against supplied SHA-256"
+            if verified
+            else (
+                "resources externally provisioned but NOT verified: "
+                + (
+                    "no --vncorenlp-hashes supplied"
+                    if not expected_files
+                    else f"no supplied hash for {', '.join(unverified)}"
+                )
+                + ". pinned=false; results depending on segmentation are not reproducible."
+            )
+        ),
+        getattr(py_vncorenlp, "__version__", None),
+    )
 
 
 def segment(segmenter, text: str) -> str:
@@ -447,14 +882,84 @@ def render_report(config: dict[str, Any], comparison: dict[str, Any], observatio
         a(f"| segmenter.{key} | {value} |")
     a(f"| python | {config['python_version']} |")
     a("")
+    a("## Reproducibility and paths")
+    a("")
+    a("| Field | Value |")
+    a("|---|---|")
+    for key in (
+        "tokenizer_revision_requested", "tokenizer_revision_observed",
+        "tokenizer_revision_verified", "scientifically_usable",
+        "repository_root", "resolved_output_root",
+        "resolved_vncorenlp_dir", "cwd_at_start", "cwd_after_segmenter_initialization",
+        "cwd_changed_by_dependency",
+    ):
+        a(f"| `{key}` | {config.get(key)} |")
+    a("")
+    phobert = config.get("phobert_provenance") or {}
+    if phobert:
+        a("### PhoBERT tokenizer provenance")
+        a("")
+        a("| Field | Value |")
+        a("|---|---|")
+        for key in (
+            "checkpoint", "revision_requested", "revision_observed", "revision_verified",
+            "revision_evidence_source", "tokenizer_class", "is_fast",
+        ):
+            a(f"| `{key}` | {phobert.get(key)} |")
+        for path in phobert.get("revision_evidence") or []:
+            a(f"| evidence | `{path}` |")
+        a("")
+        if not phobert.get("revision_verified"):
+            a("> The tokenizer revision was **not verified**: supplying `--revision` is an")
+            a("> argument, not a verification. This run is not scientifically usable.")
+            a("")
+
+    provenance = config.get("vncorenlp_provenance") or {}
+    if provenance:
+        a("### VnCoreNLP provenance")
+        a("")
+        a("| Field | Value |")
+        a("|---|---|")
+        for key in (
+            "manifest_path", "manifest_revision", "observed_revision", "revision_verified",
+            "observed_tags_at_head", "required_jar", "jar_name", "other_jars_present",
+            "hashes_verified", "pinned",
+        ):
+            a(f"| `{key}` | {provenance.get(key)} |")
+        a("")
+        expected_hashes = provenance.get("expected_hashes") or {}
+        observed_hashes = provenance.get("resource_hashes") or {}
+        if expected_hashes or observed_hashes:
+            a("| Resource | Expected | Observed | Match |")
+            a("|---|---|---|---|")
+            for name in sorted(set(expected_hashes) | set(observed_hashes)):
+                want, got = expected_hashes.get(name), observed_hashes.get(name)
+                a(f"| `{name}` | `{want}` | `{got}` | {want == got if want and got else 'n/a'} |")
+            a("")
+    if config.get("cwd_changed_by_dependency"):
+        a("> A dependency changed the working directory during setup. Every output path was")
+        a("> resolved absolutely beforehand, so artifacts are unaffected -- this row exists")
+        a("> because the first Colab run wrote into `.vncorenlp/results/b3b0/` for exactly")
+        a("> this reason.")
+        a("")
+    if not config.get("scientifically_usable"):
+        a("> **NOT SCIENTIFICALLY USABLE.** Either the tokenizer revision was not pinned or")
+        a("> the segmenter resources were not verified against supplied SHA-256 hashes. The")
+        a("> measurements below are exploratory; do not base a preprocessing decision on")
+        a("> them.")
+        a("")
     if not config["segmenter"].get("available"):
         a("> **Segmentation paths UNAVAILABLE.** VnCoreNLP was not usable in this run, so")
         a("> the three segmentation pathways are reported as `UNAVAILABLE_SEGMENTER`")
         a("> rather than faked. Only `RAW_BASE` carries measurements.")
         a("")
     elif not config["segmenter"].get("pinned"):
-        a("> **Reproducibility risk.** The segmentation model was not revision-pinned, so")
-        a("> these numbers may not reproduce. Pin it before any result depends on it.")
+        a("> **Segmenter NOT verified.** The resources were used as found but not checked")
+        a("> against supplied SHA-256 hashes, so `pinned=false`. Pass `--vncorenlp-hashes`")
+        a("> before any result depends on segmentation.")
+        a("")
+    else:
+        a("> Segmenter resources verified against supplied SHA-256 hashes.")
         a("")
 
     a("## Preprocessing paths compared")
@@ -523,13 +1028,94 @@ def render_report(config: dict[str, Any], comparison: dict[str, Any], observatio
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="B3B-0 PhoBERT input-contract probe (Colab).")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--revision", default=None, help="pin the tokenizer revision if known")
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="REQUIRED: full commit SHA of the tokenizer revision to probe",
+    )
     parser.add_argument("--use-fast", action="store_true", default=True)
     parser.add_argument("--no-fast", dest="use_fast", action="store_false")
-    parser.add_argument("--output-root", default="results/b3b0")
+    parser.add_argument(
+        "--output-root",
+        default="results/b3b0",
+        help="relative values resolve against the repository root, never the cwd",
+    )
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--vncorenlp-dir",
+        default=None,
+        help="directory holding an ALREADY-PROVISIONED VnCoreNLP checkout; never downloaded",
+    )
+    parser.add_argument(
+        "--vncorenlp-manifest",
+        default=DEFAULT_VNCORENLP_MANIFEST,
+        help="committed VnCoreNLP pin; the canonical scientific provenance source",
+    )
+    parser.add_argument("--vncorenlp-revision", default=None, help="legacy: externally supplied revision")
+    parser.add_argument(
+        "--vncorenlp-hashes",
+        default=None,
+        help='JSON {"revision": ..., "files": {relpath: sha256}}; pinned=true requires it',
+    )
+    parser.add_argument(
+        "--allow-floating-revision",
+        action="store_true",
+        help="run without --revision; marks the run NOT scientifically usable",
+    )
     parser.add_argument("--skip-segmenter", action="store_true")
     args = parser.parse_args(argv)
+
+    # Resolve every path to an absolute Path BEFORE any third-party code runs.
+    # py_vncorenlp.VnCoreNLP() chdir()s into its resource directory, which is how
+    # the first Colab run wrote its artifacts into .vncorenlp/results/b3b0/.
+    cwd_at_start = Path.cwd()
+    output_root = Path(args.output_root)
+    if not output_root.is_absolute():
+        output_root = (REPO_ROOT / output_root).resolve()
+    vncorenlp_dir = None
+    if args.vncorenlp_dir and not args.skip_segmenter:
+        vncorenlp_dir = Path(args.vncorenlp_dir)
+        if not vncorenlp_dir.is_absolute():
+            vncorenlp_dir = (REPO_ROOT / vncorenlp_dir).resolve()
+    hashes_path = None
+    if args.vncorenlp_hashes:
+        hashes_path = Path(args.vncorenlp_hashes)
+        if not hashes_path.is_absolute():
+            hashes_path = (REPO_ROOT / hashes_path).resolve()
+    manifest_path = None
+    if args.vncorenlp_manifest:
+        manifest_path = Path(args.vncorenlp_manifest)
+        if not manifest_path.is_absolute():
+            manifest_path = (REPO_ROOT / manifest_path).resolve()
+
+    # A scientific probe must name the tokenizer revision it used, as a full
+    # immutable commit SHA.
+    if args.revision and not args.allow_floating_revision and not is_full_commit_sha(args.revision):
+        print(
+            f"--revision {args.revision!r} is not a full immutable commit SHA.\n\n"
+            "Branch names (`main`, `master`), tags and abbreviated SHAs are mutable or\n"
+            "ambiguous: a branch moves, a tag can be re-pointed, and a short SHA is a\n"
+            f"prefix. Supply the full {FULL_SHA_LENGTH}-character lowercase commit hash of\n"
+            "the tokenizer revision to probe.\n\n"
+            "To run anyway for exploration only, pass --allow-floating-revision; the\n"
+            "artifacts will record revision_verified=false and scientifically_usable=false.\n",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not args.revision and not args.allow_floating_revision:
+        print(
+            "--revision is required.\n\n"
+            "A floating checkpoint revision makes the probe unreproducible: the tokenizer\n"
+            "could change between runs and the result would not be attributable. Supply the\n"
+            "full commit SHA of the tokenizer you intend to probe:\n\n"
+            f"    --checkpoint {args.checkpoint} --revision <FULL_SHA>\n\n"
+            "Resolve it from the model's Hugging Face page or the API. To run anyway for\n"
+            "exploration only, pass --allow-floating-revision; the artifacts will record\n"
+            "revision_pinned=false and must not be used for a scientific decision.\n",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         import transformers  # noqa: F401
@@ -550,14 +1136,62 @@ def main(argv: Sequence[str] | None = None) -> int:
     tokenizer = load_tokenizer(args.checkpoint, args.revision, args.use_fast)
     tokenizer_contract = describe_tokenizer(tokenizer, args.checkpoint, args.revision)
     print(f"  class={tokenizer_contract.tokenizer_class} fast={tokenizer_contract.is_fast}")
+    print(
+        f"  revision requested={tokenizer_contract.revision_requested} "
+        f"observed={tokenizer_contract.revision_observed} "
+        f"verified={tokenizer_contract.revision_verified}"
+    )
+    # A resolved revision that disagrees with the request is a hard stop: the
+    # measurements would be attributed to the wrong tokenizer.
+    if (
+        args.revision
+        and tokenizer_contract.revision_observed
+        and tokenizer_contract.revision_observed != args.revision
+    ):
+        print(
+            "REFUSING: the tokenizer that loaded is not the one requested.\n"
+            f"  requested : {args.revision}\n"
+            f"  observed  : {tokenizer_contract.revision_observed}\n"
+            f"  evidence  : {', '.join(tokenizer_contract.revision_evidence) or 'n/a'}\n\n"
+            "Clear the Hugging Face cache or correct --revision, then rerun.",
+            file=sys.stderr,
+        )
+        return 3
+    if args.revision and tokenizer_contract.revision_observed is None:
+        print(
+            "WARNING: the resolved tokenizer revision could not be determined "
+            f"({tokenizer_contract.revision_evidence_source}). "
+            "revision_verified=false, so this run is NOT scientifically usable.",
+            file=sys.stderr,
+        )
 
     if args.skip_segmenter:
         segmenter, segmenter_contract = None, SegmenterContract(
             available=False, name="VnCoreNLP", notes="skipped by --skip-segmenter"
         )
     else:
-        segmenter, segmenter_contract = load_segmenter(REPO_ROOT / ".vncorenlp")
-    print(f"  segmenter available: {segmenter_contract.available}")
+        manifest = load_vncorenlp_manifest(manifest_path if vncorenlp_dir else None)
+        hashes = load_expected_hashes(hashes_path)
+        expected = reconcile_provenance(manifest, hashes, args.vncorenlp_revision)
+        if manifest and manifest_path:
+            expected = {**expected, "_manifest_path": str(manifest_path)}
+        segmenter, segmenter_contract = load_segmenter(
+            vncorenlp_dir, expected, args.vncorenlp_revision
+        )
+    cwd_after_segmenter = Path.cwd()
+    print(
+        f"  segmenter available: {segmenter_contract.available} "
+        f"(pinned={segmenter_contract.pinned}, revision_verified={segmenter_contract.revision_verified}, "
+        f"hashes_verified={segmenter_contract.hashes_verified})"
+    )
+    if segmenter_contract.observed_tags_at_head:
+        print(f"  tags at HEAD       : {', '.join(segmenter_contract.observed_tags_at_head)}")
+    if cwd_after_segmenter != cwd_at_start:
+        print(
+            f"  NOTE: a dependency changed the working directory "
+            f"({cwd_at_start} -> {cwd_after_segmenter}); output paths were resolved "
+            "absolutely beforehand and are unaffected."
+        )
 
     observations = run_probe(tokenizer, segmenter, segmenter_contract)
     by_path: dict[str, list[PathObservation]] = {}
@@ -565,12 +1199,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         by_path.setdefault(observation.path.value, []).append(observation)
     comparison = compare_paths(by_path)
 
-    status = STATUS_OK if segmenter_contract.available else STATUS_PARTIAL
+    status = STATUS_OK if (segmenter_contract.available and segmenter_contract.pinned) else STATUS_PARTIAL
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = Path(args.output_root) / run_id
+    run_dir = output_root / run_id
     suffix = 1
     while run_dir.exists():
-        run_dir = Path(args.output_root) / f"{run_id}-{suffix}"
+        run_dir = output_root / f"{run_id}-{suffix}"
         suffix += 1
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -586,6 +1220,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "platform": platform.platform(),
         "status": status,
         "model_weights_loaded": False,
+        # scientifically_usable requires EVERY provenance check to have actually
+        # passed -- not merely to have been requested:
+        #   tokenizer: revision supplied AND resolved AND equal
+        #   segmenter: checkout revision verified AND every digest verified
+        "tokenizer_revision_requested": tokenizer_contract.revision_requested,
+        "tokenizer_revision_observed": tokenizer_contract.revision_observed,
+        "tokenizer_revision_verified": tokenizer_contract.revision_verified,
+        "scientifically_usable": tokenizer_contract.revision_verified and segmenter_contract.pinned,
+        "phobert_provenance": tokenizer_contract.to_dict(),
+        "vncorenlp_provenance": segmenter_contract.to_dict(),
+        # Path and cwd diagnostics: the first Colab run wrote its artifacts into
+        # .vncorenlp/results/b3b0/ because a dependency changed the cwd.
+        "repository_root": str(REPO_ROOT),
+        "resolved_output_root": str(output_root),
+        "resolved_vncorenlp_dir": str(vncorenlp_dir) if vncorenlp_dir else None,
+        "cwd_at_start": str(cwd_at_start),
+        "cwd_after_segmenter_initialization": str(cwd_after_segmenter),
+        "cwd_changed_by_dependency": cwd_at_start != cwd_after_segmenter,
         "note": (
             "Feasibility probe only. Compares preprocessing pathways; does not choose one. "
             "No model weights were loaded and no policy is locked by this run."
@@ -596,6 +1248,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "platform": platform.platform(),
         "tokenizer": tokenizer_contract.to_dict(),
         "segmenter": segmenter_contract.to_dict(),
+        "repository_root": str(REPO_ROOT),
+        "resolved_output_root": str(output_root),
+        "resolved_vncorenlp_dir": str(vncorenlp_dir) if vncorenlp_dir else None,
+        "cwd_at_start": str(cwd_at_start),
+        "cwd_after_segmenter_initialization": str(cwd_after_segmenter),
+        "cwd_changed_by_dependency": cwd_at_start != cwd_after_segmenter,
+        "hf_home": os.environ.get("HF_HOME"),
     }
 
     for name, payload in (("config.json", config), ("environment.json", environment), ("summary.json", comparison)):
@@ -616,7 +1275,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"grid_invariant={invariance.get('all_cases_invariant')}"
         )
     print()
+    print(f"  output root : {output_root}")
+    if cwd_after_segmenter != cwd_at_start:
+        print(f"  cwd changed : {cwd_at_start} -> {cwd_after_segmenter} (artifacts unaffected)")
+    print()
     print(f"Status: {status}")
+    if not (tokenizer_contract.revision_verified and segmenter_contract.pinned):
+        reasons = []
+        if not tokenizer_contract.revision_verified:
+            reasons.append("tokenizer revision not verified")
+        if not segmenter_contract.revision_verified:
+            reasons.append("VnCoreNLP checkout revision not verified")
+        if not segmenter_contract.hashes_verified:
+            reasons.append("VnCoreNLP resource hashes not verified")
+        print(f"NOT scientifically usable: {'; '.join(reasons)}.")
     print("No preprocessing policy was chosen. See docs/spec/decisions.md D-B3B0-001.")
     print()
     print(f"Results: {run_dir}")

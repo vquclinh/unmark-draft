@@ -475,13 +475,56 @@ pip install "transformers==4.57.6"
 pip install py_vncorenlp          # optional; needs a JVM, which Colab provides
 export HF_HOME="$PWD/.hf-cache"
 python scripts/fetch_vietnamese_syllable_inventory.py   # for B3A eligibility
-python scripts/b3b0_phobert_input_probe.py --checkpoint vinai/phobert-base
+
+# VnCoreNLP must be provisioned yourself — the probe never downloads it.
+python scripts/b3b0_phobert_input_probe.py \
+    --checkpoint vinai/phobert-base \
+    --revision <FULL_SHA> \
+    --vncorenlp-dir .vncorenlp \
+    --vncorenlp-manifest configs/linguistics/vncorenlp_v1.2.json
 ```
 
 It loads the **tokenizer only** — never `AutoModel` — and writes
-`results/b3b0/<run_id>/` with `config.json`, `environment.json`, `cases.jsonl`,
+`<repo>/results/b3b0/<run_id>/` with `config.json`, `environment.json`, `cases.jsonl`,
 `summary.json` and `report.md`. If VnCoreNLP is unavailable the segmentation paths are
 reported `UNAVAILABLE_SEGMENTER` rather than faked.
+
+Two reproducibility rules, both learned from the first real Colab run (see
+[audit 007](docs/audits/007-b3b0-colab-probe-repair.md)):
+
+* **`--revision` is required, and verified after loading.** It must be a full
+  40-character commit SHA — branches, tags and short SHAs are rejected. After the
+  tokenizer loads, the probe reads the resolved commit back out of the Hugging Face cache
+  path of the files it actually loaded and compares it to the request. A mismatch aborts;
+  an unrecoverable revision leaves the run not scientifically usable. Supplying the
+  argument is not verification.
+* **VnCoreNLP is never downloaded.** Provision it yourself and pass `--vncorenlp-dir`.
+  Provenance comes from the committed pin
+  [`configs/linguistics/vncorenlp_v1.2.json`](configs/linguistics/vncorenlp_v1.2.json),
+  which names the exact release, revision, required jar and SHA-256 of each resource.
+  `pinned: true` is recorded only when every required file verified — files merely
+  existing never counts, and extra jars are never substituted for the named one.
+
+The pin is complete: VnCoreNLP `v1.2` at revision `62bbc58f…`, with the SHA-256 of the
+jar, the vocabulary and the RDR model. At run time the probe checks **both** that the
+checkout's `git rev-parse HEAD` equals the pinned revision **and** that every digest
+matches. Either mismatch fails closed. A checkout without `.git` still has its digests
+verified but cannot be marked pinned, because the manifest pins a revision.
+
+Canonical rerun procedure:
+
+1. provision the exact VnCoreNLP v1.2 checkout at the pinned revision;
+2. the probe verifies the checkout HEAD against the committed manifest;
+3. the probe verifies all three resource hashes;
+4. run at an explicit PhoBERT `--revision`;
+5. **trust the measurements only if `scientifically_usable: true`** in `config.json`, which
+   requires the tokenizer revision to have been *verified* and every VnCoreNLP check to
+   have passed:
+
+```text
+scientifically_usable = tokenizer.revision_verified AND segmenter.pinned
+segmenter.pinned      = vncorenlp_revision_verified AND vncorenlp_hashes_verified
+```
 
 | Path | Pipeline |
 |---|---|
@@ -495,9 +538,8 @@ The decisive column is **grid invariance**: §4.5 requires identical base token 
 `FULL`…`STRIP_ALL`. A path that fails it is unusable however well it matches PhoBERT's
 training distribution.
 
-Two related items are open: the backbone checkpoint is named (`PhoBERT-base`) but not
-pinned to a repository or revision anywhere (D-B3B0-002), and `py_vncorenlp`'s model
-download is not revision-pinned, which the probe reports as a reproducibility risk.
+One related item is open: the backbone checkpoint is named (`PhoBERT-base`) but not
+pinned to a repository or revision anywhere in the proposal (D-B3B0-002).
 
 ---
 

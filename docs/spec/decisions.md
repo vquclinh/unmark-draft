@@ -386,3 +386,242 @@ the whole comparison unreproducible. G−1 already established the pattern for
 **Proposal source updated?** **NO.** Adding a checkpoint to §6.1 would be locking
 it by side effect. The researcher should either pin it in §5.1 or add it to §5's
 open-items table with the gate it blocks.
+
+
+### D-B3B0-003 — first Colab probe run invalidated; probe repaired
+
+| | |
+|---|---|
+| **Status** | **IMPLEMENTATION REPAIR** — not a change to the scientific proposal |
+| **Owner** | B3B-0 (done) |
+| **Date** | 2026-08-19 |
+
+**Observed on the first real Colab probe run.** Two infrastructure bugs that the
+local mock tests could not have caught:
+
+1. **The automatic VnCoreNLP downloader was still in the script.** It called
+   `py_vncorenlp.download_model()` before constructing the segmenter, so the
+   segmentation model was whatever upstream served that day. The researcher had
+   already provisioned a pinned VnCoreNLP v1.2 checkout with recorded SHA-256
+   hashes; the probe ignored it and fetched its own.
+2. **The relative output root drifted.** `py_vncorenlp.VnCoreNLP(save_dir=…)`
+   `chdir()`s into its resource directory, and the run directory was built from a
+   relative `--output-root` *after* that call. Artifacts landed in
+   `.vncorenlp/results/b3b0/<run_id>/` instead of `<repo>/results/b3b0/<run_id>/`.
+
+**Consequence.** That run is an **INVALID PROBE RUN for scientific
+decision-making**: the segmentation resource provenance was not guaranteed, so any
+per-path measurement depending on segmentation is unattributable. No conclusion is
+drawn from it. Its artifacts are left untouched where they are; `.vncorenlp/` is
+now git-ignored so they cannot be committed.
+
+**Resolution.**
+
+* The segmenter resource is now **externally provisioned only**. `download_model()`
+  is absent from the script and a test asserts it can never reappear. The probe
+  requires `--vncorenlp-dir`, checks that `VnCoreNLP-*.jar`,
+  `models/wordsegmenter/vi-vocab` and `models/wordsegmenter/wordsegmenter.rdr`
+  exist, computes their SHA-256, and refuses on mismatch against
+  `--vncorenlp-hashes`. `pinned=true` is recorded **only** when every observed file
+  was verified against a supplied hash; existence alone never qualifies.
+* Every path is resolved to an absolute `Path` at process start, before any
+  dependency runs. `cwd_at_start`, `cwd_after_segmenter_initialization`,
+  `repository_root`, `resolved_output_root`, `resolved_vncorenlp_dir` and
+  `cwd_changed_by_dependency` are recorded, so a library moving the cwd is
+  reported rather than silently relocating artifacts. No `chdir()` is used.
+* `--revision` is now **required**: a floating tokenizer revision fails closed.
+  `--allow-floating-revision` permits exploration but stamps
+  `scientifically_usable: false`.
+
+**Scope.** Probe infrastructure only. No preprocessing policy was chosen, no
+alignment implemented, no scientific semantics touched.
+
+**D-B3B0-001 remains OPEN.** The segmentation question is unanswered and requires
+a rerun of the repaired probe.
+
+**Proposal source updated?** **NO.**
+
+
+### D-B3B0-004 — VnCoreNLP dependency pinned by a committed manifest
+
+| | |
+|---|---|
+| **Status** | **CLOSED** by [D-B3B0-005](#d-b3b0-005--vncorenlp-provenance-closed-and-revision-verified). *Was:* IMPLEMENTATION REPAIR, blocked on researcher provenance. |
+| **Owner** | B3B-0 (code) / researcher (values) — both discharged |
+| **Date** | 2026-08-19 |
+
+**Original state.** Audit 007 closed the automatic-download bug but left the
+segmenter provenance caller-supplied: `--vncorenlp-hashes` pointed at a
+Colab-side file, and the jar was chosen by globbing `VnCoreNLP-*.jar` and taking
+the first match (audit 007 N1 and N2).
+
+**Final state.** The dependency is represented by a **committed manifest**,
+`configs/linguistics/vncorenlp_v1.2.json`, carrying the schema version, source,
+repository, release tag, exact Git revision, the exact required jar
+(`VnCoreNLP-1.2.jar`) and the SHA-256 of all three required resources. It is the
+canonical `--vncorenlp-manifest` provenance source. The jar is **named, never
+discovered**: extra jars in the directory are reported but never substituted, and
+a missing required jar fails closed.
+
+**Reason.** Scientific runs must be reproducible from repository configuration,
+not from notebook-side scratch state. A provenance file that lives only in a
+Colab session disappears with the session.
+
+**Blocked on.** The manifest is committed **incomplete**: `revision` and all three
+SHA-256 values read `PENDING_RESEARCHER_PROVENANCE`, and `status` is
+`AWAITING_RESEARCHER_PROVENANCE`. Those values exist only in the researcher's
+Colab provisioning cells and are **not derivable in this repository** —
+`.vncorenlp/` is a git-ignored Colab-side runtime directory. Inventing a digest
+would defeat the entire purpose of a pin, so none was invented. The loader
+refuses any manifest still containing a placeholder, and the probe cannot mark a
+run scientifically usable until the values are filled in.
+
+**Conflict policy.** `--vncorenlp-revision` and `--vncorenlp-hashes` are retained
+for compatibility, but a disagreement with the committed manifest is an **error**,
+not a precedence question: silently preferring one source would let a stale CLI
+value override the repository's pin.
+
+**Notebook scratch state.** `.probe_phobert_revision`,
+`.probe_vncorenlp_revision` and `.probe_vncorenlp_hashes.txt` are notebook
+cell-to-cell state, **not** scientific configuration. The probe never reads them
+(asserted by test) and `.probe_*` is git-ignored. VnCoreNLP provenance comes from
+the committed manifest; the tokenizer revision comes from an explicit CLI flag.
+
+**Dependency-change policy.** Changing the release tag, Git revision, jar,
+vocabulary, RDR model or any SHA-256 is an **experiment dependency change** and
+must be recorded here before any run depends on it.
+
+| | |
+|---|---|
+| **Affected** | B3B-0 Colab probe; the PhoBERT preprocessing path if segmentation is selected; the pre-training audit |
+| **Affected code** | `configs/linguistics/vncorenlp_v1.2.json`, `scripts/b3b0_phobert_input_probe.py`, `unmark/alignment/contracts.py`, `.gitignore` |
+| **Proposal updated** | **NO.** This is not a scientific method change. |
+
+**D-B3B0-001 remains OPEN** (segmentation vs `T(b(x))`).
+**D-B3B0-002 remains OPEN** (backbone checkpoint not locked).
+
+
+### D-B3B0-005 — VnCoreNLP provenance closed and revision verified
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — closes D-B3B0-004 and audit 008 N1 |
+| **Owner** | B3B-0 — discharged |
+| **Date** | 2026-08-19 |
+
+**Original state.** Audit 008 created the committed manifest but could not complete
+it: the exact Git revision and the three SHA-256 digests existed only in the
+researcher's Colab checkout, were absent from this repository, and were forbidden
+to be invented. The manifest shipped with `AWAITING_RESEARCHER_PROVENANCE` and the
+loader refused it. Audit 008 also left N1 open: nothing checked that the checkout
+was actually *at* the pinned revision.
+
+**Researcher-provided provenance**, extracted from the provisioned checkout with
+`git rev-parse HEAD`, `git tag --points-at HEAD` and sha256 over the resources:
+
+| | |
+|---|---|
+| source repository | `https://github.com/vncorenlp/VnCoreNLP.git` |
+| release tag at HEAD | `v1.2` |
+| revision | `62bbc58fe5d113c898eae112656be97dcf50b3a0` |
+| required jar | `VnCoreNLP-1.2.jar` |
+| `VnCoreNLP-1.2.jar` | `9e2811cdbc2ddfc71d04be5dc36e185c88dcd1ad4d5d69e4ff2e1369dccf7793` |
+| `models/wordsegmenter/vi-vocab` | `0a47c5b55bbce163029d37730a67b9479740388695c29c106c112b815613eaa5` |
+| `models/wordsegmenter/wordsegmenter.rdr` | `9e62f96bd93e37a24f364238e8d8ae986fa5dad6dbc9f4eae622ab3651b7fa06` |
+
+**Final implementation.**
+
+* The committed manifest is fully pinned, `status: PINNED`, no placeholder left.
+* At run time the probe reads `git rev-parse HEAD` of the provisioned checkout
+  (a local subprocess, no network) and compares it to the pinned revision.
+  **Mismatch fails closed** — it refuses to load, it does not warn.
+* If `.git` metadata is absent, resource digests are still verified,
+  `observed_revision` is `None`, `revision_verified` is `false`, and `pinned`
+  is `false`. No revision verification is ever fabricated.
+* `git tag --points-at HEAD` is recorded as `observed_tags_at_head`, a
+  **diagnostic only**: a matching tag never rescues a revision mismatch, which a
+  test asserts directly.
+* `pinned = hashes_verified AND revision_verified`. Exact-jar selection from
+  audit 008 is retained; extra jars are reported, never substituted.
+* `scientifically_usable = tokenizer revision supplied AND segmenter pinned`.
+
+**Reason.** B3B-0 preprocessing evidence must be reproducible from committed
+repository configuration plus a provisioned checkout — not from notebook-side
+scratch state that vanishes with the session.
+
+| | |
+|---|---|
+| **Affected** | the B3B-0 probe only; the PhoBERT preprocessing pipeline if segmentation is later selected; the pre-training proposal-vs-repository audit |
+| **Affected code** | `configs/linguistics/vncorenlp_v1.2.json`, `scripts/b3b0_phobert_input_probe.py`, `unmark/alignment/contracts.py` |
+| **Proposal updated** | **NO.** Not a scientific method change. |
+
+**Still open, unchanged by this entry:**
+
+* **D-B3B0-001** — whether PhoBERT's word segmentation belongs in the pipeline
+  (`T(b(x))` vs `T(S(b(x)))`). **OPEN.** No preprocessing policy has been selected.
+* **D-B3B0-002** — the backbone checkpoint is named but not pinned. **OPEN.**
+
+
+### D-B3B0-006 — tokenizer revision verified after loading, not merely requested
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — closes audit 009 N3 |
+| **Owner** | B3B-0 — discharged |
+| **Date** | 2026-08-19 |
+
+**Original state.** Audit 009 required an explicit `--revision` and passed it to
+`from_pretrained`, recording it as `revision_pinned`. Nothing checked what
+actually loaded. A stale or shared Hugging Face cache, or a checkpoint resolved
+by some other path, could have produced measurements attributed to the wrong
+tokenizer, and the artifact would have claimed the revision was pinned.
+
+**Final state.** After loading, the probe reads the resolved commit back off the
+tokenizer's own files and compares it to the request:
+
+* candidate paths are collected from documented attributes (`vocab_file`,
+  `merges_file`, `tokenizer_file`, `name_or_path`) and from `init_kwargs` —
+  not from a guessed private field;
+* the commit is parsed out of the Hugging Face cache layout
+  `models--org--name/snapshots/<commit_sha>/…`. The snapshot directory is always
+  the *resolved* commit, so this is genuine post-load evidence rather than a
+  restatement of the request;
+* no second download and no floating lookup: re-resolving the repository would
+  either echo the request or introduce exactly the mutability being guarded
+  against;
+* contradictory evidence (two different snapshot SHAs) yields **no** observed
+  revision rather than a pick.
+
+Fields are separated so none of them can be misread:
+`revision_requested`, `revision_observed`, `revision_verified`,
+`revision_evidence`, `revision_evidence_source`. The ambiguous `revision_pinned`
+— which only ever meant "the CLI argument was present" — is gone.
+
+**Fail-closed.** Observed ≠ requested aborts the run (exit 3). Observed
+unrecoverable leaves `revision_verified: false`, which makes the run not
+scientifically usable. `--revision` must be a **full 40-character lowercase
+commit SHA**: branches, tags and abbreviated SHAs are rejected at argument
+validation, because each is mutable or ambiguous.
+
+**Final contract.**
+
+```text
+scientifically_usable = tokenizer.revision_verified AND segmenter.pinned
+segmenter.pinned      = vncorenlp_revision_verified AND vncorenlp_hashes_verified
+```
+
+**Reason.** To make the PhoBERT side of provenance as strict as the VnCoreNLP
+side already was after D-B3B0-005. Asymmetric rigour is how a pipeline ends up
+trusted for the wrong reasons.
+
+| | |
+|---|---|
+| **Affected** | B3B-0 probe provenance only; the future B3B backbone lock; the pre-training audit |
+| **Affected code** | `scripts/b3b0_phobert_input_probe.py`, `unmark/alignment/contracts.py` |
+| **Proposal updated** | **NO.** |
+
+The revision used by the probe is **evidence provenance, not the final paper
+checkpoint lock**.
+
+**Still open, unchanged:** **D-B3B0-001** (segmentation vs `T(b(x))`) and
+**D-B3B0-002** (backbone checkpoint not locked).

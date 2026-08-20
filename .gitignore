@@ -18,6 +18,19 @@ results/**
 !results/**/
 !results/**/.gitkeep
 
+# --- Notebook scratch state -------------------------------------------------
+# Files a Colab notebook writes to carry values between cells. NOT scientific
+# configuration: the probe must never read them. VnCoreNLP provenance comes from
+# the committed manifest, and the tokenizer revision from an explicit CLI flag.
+.probe_*
+
+# --- External NLP runtime resources ----------------------------------------
+# VnCoreNLP checkout used by the B3B-0 probe on Colab. Externally provisioned,
+# never downloaded by the probe, never committed. The first Colab run also wrote
+# stray artifacts under .vncorenlp/results/ because a dependency changed the cwd;
+# ignoring the whole directory keeps those out of git too.
+.vncorenlp/
+
 # --- External linguistic resources -----------------------------------------
 # Fetched by scripts/fetch_vietnamese_syllable_inventory.py and verified against
 # configs/linguistics/vietnamese_syllables.yaml. Not committed: the upstream
