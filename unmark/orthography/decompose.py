@@ -27,6 +27,7 @@ module -- the same shadowing as ``datetime.datetime``. Import either
 from __future__ import annotations
 
 import unicodedata
+from typing import Callable
 
 from unmark.orthography.canonical import DEFAULT_TONE_PLACEMENT, TonePlacement, canon, nfc, nfd
 from unmark.orthography.marks import (
@@ -53,6 +54,7 @@ def decompose(
     *,
     source_is_clean: bool = False,
     placement: TonePlacement = DEFAULT_TONE_PLACEMENT,
+    eligibility_classifier: Callable[[str], Eligibility] | None = None,
 ) -> DecomposedText:
     """Decompose `text` into base, tone and letter-diacritic streams.
 
@@ -64,6 +66,13 @@ def decompose(
             mark is not evidence of `ngang` (proposal 1.2). Set this only for
             text known to be clean, such as a gold corpus before corruption.
         placement: canonical tone placement; only `PRESERVE` is implemented.
+        eligibility_classifier: optional `str -> Eligibility` applied to each
+            syllable's **stripped base form**. Kept as an injected policy layer
+            rather than an import so that Unicode decomposition and
+            reconstruction never depend on an external resource file: without a
+            classifier every span stays `Eligibility.UNDECIDED` and the
+            round-trip is unaffected. `unmark.linguistics.make_classifier`
+            builds one from the pinned syllable inventory.
 
     Returns:
         A :class:`DecomposedText` from which `recompose` rebuilds `canon(text)`.
@@ -139,7 +148,9 @@ def decompose(
         base_parts.append(base_char)
 
     base_text = "".join(base_parts)
-    syllables = _segment_syllables(units, source_is_clean=source_is_clean)
+    syllables = _segment_syllables(
+        units, source_is_clean=source_is_clean, eligibility_classifier=eligibility_classifier
+    )
 
     return DecomposedText(
         original_text=text,
@@ -153,7 +164,12 @@ def decompose(
     )
 
 
-def _segment_syllables(units: list[CharacterUnit], *, source_is_clean: bool) -> list[SyllableSpan]:
+def _segment_syllables(
+    units: list[CharacterUnit],
+    *,
+    source_is_clean: bool,
+    eligibility_classifier: Callable[[str], Eligibility] | None = None,
+) -> list[SyllableSpan]:
     """Split the unit stream into maximal alphabetic runs.
 
     Vietnamese writes each syllable as its own whitespace-delimited word, so a
@@ -166,7 +182,14 @@ def _segment_syllables(units: list[CharacterUnit], *, source_is_clean: bool) -> 
     def flush() -> None:
         if not current:
             return
-        spans.append(_build_span(len(spans), current, source_is_clean=source_is_clean))
+        spans.append(
+            _build_span(
+                len(spans),
+                current,
+                source_is_clean=source_is_clean,
+                eligibility_classifier=eligibility_classifier,
+            )
+        )
         current.clear()
 
     for unit in units:
@@ -178,7 +201,13 @@ def _segment_syllables(units: list[CharacterUnit], *, source_is_clean: bool) -> 
     return spans
 
 
-def _build_span(span_index: int, units: list[CharacterUnit], *, source_is_clean: bool) -> SyllableSpan:
+def _build_span(
+    span_index: int,
+    units: list[CharacterUnit],
+    *,
+    source_is_clean: bool,
+    eligibility_classifier: Callable[[str], Eligibility] | None = None,
+) -> SyllableSpan:
     toned = [u for u in units if u.observed_tone is not ObservedTone.UNMARKED]
 
     anomalies: list[Anomaly] = []
@@ -205,6 +234,7 @@ def _build_span(span_index: int, units: list[CharacterUnit], *, source_is_clean:
             if anomaly not in anomalies:
                 anomalies.append(anomaly)
 
+    base_text = "".join(u.base_char for u in units)
     return SyllableSpan(
         span_index=span_index,
         canonical_start=units[0].canonical_start,
@@ -212,14 +242,19 @@ def _build_span(span_index: int, units: list[CharacterUnit], *, source_is_clean:
         base_start=units[0].base_start,
         base_end=units[-1].base_end,
         text="".join(u.canonical_text for u in units),
-        base_text="".join(u.base_char for u in units),
+        base_text=base_text,
         observed_tone=observed,
         lexical_tone=lexical,
         tone_unit_index=tone_unit_index,
-        # Proposal 4.3 decides this by matching the Vietnamese syllable
-        # inventory after stripping. That inventory is not in the proposal and
-        # not in this repository, so B1A does not guess it.
-        eligibility=Eligibility.UNDECIDED,
+        # Proposal 4.3: membership of the Vietnamese syllable inventory, tested
+        # on the STRIPPED form so clean and corrupted input classify identically.
+        # `UNDECIDED` only when no classifier was supplied -- meaning "not
+        # resolvable here", never "resolved as non-Vietnamese".
+        eligibility=(
+            eligibility_classifier(base_text)
+            if eligibility_classifier is not None
+            else Eligibility.UNDECIDED
+        ),
         unit_indices=tuple(u.unit_index for u in units),
         anomalies=tuple(anomalies),
     )

@@ -28,7 +28,7 @@ from unmark.corruption.conditions import (
 )
 from unmark.corruption.corrupt import corrupt, corrupt_batch
 from unmark.corruption.eligibility import (
-    ACTIVE_ELIGIBILITY_POLICY,
+    active_eligibility_policy,
     CorruptionPurpose,
     EligibilityPolicy,
     EligibilityUnresolved,
@@ -44,7 +44,7 @@ from unmark.corruption.deterministic import (
 from unmark.corruption.models import CorruptionResult, UnitDecision
 
 __all__ = [
-    "ACTIVE_ELIGIBILITY_POLICY",
+    "active_eligibility_policy",
     "CONDITIONS",
     "CORRUPTION_SCHEMA_VERSION",
     "FULL",

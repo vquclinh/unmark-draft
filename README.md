@@ -340,32 +340,63 @@ Taken verbatim from proposal §6.3:
 what someone types without an IME. `VARIANT` is recognised but not implemented; see
 [`docs/spec/decisions.md`](docs/spec/decisions.md) (D-B2-005).
 
-### Eligibility is not resolved yet — and the code refuses to pretend
+### Vietnamese eligibility (B3A)
 
-Corruption probabilities are meant to apply to **eligible Vietnamese syllables**
-(proposal §4.3, §6.3). The syllable inventory that rule needs does not exist yet (GAP-2),
-so B2 scores **candidate spans** — every maximal alphabetic run, language-blind.
+Corruption probabilities apply to **eligible Vietnamese syllables**, per proposal §4.3.
+A candidate span is eligible exactly when its stripped form is in the pinned inventory:
 
-That distinction is load-bearing, not cosmetic. Under the fallback, `toi dung Python va
-PyTorch` has a denominator of 5 rather than 3, and `STRIP_ALL` rewrites `café` to `cafe`
-because the acute is a Vietnamese tone codepoint. Neither is wrong for the *engine*; both
-are wrong for a *protocol*. So:
-
-* every count is named `candidate_*`, never `eligible_*`;
-* `result.eligible_units` **raises** rather than returning the candidate count;
-* every span keeps `Eligibility.UNDECIDED`;
-* `corrupt()` defaults to `purpose=SCIENTIFIC` and **raises today** —
-  implementation verification must ask for `CorruptionPurpose.SELF_CHECK`, and its
-  artifacts are stamped `provisional_eligibility: true`.
-
-```python
-corrupt(text, "P50", seed=1, sample_id="s")                       # raises: GAP-2 open
-corrupt(text, "P50", seed=1, sample_id="s", purpose=SELF_CHECK)   # provisional, labelled
+```text
+candidate span -> canon() -> strip_to_base() -> casefold() -> inventory lookup
 ```
 
-Closing GAP-2 is **B3 / pre-training's** responsibility and must happen before stage-1
-training or any main experiment. See [`docs/spec/decisions.md`](docs/spec/decisions.md)
-D-B2-003 and [`docs/audits/004-…`](docs/audits/004-b2-eligibility-safety-followup.md).
+Because the rule reads only the *stripped* form, `học` and its corrupted form `hoc`
+classify identically — so corruption can never change which units are eligible, and the
+base grid stays invariant.
+
+```python
+corrupt("toi dung Python va PyTorch", "P100", seed=1, sample_id="s")
+# candidate_units = 5, eligible_units = 3   (Python, PyTorch excluded)
+# "Python" and "PyTorch" are returned untouched
+```
+
+**The classifier is orthographic, never semantic.** It consults no language identifier,
+frequency list, dictionary, capitalisation heuristic or sentence context — any of those
+would break the pure-function property above. The accepted consequence, which §4.3 calls
+"a known and deliberate error mode": English words that happen to be valid stripped
+Vietnamese syllables (`ban`, `the`, `com`, `on`, `in`, `an`, `la`, `co`) are classified as
+Vietnamese. Words that are not syllable-shaped are not: `machine`, `learning`, `python`,
+`pytorch`, `café`.
+
+#### Fetching the inventory
+
+The list is **not committed** — the upstream gist carries no license statement, so
+redistributing it here would be unlicensed. Only its provenance is in git. Fetch it into
+the repo-local, git-ignored cache:
+
+```bash
+.venv/bin/python scripts/fetch_vietnamese_syllable_inventory.py
+.venv/bin/python scripts/b3a_eligibility_check.py     # verify classification
+```
+
+| | |
+|---|---|
+| source | `all-vietnamese-syllables.txt` by `hieuthi` |
+| revision | `135a4d9716e49a981624474156d6f247b9b46f6a` |
+| sha256 | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| entries | 17,974 raw → 2,489 unique stripped forms |
+| license | none stated — not redistributed here |
+
+The fetch script downloads exactly that revision, verifies the checksum, and **never
+advances the pin**: changing the revision is a scientific spec change that alters every
+corruption denominator. It is the only network operation outside the Colab G−1 path.
+
+This is a linguistic resource, **not a downstream dataset**, and no model or tokenizer is
+involved at this stage. `pytest` never needs the network — unit tests use a small
+committed fixture, and tests needing the real inventory skip when it is absent.
+
+Without the verified inventory, `corrupt(purpose=SCIENTIFIC)` still raises, so an
+experiment can never silently run on the provisional denominator. See
+[`docs/spec/decisions.md`](docs/spec/decisions.md) D-B3A-001.
 
 ### Requested vs realized rates
 
@@ -374,11 +405,13 @@ count, so a short sentence's realized fraction differs from `p`. A selected `nga
 syllable has no mark to remove, so selection and modification are reported separately:
 
 ```text
-candidate_selection_rate    = selected_candidates / candidate_units
-candidate_modification_rate = modified_candidates / candidate_units   # ≤ the above
+realized_probability        = selected_units / eligible_units     # the scientific rate
+realized_modification_rate  = modified_units / eligible_units     # ≤ the above
+candidate_selection_rate    = selected_units / candidate_units    # provisional fallback only
 ```
 
-Both are `None`, never `0.0`, when a string has no candidate spans at all.
+`realized_probability` raises rather than returning a number when the inventory is absent,
+and is `None` — never `0.0` — when a string contains no eligible syllable at all.
 
 ### Base invariance
 
@@ -453,12 +486,15 @@ scripts/
   g_minus1_restore_smoke.py   # G-1 runtime entry point (Colab; lazy torch/transformers)
   g0_orthography_check.py     # G0 round-trip checker (local, no corpus ships here)
   b2_corruption_self_check.py # B2 corruption self-check (local, curated examples)
+  fetch_vietnamese_syllable_inventory.py  # B3A: fetch + verify the pinned inventory
+  b3a_eligibility_check.py    # B3A: eligibility check against the real inventory
 tests/
   test_orthography_signature.py
   test_orthography_decompose.py
   test_restore_smoke_utils.py
 unmark/
   corruption/                 # B2: conditions, deterministic scoring, corrupt()
+  linguistics/                # B3A: pinned syllable inventory + eligibility rule
   orthography/
     marks.py                  # mark inventories, tone/letter channel states
     units.py                  # base-char + combining-mark grouping (shared)

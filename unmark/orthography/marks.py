@@ -156,21 +156,30 @@ STATE_TO_LETTER_MARK: dict[LetterDiacritic, str] = {
 class Eligibility(Enum):
     """Whether an orthographic span is a Vietnamese candidate.
 
-    Proposal 4.3 specifies the rule -- "an alphabetic span is treated as a
-    Vietnamese candidate if it matches the Vietnamese syllable inventory after
-    stripping; otherwise both channels are `N/A`" -- but the syllable inventory
-    it refers to is not enumerated in the proposal and does not exist in this
-    repository. B1A therefore does not decide eligibility: alphabetic spans are
-    reported as `UNDECIDED` rather than guessed from a word list.
+    Proposal 4.3: "an alphabetic span is treated as a Vietnamese candidate if it
+    matches the Vietnamese syllable inventory after stripping; otherwise both
+    channels are `N/A`". B3A resolves this against a pinned inventory
+    (`unmark.linguistics`); GAP-2 is closed.
 
-    Deciding it later must respect the property the proposal insists on: the
-    rule is a pure function of the *stripped* form, so it assigns identical
-    labels to clean and corrupted input. Using the presence of diacritics to
-    decide would break that invariant, so this module never does.
+    The rule is a pure function of the *stripped* form, so it assigns identical
+    labels to clean and corrupted input and cannot break grid invariance. Using
+    the presence of diacritics to decide would destroy that, so nothing in this
+    project ever does.
     """
 
-    NOT_APPLICABLE = "NOT_APPLICABLE"  # non-alphabetic: digits, punctuation, symbols
-    UNDECIDED = "UNDECIDED"  # alphabetic: pending the syllable inventory
+    VIETNAMESE_CANDIDATE = "VIETNAMESE_CANDIDATE"
+    """Resolved: the stripped form is in the pinned Vietnamese syllable
+    inventory. Both channels apply."""
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    """Resolved: not Vietnamese. Digits, punctuation, symbols and emoji are
+    trivially N/A; so is an alphabetic span whose stripped form is not in the
+    inventory. Both channels are `N/A` (proposal 4.3)."""
+
+    UNDECIDED = "UNDECIDED"
+    """**Unresolvable**, not "unknown-but-probably-not": the inventory is not
+    available, so no classification was attempted. Never used for a span that
+    was actually checked."""
 
 
 class Anomaly(Enum):

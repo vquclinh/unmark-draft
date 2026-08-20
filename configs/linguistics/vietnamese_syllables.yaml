@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Pinned Vietnamese syllable inventory (B3A) — provenance only.
+#
+# The raw list is NOT committed: the upstream gist carries no license
+# statement, so redistributing it here would be an unlicensed redistribution.
+# What is committed is enough to obtain and verify the exact same bytes.
+#
+# Changing source_revision or sha256 is a SCIENTIFIC SPEC CHANGE: it changes
+# which spans are eligible, and therefore every corruption denominator. Record
+# it in docs/spec/decisions.md and bump inventory_schema_version.
+# ---------------------------------------------------------------------------
+
+inventory_schema_version: vn-syllables-v1
+
+source_name: all-vietnamese-syllables.txt
+source_author: hieuthi
+source_url: https://gist.github.com/hieuthi/0f5adb7d3f79e7fb67e0e499004bf558
+source_revision: 135a4d9716e49a981624474156d6f247b9b46f6a
+raw_url: https://gist.githubusercontent.com/hieuthi/0f5adb7d3f79e7fb67e0e499004bf558/raw/135a4d9716e49a981624474156d6f247b9b46f6a/all-vietnamese-syllables.txt
+
+# sha256 of the raw bytes at that exact revision.
+sha256: 78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2
+size_bytes: 116290
+encoding: utf-8
+line_endings: LF
+byte_order_mark: false
+retrieved_at: "2026-08-19"
+
+# Upstream description, verbatim from the gist metadata:
+#   "All possibly existent Vietnamese syllables, created by combine all onsets
+#    with all rimes. More information can be found at:
+#    http://hieuthi.com/blog/2017/03/21/all-vietnamese-syllables.html"
+#
+# This is the STRUCTURAL enumeration (every onset x every rime), which is what
+# proposal 4.3 asks for. The author's separate ~7,184-entry COMMON/frequency
+# list is deliberately NOT used: a frequency list answers "which syllables occur
+# often", not "which syllables are legal".
+upstream_description: >-
+  All possibly existent Vietnamese syllables, created by combine all onsets with
+  all rimes.
+
+# --- License ---------------------------------------------------------------
+# Checked on the gist metadata and file listing: no LICENSE file, no license
+# field, no license statement in the description. A public gist is not a licence.
+license_status: NO_EXPLICIT_LICENSE
+license_notes: >-
+  No license statement was found on the gist (no LICENSE file, no license field,
+  no statement in the description). Redistribution permission is therefore NOT
+  established, so this repository does not vendor the raw file. It is fetched
+  into a git-ignored repo-local cache and verified by checksum. Only provenance
+  is committed. If the author later states a compatible license, vendoring may
+  be reconsidered and recorded as a decision.
+
+# --- Membership rule -------------------------------------------------------
+# canon(entry) -> strip_to_base(...) -> casefold() -> set membership.
+canonicalization_mode: canon_then_strip_to_base
+membership_form: casefolded_stripped_base
+case_rule: str.casefold
+
+# --- Expected shape (verified on load) -------------------------------------
+expected_entry_count: 17974
+expected_unique_canonical_entry_count: 17954
+expected_unique_stripped_form_count: 2489
+
+# Repo-relative; never an absolute local path.
+cache_relative_path: .resources-cache/vietnamese-syllables/all-vietnamese-syllables.txt

@@ -25,15 +25,17 @@ apart at a glance:
 | Category | Entries |
 |---|---|
 | **INTENDED FINAL SPEC** | D-B2-001, D-B2-002, D-B2-004, D-B2-006 |
-| **TEMPORARY IMPLEMENTATION FALLBACK** | D-B2-003 |
+| **TEMPORARY IMPLEMENTATION FALLBACK** | *(none open)* — D-B2-003 was closed by D-B3A-001 |
 | **RESOLVED DECISION** | D-001 (canonical tone placement) |
-| **KNOWN DEFERRED GAP** | D-002 / GAP-2 (eligibility), D-B2-005 (`VARIANT`) |
+| **RESOLVED DECISION** (cont.) | D-B3A-001 (Vietnamese eligibility, closes GAP-2) |
+| **KNOWN DEFERRED GAP** | D-B2-005 (`VARIANT`) |
 
 ---
 
 ## B2 — deterministic corruption
 
-Summary: **no DEVIATED entries.** The deterministic engine follows proposal §5.3
+Summary: **no DEVIATED entries.** D-B2-003 is now **closed** by D-B3A-001; no temporary
+fallback remains open. The deterministic engine follows proposal §5.3
 and §6.3 as written. Four clarifications, one deferral, and — after researcher
 review of [audit 003](../audits/003-b2-deterministic-corruption.md) — **one
 temporary implementation fallback** that must be closed before any training run
@@ -69,8 +71,8 @@ temporary implementation fallback** that must be closed before any training run
 
 | | |
 |---|---|
-| **Status** | **TEMPORARY IMPLEMENTATION FALLBACK** — *reclassified 2026-08-19 by researcher review of audit 003, which had recorded it as a harmless CLARIFIED entry* |
-| **Resolution owner** | **B3 / pre-training.** Must be closed before stage-1 training or any main experiment. |
+| **Status** | **CLOSED** by [D-B3A-001](#d-b3a-001--vietnamese-syllable-eligibility-resolved) on 2026-08-19. *Was:* TEMPORARY IMPLEMENTATION FALLBACK, reclassified by researcher review of audit 003 which had recorded it as a harmless CLARIFIED entry. |
+| **Resolution owner** | B3 / pre-training — **discharged**. See [audit 005](../audits/005-b3a-vietnamese-syllable-eligibility.md). |
 
 **Original proposal wording.** §4.3: "An alphabetic span is treated as a
 **Vietnamese candidate** if it matches the Vietnamese syllable inventory after
@@ -180,3 +182,100 @@ engine matches the proposal, the eligibility policy does not yet.
 | D-001 canonical tone placement (MODERN) | [`orthography.md`](orthography.md) |
 | D-002 Vietnamese-candidate eligibility (GAP-2, deferred) | [`orthography.md`](orthography.md) |
 | D-003 what `canon` does not normalise | [`orthography.md`](orthography.md) |
+
+
+---
+
+## B3A — Vietnamese syllable eligibility
+
+### D-B3A-001 — Vietnamese syllable eligibility resolved
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — closes GAP-2 and D-B2-003 |
+| **Date** | 2026-08-19 |
+
+**Original proposal.** §4.3: "An alphabetic span is treated as a **Vietnamese
+candidate** if it matches the Vietnamese syllable inventory after stripping;
+otherwise both channels are `N/A`. […] Ambiguous spans are resolved towards
+Vietnamese, and this is documented as a known and deliberate error mode rather
+than hidden. One property matters more than the rule's accuracy: it is a pure
+function of the *stripped* form."
+
+**Previous temporary state.** No syllable inventory existed in the repository, so
+B2 treated every maximal alphabetic run as a candidate. That fallback was
+`SELF_CHECK`-only and the scientific path was hard-blocked (D-B2-003, audit 004).
+
+**Final implementation.** Membership of a pinned inventory, tested on the
+stripped form:
+
+```text
+candidate span -> canon() -> strip_to_base() -> casefold() -> inventory lookup
+              -> Eligibility.VIETNAMESE_CANDIDATE | NOT_APPLICABLE
+```
+
+`Eligibility.VIETNAMESE_CANDIDATE` was added to the B1A enum. `UNDECIDED` now
+means only "the inventory is unavailable", never "resolved as non-Vietnamese".
+
+**Source provenance.**
+
+| | |
+|---|---|
+| author | `hieuthi` |
+| gist | `0f5adb7d3f79e7fb67e0e499004bf558` |
+| revision | `135a4d9716e49a981624474156d6f247b9b46f6a` |
+| sha256 | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| bytes | 116,290 |
+| entries | 17,974 raw → 17,954 unique canonical → **2,489 unique stripped forms** (15,465 collisions) |
+| license | **NO_EXPLICIT_LICENSE** |
+
+The structural enumeration ("all onsets × all rimes") was chosen deliberately
+over the author's separate ~7,184-entry *common* list: a frequency list answers
+"which syllables occur often", not "which syllables are legal", and §4.3 asks for
+the latter.
+
+**License handling.** No LICENSE file, no license field, no statement in the
+description. A public gist is not a licence, so the raw list is **not committed**.
+It is fetched into the git-ignored `.resources-cache/` by
+`scripts/fetch_vietnamese_syllable_inventory.py`, verified by SHA-256, and
+everything scientific fails loudly without it. Only provenance is in git.
+Changing the pinned revision is a scientific spec change and must be recorded
+here.
+
+**Known error mode — accepted, not fixed.** An English word whose letters form a
+valid stripped Vietnamese syllable is classified Vietnamese: `ban`, `the`, `com`,
+`on`, `in`, `an`, `la`, `co` are all real stripped syllables. The classifier is
+orthographic and structural — no language identification, frequency list,
+dictionary, capitalisation heuristic or sentence context is consulted, because
+any of those would break the pure-function-of-the-stripped-form property that
+guarantees `eligibility(clean) == eligibility(corrupted)`. This is exactly the
+trade §4.3 makes: "chosen for determinism, not for correctness".
+
+Words that are not syllable-shaped are correctly rejected: `machine`, `learning`,
+`python`, `pytorch`, `café`, `google`, `server`, `email`.
+
+**Affected.**
+
+| Area | Effect |
+|---|---|
+| B1A eligibility metadata | `SyllableSpan.eligibility` now resolves when a classifier is injected; `UNDECIDED` otherwise. Round-trip and channels unchanged. |
+| B2 denominator | Only eligible Vietnamese syllables are scored. `toi dung Python va PyTorch`: 5 candidates → 3 eligible. |
+| P25/P50/P75 realized rates | `realized_probability = selected / eligible`. The provisional `candidate_selection_rate` remains available and is clearly distinct. |
+| STRIP_ALL mixed language | Ineligible spans are untouched. `café` survives, where the fallback stripped it to `cafe`. |
+| Stage-1 corruption | Unblocked: `purpose=SCIENTIFIC` now succeeds when the inventory is present. |
+| All future evaluation corruption | Same denominator change; artifacts record `eligibility_schema_version` and inventory provenance. |
+
+**Engine unchanged.** `CORRUPTION_SCHEMA_VERSION` stays `b2-v1`. Scores, keys,
+`sample_id` semantics and `unit_index` are untouched — `unit_index` is still the
+span's index in the full candidate list, so a given unit's score is bit-identical
+to the engine audited in 003/004. Filtering changes *which* units are scored,
+never *what score* a unit receives. A separate `ELIGIBILITY_SCHEMA_VERSION =
+"vn-syllables-v1"` versions the policy, and both appear in every artifact.
+
+**Proposal updated?** **No.** §4.3 already specifies this rule exactly; the
+implementation follows it rather than changing it. Nothing needed clarifying.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/linguistics/{inventory,classify}.py`, `unmark/orthography/{marks,decompose}.py`, `unmark/corruption/{eligibility,corrupt,models}.py`, `scripts/fetch_vietnamese_syllable_inventory.py`, `scripts/b3a_eligibility_check.py`, `configs/linguistics/vietnamese_syllables.yaml` |
+| **PDF stale** | Unchanged by this task; still stale from §4.2 and §5.3 edits. |

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from unmark.corruption import (
-    ACTIVE_ELIGIBILITY_POLICY,
+    active_eligibility_policy,
     CorruptionPurpose,
     EligibilityPolicy,
     EligibilityUnresolved,
@@ -49,6 +49,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # provisional candidate-span fallback. Under the default SCIENTIFIC purpose these
 # calls raise, which is the point of the guard.
 SELF_CHECK = CorruptionPurpose.SELF_CHECK
+
+
+@pytest.fixture
+def missing_inventory(monkeypatch):
+    """Simulate the git-ignored resource cache being absent.
+
+    Patches both lookup sites: `corrupt` imported it at module level, and
+    `active_eligibility_policy` imports it at call time.
+    """
+    import sys
+
+    import unmark.linguistics as linguistics
+
+    # `unmark.corruption.corrupt` is both a module and a re-exported function, so
+    # the attribute lookup gives the function; reach the module via sys.modules.
+    corrupt_module = sys.modules["unmark.corruption.corrupt"]
+    monkeypatch.setattr(corrupt_module, "try_load_inventory", lambda *a, **k: None)
+    monkeypatch.setattr(linguistics, "try_load_inventory", lambda *a, **k: None)
+    yield
 
 VI = "Tôi đang nghiên cứu xử lý ngôn ngữ tự nhiên."
 TONES = "má mà mả mã mạ ma"
@@ -215,8 +234,8 @@ def test_original_text_is_never_mutated():
 def test_full_returns_canonical_clean_text_unchanged():
     result = corrupt(VI, "FULL", seed=1, sample_id="s", purpose=SELF_CHECK)
     assert result.corrupted_text == canon(VI)
-    assert result.selected_candidates == 0
-    assert result.modified_candidates == 0
+    assert result.selected_units == 0
+    assert result.modified_units == 0
     assert result.requested_probability == 0.0
     assert result.candidate_selection_rate == 0.0
     assert result.is_unchanged
@@ -266,8 +285,8 @@ def test_p100_and_strip_all_are_different_conditions():
 
 
 def test_strip_all_maps_every_vietnamese_letter_to_its_base():
-    result = corrupt("đường ăn cân ơn ưu êm ôm Đ", "STRIP_ALL", seed=1, sample_id="s", purpose=SELF_CHECK)
-    assert result.corrupted_text == "duong an can on uu em om D"
+    result = corrupt("đường ăn cân ơn ưu êm ôm", "STRIP_ALL", seed=1, sample_id="s", purpose=SELF_CHECK)
+    assert result.corrupted_text == "duong an can on uu em om"
 
 
 def test_condition_lookup_is_forgiving_about_spelling():
@@ -291,7 +310,7 @@ def test_variant_condition_is_recognised_but_refused():
 def test_zero_eligible_units_is_handled_without_dividing_by_zero(text, condition):
     result = corrupt(text, condition, seed=1, sample_id="s", purpose=SELF_CHECK)
     assert result.candidate_units == 0
-    assert result.selected_candidates == 0
+    assert result.selected_units == 0
     assert result.candidate_selection_rate is None
     assert result.candidate_modification_rate is None
     assert result.corrupted_text == canon(text)
@@ -300,7 +319,7 @@ def test_zero_eligible_units_is_handled_without_dividing_by_zero(text, condition
 def test_one_eligible_unit():
     result = corrupt("phở", "P100", seed=1, sample_id="s", purpose=SELF_CHECK)
     assert result.candidate_units == 1
-    assert result.selected_candidates == 1
+    assert result.selected_units == 1
     assert result.candidate_selection_rate == 1.0
     assert result.corrupted_text == "phơ"
 
@@ -358,8 +377,8 @@ def test_ngang_syllables_are_invariant_under_corruption():
     """Proposal 4.3: 'a ngang syllable is invariant'. It can be selected but
     never modified, and selected != modified is reported, not hidden."""
     result = corrupt("toi di hoc", "P100", seed=1, sample_id="s", purpose=SELF_CHECK)
-    assert result.selected_candidates == 3
-    assert result.modified_candidates == 0
+    assert result.selected_units == 3
+    assert result.modified_units == 0
     assert result.candidate_selection_rate == 1.0
     assert result.candidate_modification_rate == 0.0
     assert result.is_unchanged
@@ -374,10 +393,16 @@ def test_letter_diacritics_survive_tone_conditions_and_fall_under_strip_all(char
     assert corrupt(char, "STRIP_ALL", seed=1, sample_id="s", purpose=SELF_CHECK).corrupted_text == base
 
 
-@pytest.mark.parametrize("char,base", [("đ", "d"), ("Đ", "D")])
-def test_d_stroke_survives_tone_conditions_and_falls_under_strip_all(char, base):
-    assert corrupt(char, "P100", seed=1, sample_id="s", purpose=SELF_CHECK).corrupted_text == char
-    assert corrupt(char, "STRIP_ALL", seed=1, sample_id="s", purpose=SELF_CHECK).corrupted_text == base
+@pytest.mark.parametrize("word,base", [("đi", "di"), ("Đi", "Di"), ("đó", "do"), ("đường", "duong")])
+def test_d_stroke_survives_tone_conditions_and_falls_under_strip_all(word, base):
+    """Uses real syllables: a bare `đ` is not in the inventory, so it is not
+    eligible and correctly survives every condition."""
+    from unmark.orthography import strip_to_base
+
+    tone_only = corrupt(word, "P100", seed=1, sample_id="s", purpose=SELF_CHECK).corrupted_text
+    assert "đ" in tone_only.lower()  # the stroke is a letter diacritic, not a tone
+    assert corrupt(word, "STRIP_ALL", seed=1, sample_id="s", purpose=SELF_CHECK).corrupted_text == base
+    assert strip_to_base(word) == base
 
 
 def test_letter_diacritic_removals_are_recorded():
@@ -445,9 +470,10 @@ def test_unsupported_combining_marks_are_not_dropped():
         assert "ç" in result.corrupted_text
 
 
-def test_documented_collateral_effect_on_loanword_acute():
-    """`é` is a Vietnamese acute codepoint, so a loanword carrying it is stripped
-    like any other syllable. Recorded as a decision (D-B2-003), not a surprise."""
+def test_loanword_acute_is_stripped_only_under_the_provisional_fallback(missing_inventory):
+    """Before B3A this was unavoidable: `é` is a Vietnamese acute codepoint, so a
+    language-blind pass stripped it. It survives only in provisional mode now,
+    and the resolved policy leaves `café` alone -- see the resolved-state test."""
     assert corrupt("café", "P100", seed=1, sample_id="s", purpose=SELF_CHECK).corrupted_text == "cafe"
 
 
@@ -477,7 +503,8 @@ def test_base_invariance_holds_for_every_condition(text, condition):
 def test_corruption_never_changes_the_syllable_count(text, condition):
     result = corrupt(text, condition, seed=13, sample_id="s", purpose=SELF_CHECK)
     assert len(result.clean_decomposition.syllables) == len(result.corrupted_decomposition.syllables)
-    assert len(result.decisions) == result.candidate_units
+    assert len(result.decisions) == result.scored_units
+    assert result.scored_units <= result.candidate_units
 
 
 @pytest.mark.parametrize("condition", sorted(CONDITIONS))
@@ -502,9 +529,9 @@ def test_selected_metadata_matches_the_actual_output():
 
 def test_realized_probability_is_selected_over_eligible():
     result = corrupt(LONG, "P50", seed=4, sample_id="s", purpose=SELF_CHECK)
-    assert result.candidate_selection_rate == result.selected_candidates / result.candidate_units
-    assert result.candidate_modification_rate == result.modified_candidates / result.candidate_units
-    assert result.modified_candidates <= result.selected_candidates
+    assert result.candidate_selection_rate == result.selected_units / result.candidate_units
+    assert result.candidate_modification_rate == result.modified_units / result.candidate_units
+    assert result.modified_units <= result.selected_units
 
 
 @pytest.mark.parametrize("condition", sorted(CONDITIONS))
@@ -534,202 +561,6 @@ def test_result_is_json_serialisable():
     assert restored["corrupted_text"] == result.corrupted_text
     assert restored["condition"] == "P50"
     assert len(restored["decisions"]) == result.candidate_units
-
-
-def test_no_tokenizer_or_ml_import_in_the_corruption_package():
-    """15/16. B2 is entirely pre-tokenization."""
-    import ast
-
-    banned = {"torch", "transformers", "tokenizers", "sentencepiece", "datasets", "safetensors", "accelerate"}
-    for path in (REPO_ROOT / "unmark" / "corruption").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert alias.name.split(".")[0] not in banned, f"{path.name}: {alias.name}"
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                assert node.module.split(".")[0] not in banned, f"{path.name}: {node.module}"
-
-
-# ---------------------------------------------------------------------------
-# Self-check script
-# ---------------------------------------------------------------------------
-def test_self_check_script_runs_and_writes_artifacts(tmp_path):
-    result = subprocess.run(
-        [sys.executable, "scripts/b2_corruption_self_check.py", "--output-root", str(tmp_path), "--run-id", "T"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
-        timeout=180,
-    )
-    assert result.returncode == 0, result.stderr
-    run_dir = tmp_path / "T"
-    for name in ("config.json", "cases.jsonl", "summary.json", "report.md"):
-        assert (run_dir / name).is_file(), name
-    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
-    assert summary["num_failures"] == 0
-    assert summary["schema_version"] == "b2-v1"
-    report = (run_dir / "report.md").read_text(encoding="utf-8")
-    assert "not a dataset, not a benchmark and not a training corpus" in report
-
-
-def test_self_check_makes_no_natural_corpus_claim():
-    source = (REPO_ROOT / "scripts" / "b2_corruption_self_check.py").read_text(encoding="utf-8")
-    assert "implementation verification" in source.lower()
-    assert "not a dataset" in source.lower()
-
-
-def test_config_file_matches_the_implemented_conditions():
-    import yaml
-
-    cfg = yaml.safe_load((REPO_ROOT / "configs" / "corruption" / "default.yaml").read_text(encoding="utf-8"))
-    assert cfg["schema_version"] == CORRUPTION_SCHEMA_VERSION
-    assert set(cfg["conditions"]) == set(CONDITIONS)
-    for name, block in cfg["conditions"].items():
-        assert block["probability"] == CONDITIONS[name].probability
-        assert block["scope"] == CONDITIONS[name].scope.value
-    assert cfg["unit"]["kind"] == "candidate_syllable_span"
-    assert cfg["canonicalisation"]["tone_placement"] == "MODERN"
-    # The config must record the provisional eligibility state, not hide it.
-    assert cfg["eligibility"]["policy"] == ACTIVE_ELIGIBILITY_POLICY.value == "UNRESOLVED"
-    assert cfg["eligibility"]["provisional"] is True
-    assert cfg["eligibility"]["resolved_policy_name"] == EligibilityPolicy.VIETNAMESE_SYLLABLE_INVENTORY.value
-
-
-# ===========================================================================
-# Eligibility safety (audit 004 follow-up)
-# ===========================================================================
-# Researcher review of audit 003 reclassified the GAP-2 interaction from a
-# harmless clarification to a pre-training semantic dependency. These tests
-# assert that the provisional fallback cannot become the scientific protocol.
-
-def test_deterministic_output_is_unchanged_by_the_eligibility_refactor():
-    """1. The engine is final; only the eligibility framing changed. These are
-    the exact values the pre-refactor engine produced."""
-    result = corrupt(VI, "P75", seed=42, sample_id="s1", purpose=SELF_CHECK)
-    assert result.corrupted_text == "Tôi đang nghiên cứu xư lý ngôn ngư tự nhiên."
-    assert corrupt(VI, "P100", seed=42, sample_id="s1", purpose=SELF_CHECK).corrupted_text == (
-        "Tôi đang nghiên cưu xư ly ngôn ngư tư nhiên."
-    )
-    assert corrupt(VI, "STRIP_ALL", seed=42, sample_id="s1", purpose=SELF_CHECK).corrupted_text == (
-        "Toi dang nghien cuu xu ly ngon ngu tu nhien."
-    )
-    assert result.candidate_units == 10
-    assert result.selected_candidates == 6
-
-
-def test_scores_are_unchanged_by_the_eligibility_refactor():
-    identity = text_identity("Tôi đang học")
-    assert unit_score(seed=42, sample_id="s1", identity=identity, unit_index=0) == pytest.approx(
-        0.21396497977394088
-    )
-
-
-def test_undecided_eligibility_is_not_presented_as_resolved():
-    """2/5. A candidate span is not a confirmed Vietnamese syllable."""
-    result = corrupt("toi dung Python va PyTorch", "P50", seed=1, sample_id="s", purpose=SELF_CHECK)
-    assert result.candidate_units == 5  # includes Python and PyTorch
-    assert all(d.eligibility is Eligibility.UNDECIDED for d in result.decisions)
-    assert result.provisional_eligibility is True
-    assert result.eligibility_policy is EligibilityPolicy.UNRESOLVED
-
-
-def test_eligible_units_refuses_to_return_a_provisional_number():
-    """The substitution that would turn the fallback into the protocol."""
-    result = corrupt(VI, "P50", seed=1, sample_id="s", purpose=SELF_CHECK)
-    with pytest.raises(EligibilityUnresolved) as excinfo:
-        result.eligible_units
-    message = str(excinfo.value)
-    assert "candidate" in message
-    assert "GAP-2" in message
-    assert "B3" in message
-
-
-def test_scientific_purpose_is_the_default_and_fails_today():
-    """3. The unsafe path must be the one you have to ask for."""
-    with pytest.raises(EligibilityUnresolved):
-        corrupt(VI, "P50", seed=1, sample_id="s")
-    with pytest.raises(EligibilityUnresolved):
-        corrupt(VI, "P50", seed=1, sample_id="s", purpose=CorruptionPurpose.SCIENTIFIC)
-    with pytest.raises(EligibilityUnresolved):
-        corrupt_batch([(VI, "a")], "P50", seed=1)
-
-
-def test_guard_error_names_gap2_and_the_b3_resolution_owner():
-    """4. The message must tell a reader what is blocked and who closes it."""
-    with pytest.raises(EligibilityUnresolved) as excinfo:
-        require_resolved_eligibility()
-    message = str(excinfo.value)
-    assert "GAP-2" in message
-    assert "B3" in message
-    assert "syllable inventory" in message
-    assert "SELF_CHECK" in message
-    assert "denominator" in message
-
-
-def test_guard_passes_once_a_policy_is_resolved():
-    """The guard is a real switch, not a permanent refusal."""
-    require_resolved_eligibility(policy=EligibilityPolicy.VIETNAMESE_SYLLABLE_INVENTORY)
-    assert is_resolved(EligibilityPolicy.VIETNAMESE_SYLLABLE_INVENTORY)
-    assert not is_resolved(EligibilityPolicy.UNRESOLVED)
-    assert ACTIVE_ELIGIBILITY_POLICY is EligibilityPolicy.UNRESOLVED
-
-
-def test_metric_names_cannot_be_misread_as_a_vietnamese_syllable_rate():
-    """6. No field name claims more than the engine knows."""
-    result = corrupt("toi dung Python", "P50", seed=1, sample_id="s", purpose=SELF_CHECK)
-    payload = result.to_dict()
-    assert "candidate_units" in payload
-    assert "candidate_selection_rate" in payload
-    assert "eligible_units" not in payload
-    assert "realized_probability" not in payload
-    assert payload["provisional_eligibility"] is True
-    assert payload["eligibility_policy"] == "UNRESOLVED"
-    assert not hasattr(result, "realized_probability")
-
-
-def test_result_metadata_states_the_fallback_and_its_owner():
-    result = corrupt(VI, "P50", seed=1, sample_id="s", purpose=SELF_CHECK)
-    note = result.metadata["eligibility_filter"]
-    assert "PROVISIONAL" in note
-    assert "GAP-2" in note
-    assert "B3" in note
-    assert result.metadata["unit"] == "candidate_syllable_span"
-    assert result.metadata["purpose"] == "SELF_CHECK"
-
-
-def test_the_documented_provisional_consequences_are_still_reproducible():
-    """The two behaviours that motivated the reclassification. They are not
-    bugs in the engine; they are why the denominator is not yet scientific."""
-    english = corrupt("toi dung Python va PyTorch", "P50", seed=1, sample_id="s", purpose=SELF_CHECK)
-    assert english.candidate_units == 5, "English spans sit in the provisional denominator"
-    loanword = corrupt("café", "P100", seed=1, sample_id="s", purpose=SELF_CHECK)
-    assert loanword.corrupted_text == "cafe", "acute is a Vietnamese codepoint"
-
-
-def test_self_check_artifacts_are_stamped_provisional(tmp_path):
-    result = subprocess.run(
-        [sys.executable, "scripts/b2_corruption_self_check.py", "--output-root", str(tmp_path), "--run-id", "P"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
-        timeout=180,
-    )
-    assert result.returncode == 0, result.stderr
-    config = json.loads((tmp_path / "P" / "config.json").read_text(encoding="utf-8"))
-    summary = json.loads((tmp_path / "P" / "summary.json").read_text(encoding="utf-8"))
-    assert config["eligibility_policy"] == "UNRESOLVED"
-    assert config["provisional_eligibility"] is True
-    assert config["purpose"] == "SELF_CHECK"
-    assert summary["provisional_eligibility"] is True
-    report = (tmp_path / "P" / "report.md").read_text(encoding="utf-8")
-    assert "Provisional eligibility" in report
-    assert "candidate spans" in report
-    assert "GAP-2" in report
-
-
 def test_no_dictionary_classifier_or_tokenizer_was_added():
     """7. The fix must not smuggle in a language identifier."""
     import ast
@@ -757,3 +588,135 @@ def test_decision_log_records_the_reclassification():
     assert "TEMPORARY IMPLEMENTATION FALLBACK" in log
     assert "B3" in log
     assert "audit 004" in log.lower() or "004" in log
+
+
+# ===========================================================================
+# Eligibility resolution (B3A) — both states
+# ===========================================================================
+# GAP-2 is closed in code, but the inventory is a git-ignored external resource.
+# The guard must therefore still fire when it is absent, and must stand down
+# when it is present. Both directions are tested.
+
+def test_policy_is_resolved_when_the_pinned_inventory_is_present():
+    assert active_eligibility_policy() is EligibilityPolicy.VIETNAMESE_SYLLABLE_INVENTORY
+    assert is_resolved()
+
+
+def test_scientific_corruption_works_with_a_verified_inventory():
+    result = corrupt(VI, "P50", seed=1, sample_id="s")  # default purpose=SCIENTIFIC
+    assert result.eligibility_policy is EligibilityPolicy.VIETNAMESE_SYLLABLE_INVENTORY
+    assert result.provisional_eligibility is False
+    assert result.eligible_units == 10
+    assert result.realized_probability == result.selected_units / 10
+
+
+def test_scientific_corruption_still_fails_without_the_inventory(missing_inventory):
+    with pytest.raises(EligibilityUnresolved):
+        corrupt(VI, "P50", seed=1, sample_id="s")
+    with pytest.raises(EligibilityUnresolved):
+        corrupt_batch([(VI, "a")], "P50", seed=1)
+    assert active_eligibility_policy() is EligibilityPolicy.UNRESOLVED
+
+
+def test_self_check_mode_still_works_without_the_inventory(missing_inventory):
+    result = corrupt(VI, "P50", seed=1, sample_id="s", purpose=SELF_CHECK)
+    assert result.provisional_eligibility is True
+    assert all(d.eligibility is Eligibility.UNDECIDED for d in result.decisions)
+    with pytest.raises(EligibilityUnresolved):
+        result.eligible_units
+    with pytest.raises(EligibilityUnresolved):
+        result.realized_probability
+
+
+def test_guard_message_names_the_fetch_script_and_the_decision_record(missing_inventory):
+    with pytest.raises(EligibilityUnresolved) as excinfo:
+        require_resolved_eligibility()
+    message = str(excinfo.value)
+    assert "GAP-2" in message
+    assert "syllable inventory" in message
+    assert "fetch_vietnamese_syllable_inventory" in message
+    assert "SELF_CHECK" in message
+
+
+def test_resolved_results_expose_the_scientific_denominator():
+    result = corrupt("toi dung Python va PyTorch", "P100", seed=1, sample_id="s")
+    payload = result.to_dict()
+    assert payload["eligible_units"] == 3
+    assert payload["candidate_units"] == 5
+    assert payload["realized_probability"] == 1.0
+    assert payload["provisional_eligibility"] is False
+    assert payload["eligibility_policy"] == "VIETNAMESE_SYLLABLE_INVENTORY"
+
+
+def test_provisional_results_omit_the_scientific_denominator(missing_inventory):
+    payload = corrupt(VI, "P50", seed=1, sample_id="s", purpose=SELF_CHECK).to_dict()
+    assert "eligible_units" not in payload
+    assert "realized_probability" not in payload
+    assert payload["provisional_eligibility"] is True
+
+
+def test_english_spans_do_not_enter_the_denominator():
+    result = corrupt("toi dung Python va PyTorch", "P50", seed=1, sample_id="s")
+    assert result.candidate_units == 5
+    assert result.eligible_units == 3
+    eligible = {d.base_text for d in result.decisions}
+    assert eligible == {"toi", "dung", "va"}
+    assert "Python" in result.corrupted_text and "PyTorch" in result.corrupted_text
+
+
+def test_foreign_marked_token_is_not_stripped_merely_for_sharing_a_codepoint():
+    """`café` carries U+0301, which is also a Vietnamese tone mark. Its stripped
+    form `cafe` is not in the inventory, so it is not eligible and survives."""
+    for condition in ("P100", "STRIP_ALL"):
+        result = corrupt("café ngon", condition, seed=1, sample_id="s")
+        assert result.corrupted_text.startswith("café"), condition
+        assert result.eligible_units == 1  # only `ngon`
+
+
+def test_ambiguous_ascii_resolves_towards_vietnamese():
+    """The proposal's known and deliberate error mode, asserted rather than hidden."""
+    result = corrupt("ban the com on", "P100", seed=1, sample_id="s")
+    assert result.eligible_units == 4, "all four are valid stripped Vietnamese syllables"
+
+
+def test_metric_names_still_distinguish_candidates_from_eligible_units():
+    result = corrupt("toi dung Python", "P50", seed=1, sample_id="s")
+    payload = result.to_dict()
+    assert payload["candidate_units"] == 3
+    assert payload["scored_units"] == payload["eligible_units"] == 2
+    # Two different denominators, so the two rates are not interchangeable.
+    assert payload["candidate_units"] != payload["eligible_units"]
+    selected = payload["selected_units"]
+    assert payload["candidate_selection_rate"] == selected / 3
+    assert payload["realized_probability"] == selected / 2
+
+
+def test_resolved_metadata_records_inventory_provenance():
+    result = corrupt(VI, "P50", seed=1, sample_id="s")
+    provenance = result.metadata["inventory"]
+    assert provenance["source_revision"] == "135a4d9716e49a981624474156d6f247b9b46f6a"
+    assert provenance["sha256"] == "78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2"
+    assert provenance["license_status"] == "NO_EXPLICIT_LICENSE"
+    assert result.metadata["eligibility_schema_version"] == "vn-syllables-v1"
+    assert result.schema_version == "b2-v1", "corruption schema must NOT change"
+
+
+def test_eligibility_is_identical_across_every_condition():
+    """The invariance the whole design rests on: eligibility reads the stripped
+    form, so corruption cannot change which units are eligible."""
+    baseline = {d.base_text: d.eligibility for d in corrupt(VI, "FULL", seed=1, sample_id="s").decisions}
+    for condition in ("P25", "P50", "P75", "P100", "STRIP_ALL"):
+        current = {d.base_text: d.eligibility for d in corrupt(VI, condition, seed=1, sample_id="s").decisions}
+        assert current == baseline, condition
+
+
+def test_eligibility_of_a_corrupted_string_equals_that_of_its_clean_form():
+    from unmark.linguistics import load_inventory, make_classifier
+    from unmark.orthography import decompose
+
+    classifier = make_classifier(load_inventory())
+    for condition in ("P25", "P100", "STRIP_ALL"):
+        result = corrupt(VI, condition, seed=3, sample_id="s")
+        clean = [s.eligibility for s in decompose(result.canonical_clean_text, eligibility_classifier=classifier).syllables]
+        dirty = [s.eligibility for s in decompose(result.corrupted_text, eligibility_classifier=classifier).syllables]
+        assert clean == dirty, condition

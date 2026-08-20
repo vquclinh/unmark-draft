@@ -18,6 +18,13 @@ results/**
 !results/**/
 !results/**/.gitkeep
 
+# --- External linguistic resources -----------------------------------------
+# Fetched by scripts/fetch_vietnamese_syllable_inventory.py and verified against
+# configs/linguistics/vietnamese_syllables.yaml. Not committed: the upstream
+# gist carries no license statement, so redistribution permission is not
+# established. Repo-local and disposable.
+.resources-cache/
+
 # --- Model weights and caches ----------------------------------------------
 # HF_HOME is redirected here on Colab so the whole download is disposable.
 .hf-cache/

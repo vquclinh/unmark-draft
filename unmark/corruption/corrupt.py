@@ -29,11 +29,13 @@ from typing import Any
 from unmark.corruption.conditions import CorruptionCondition, CorruptionScope, get_condition
 from unmark.corruption.deterministic import CORRUPTION_SCHEMA_VERSION, is_selected, text_identity
 from unmark.corruption.eligibility import (
-    ACTIVE_ELIGIBILITY_POLICY,
     CorruptionPurpose,
     EligibilityPolicy,
+    active_eligibility_policy,
     require_resolved_eligibility,
 )
+from unmark.linguistics import ELIGIBILITY_SCHEMA_VERSION, make_classifier, try_load_inventory
+from unmark.orthography import Eligibility
 from unmark.corruption.models import CorruptionResult, UnitDecision
 from unmark.orthography import ObservedTone, canon, decompose
 from unmark.orthography.marks import D_STROKE, LETTER_MARK_TO_STATE, TONE_MARK_TO_OBSERVED
@@ -52,7 +54,7 @@ def corrupt(
     purpose: CorruptionPurpose = CorruptionPurpose.SCIENTIFIC,
     source_is_clean: bool = True,
     schema_version: str = CORRUPTION_SCHEMA_VERSION,
-    eligibility_policy: EligibilityPolicy = ACTIVE_ELIGIBILITY_POLICY,
+    eligibility_policy: EligibilityPolicy | None = None,
 ) -> CorruptionResult:
     """Corrupt `text` under `condition`, reproducibly.
 
@@ -78,26 +80,46 @@ def corrupt(
         A `CorruptionResult` reproducible from
         `(schema_version, condition, seed, sample_id, canonical text)` alone.
     """
+    inventory = try_load_inventory()
+    if eligibility_policy is None:
+        eligibility_policy = active_eligibility_policy()
     if purpose is CorruptionPurpose.SCIENTIFIC:
         require_resolved_eligibility(
             context=f"purpose={purpose.name} corruption", policy=eligibility_policy
         )
+    resolved = eligibility_policy is not EligibilityPolicy.UNRESOLVED
 
     cond = get_condition(condition)
     canonical = canon(text)
     identity = text_identity(canonical)
 
-    clean = decompose(canonical, source_is_clean=source_is_clean)
+    clean = decompose(
+        canonical,
+        source_is_clean=source_is_clean,
+        eligibility_classifier=make_classifier(inventory) if resolved else None,
+    )
 
-    # CANDIDATE spans, not confirmed eligible Vietnamese syllables. While GAP-2
-    # is open no language filter can be applied, so this is every maximal
-    # alphabetic run. The single place a resolved eligibility policy would plug
-    # in is here, by filtering `spans`; nothing else in this function changes.
-    # See unmark/corruption/eligibility.py and docs/spec/decisions.md D-B2-003.
-    spans = clean.syllables
+    # Candidate spans are every maximal alphabetic run. The eligibility policy
+    # filters them here -- the single place audit 004 reserved for it, and the
+    # only thing B3A changed in this operator. Because the classifier reads the
+    # STRIPPED form, a clean syllable and its corrupted counterpart are filtered
+    # identically, so corruption cannot change which units are eligible
+    # (proposal 4.3). The deterministic scoring below is untouched: unit_index
+    # is still the span's own index in the full candidate list, so scores are
+    # bit-identical to those audited in 003/004.
+    candidates = clean.syllables
+    spans = (
+        tuple(s for s in candidates if s.eligibility is Eligibility.VIETNAMESE_CANDIDATE)
+        if resolved
+        else candidates
+    )
 
-    selected_flags: list[bool] = []
-    scores: list[float] = []
+    # Keyed by span_index -- the span's position in the FULL candidate list, not
+    # in the filtered one. That keeps every score bit-identical to the engine
+    # audited in 003/004: filtering changes which units are scored, never what
+    # score a given unit gets.
+    selected_flags: dict[int, bool] = {}
+    scores: dict[int, float] = {}
     for span in spans:
         selected, score = is_selected(
             probability=cond.probability,
@@ -107,8 +129,8 @@ def corrupt(
             unit_index=span.span_index,
             schema_version=schema_version,
         )
-        selected_flags.append(selected and cond.scope is not CorruptionScope.NONE)
-        scores.append(score)
+        selected_flags[span.span_index] = selected and cond.scope is not CorruptionScope.NONE
+        scores[span.span_index] = score
 
     corrupted_text, removed_per_span = _apply(canonical, clean, spans, selected_flags, cond.scope)
     corrupted = decompose(corrupted_text, source_is_clean=False)
@@ -126,9 +148,10 @@ def corrupt(
         corrupted_text=corrupted_text,
         eligibility_policy=eligibility_policy,
         requested_probability=cond.probability,
-        candidate_units=len(spans),
-        selected_candidates=sum(selected_flags),
-        modified_candidates=sum(1 for d in decisions if d.modified),
+        candidate_units=len(candidates),
+        scored_units=len(spans),
+        selected_units=sum(selected_flags.values()),
+        modified_units=sum(1 for d in decisions if d.modified),
         decisions=tuple(decisions),
         clean_decomposition=clean,
         corrupted_decomposition=corrupted,
@@ -136,14 +159,19 @@ def corrupt(
         metadata={
             "condition_description": cond.description,
             "scope": cond.scope.value,
-            "unit": "candidate_syllable_span",
+            "unit": "syllable_span",
             "purpose": purpose.name,
             "eligibility_policy": eligibility_policy.name,
+            "eligibility_schema_version": ELIGIBILITY_SCHEMA_VERSION if resolved else None,
+            "inventory": inventory.provenance.to_dict() if (resolved and inventory and inventory.provenance) else None,
             "eligibility_filter": (
-                "none - PROVISIONAL fallback: candidate spans are every maximal alphabetic "
-                "run, including non-Vietnamese words. Must be replaced by the stripped-form "
-                "Vietnamese syllable eligibility policy before stage-1 training or the main "
-                "experiments. GAP-2, owner B3/pre-training; docs/spec/decisions.md D-B2-003."
+                "stripped-form membership of the pinned Vietnamese syllable inventory "
+                "(proposal 4.3). Ambiguous ASCII resolves towards Vietnamese; see "
+                "docs/spec/decisions.md D-B3A-001."
+                if resolved
+                else "none - PROVISIONAL fallback: every maximal alphabetic run is scored, "
+                "including non-Vietnamese words. Self-check only; the pinned inventory is "
+                "absent. Run scripts/fetch_vietnamese_syllable_inventory.py."
             ),
         },
     )
@@ -153,9 +181,9 @@ def _apply(
     canonical: str,
     clean: Any,
     spans: tuple[Any, ...],
-    selected_flags: list[bool],
+    selected_flags: dict[int, bool],
     scope: CorruptionScope,
-) -> tuple[str, list[tuple[bool, tuple[str, ...]]]]:
+) -> tuple[str, dict[int, tuple[bool, tuple[str, ...]]]]:
     """Rebuild the string with the selected syllables stripped.
 
     Works on the NFD unit stream, so only combining marks and the `đ` stroke are
@@ -171,10 +199,10 @@ def _apply(
     for span in spans:
         unit_of_span[span.span_index] = list(span.unit_indices)
 
-    removed: list[tuple[bool, tuple[str, ...]]] = []
+    removed: dict[int, tuple[bool, tuple[str, ...]]] = {}
     for span in spans:
         if not selected_flags[span.span_index]:
-            removed.append((False, ()))
+            removed[span.span_index] = (False, ())
             continue
         tone_removed = False
         letters_removed: list[str] = []
@@ -193,7 +221,7 @@ def _apply(
                     letters_removed.append("STROKE")
                     base = D_STROKE[base]
             mutable[unit_index] = (base, marks)
-        removed.append((tone_removed, tuple(letters_removed)))
+        removed[span.span_index] = (tone_removed, tuple(letters_removed))
 
     rebuilt = join_units([(base, tuple(marks)) for base, marks in mutable])
     return unicodedata.normalize("NFC", rebuilt), removed
@@ -202,9 +230,9 @@ def _apply(
 def _build_decisions(
     clean_spans: tuple[Any, ...],
     corrupted_spans: tuple[Any, ...],
-    selected_flags: list[bool],
-    scores: list[float],
-    removed_per_span: list[tuple[bool, tuple[str, ...]]],
+    selected_flags: dict[int, bool],
+    scores: dict[int, float],
+    removed_per_span: dict[int, tuple[bool, tuple[str, ...]]],
 ) -> list[UnitDecision]:
     """Pair each clean syllable with its corrupted counterpart.
 
@@ -212,32 +240,35 @@ def _build_decisions(
     sequences are the same length and align by index. That is asserted rather
     than assumed: if it ever fails, something changed the lexical content.
     """
-    if len(clean_spans) != len(corrupted_spans):
+    if len(corrupted_spans) < len(clean_spans):
         raise AssertionError(
-            f"corruption changed the syllable count ({len(clean_spans)} -> {len(corrupted_spans)}); "
-            "this means lexical content was altered, which corruption must never do"
+            f"corruption changed the syllable count ({len(clean_spans)} scored, "
+            f"{len(corrupted_spans)} spans after corruption); this means lexical content "
+            "was altered, which corruption must never do"
         )
 
     decisions: list[UnitDecision] = []
-    for clean_span, corrupted_span, selected, score, (tone_removed, letters_removed) in zip(
-        clean_spans, corrupted_spans, selected_flags, scores, removed_per_span
-    ):
+    for clean_span in clean_spans:
+        index = clean_span.span_index
+        corrupted_span = corrupted_spans[index]
+        tone_removed, letters_removed = removed_per_span[index]
         modified = tone_removed or bool(letters_removed)
         decisions.append(
             UnitDecision(
-                unit_index=clean_span.span_index,
+                unit_index=index,
                 base_text=clean_span.base_text,
                 canonical_start=clean_span.canonical_start,
                 canonical_end=clean_span.canonical_end,
-                score=score,
-                selected=selected,
+                score=scores[index],
+                selected=selected_flags[index],
                 modified=modified,
                 clean_lexical_tone=clean_span.lexical_tone,
                 clean_observed_tone=clean_span.observed_tone,
                 corrupted_observed_tone=corrupted_span.observed_tone,
                 tone_mark_removed=tone_removed,
                 letter_diacritics_removed=letters_removed,
-                # Carried through from B1A: still UNDECIDED, never upgraded here.
+                # Carried through from B1A; resolved by the pinned inventory when
+                # the policy is resolved, UNDECIDED when it is not.
                 eligibility=clean_span.eligibility,
             )
         )

@@ -102,12 +102,20 @@ class CorruptionResult:
     *candidate spans*, not confirmed Vietnamese syllables."""
 
     # --- decisions ---------------------------------------------------------
-    # Named `candidate_*`, never `eligible_*`: while GAP-2 is open these count
-    # maximal alphabetic runs, including English words. See `eligible_units`.
     requested_probability: float
+
     candidate_units: int
-    selected_candidates: int
-    modified_candidates: int
+    """Every maximal alphabetic run in the text, regardless of eligibility.
+    Structural, language-blind, always available."""
+
+    scored_units: int
+    """Units that entered the lottery. Equal to the eligible Vietnamese
+    syllables when the policy is resolved, and to `candidate_units` under the
+    provisional self-check fallback. `eligible_units` exposes it only when that
+    distinction is real."""
+
+    selected_units: int
+    modified_units: int
     decisions: tuple[UnitDecision, ...]
 
     # --- decompositions ----------------------------------------------------
@@ -124,49 +132,63 @@ class CorruptionResult:
 
     @property
     def eligible_units(self) -> int:
-        """Confirmed Vietnamese syllables.
+        """Confirmed eligible Vietnamese syllables -- the scientific denominator.
 
-        Raises while GAP-2 is open. There is no honest provisional value: using
-        the candidate count here is exactly the substitution that would turn a
-        temporary fallback into the scientific protocol. Read
-        `candidate_units` instead, and know what it means.
+        Raises under the provisional fallback. There is no honest value there:
+        substituting the candidate count is exactly what would turn a temporary
+        state into the protocol.
         """
         if self.provisional_eligibility:
             raise EligibilityUnresolved(
                 "eligible_units is undefined while the eligibility policy is "
-                f"{self.eligibility_policy.name} (GAP-2 open). This result counted "
+                f"{self.eligibility_policy.name}. This result scored "
                 f"{self.candidate_units} candidate span(s), which is not the same thing: "
                 "candidates are maximal alphabetic runs and include non-Vietnamese words. "
-                "Use `candidate_units` / `candidate_selection_rate`, or close GAP-2 "
-                "(owner: B3 / pre-training; see docs/spec/decisions.md D-B2-003)."
+                "Fetch the pinned inventory "
+                "(scripts/fetch_vietnamese_syllable_inventory.py), or read "
+                "`candidate_units` / `candidate_selection_rate` and know what they mean. "
+                "See docs/spec/decisions.md D-B2-003 and D-B3A-001."
             )
-        return self.candidate_units
+        return self.scored_units
+
+    @property
+    def realized_probability(self) -> float | None:
+        """Selected / eligible Vietnamese syllables.
+
+        The scientific realized rate. Raises under the provisional fallback, for
+        the same reason as `eligible_units`; `None` when the text contains no
+        eligible syllable at all, never 0.0.
+        """
+        eligible = self.eligible_units
+        return None if eligible == 0 else self.selected_units / eligible
+
+    @property
+    def realized_modification_rate(self) -> float | None:
+        """Modified / eligible Vietnamese syllables.
+
+        Lower than `realized_probability` whenever a selected syllable carried no
+        mark to remove, so "selected" and "changed" are never conflated.
+        """
+        eligible = self.eligible_units
+        return None if eligible == 0 else self.modified_units / eligible
 
     @property
     def candidate_selection_rate(self) -> float | None:
-        """Selected candidate spans / candidate spans.
+        """Selected / **candidate** spans. Always available.
 
-        **Not** the fraction of Vietnamese syllables corrupted: while GAP-2 is
-        open the denominator is every alphabetic run, English words included.
-        `None` when there are no candidate spans at all -- a string of digits and
-        punctuation has none, and reporting 0.0 would claim a rate that was never
-        measured.
+        Not the scientific rate when the policy is resolved -- the denominator
+        includes non-Vietnamese spans that were never scored. Kept because it is
+        the only rate the provisional fallback can honestly report.
         """
         if self.candidate_units == 0:
             return None
-        return self.selected_candidates / self.candidate_units
+        return self.selected_units / self.candidate_units
 
     @property
     def candidate_modification_rate(self) -> float | None:
-        """Candidate spans whose text actually changed / candidate spans.
-
-        Lower than `candidate_selection_rate` whenever a selected syllable
-        carried no mark to remove, so "selected" and "changed" are never
-        conflated.
-        """
         if self.candidate_units == 0:
             return None
-        return self.modified_candidates / self.candidate_units
+        return self.modified_units / self.candidate_units
 
     @property
     def is_unchanged(self) -> bool:
@@ -188,13 +210,23 @@ class CorruptionResult:
             "eligibility_policy": self.eligibility_policy.value,
             "provisional_eligibility": self.provisional_eligibility,
             "candidate_units": self.candidate_units,
-            "selected_candidates": self.selected_candidates,
-            "modified_candidates": self.modified_candidates,
+            "scored_units": self.scored_units,
+            "selected_units": self.selected_units,
+            "modified_units": self.modified_units,
             "candidate_selection_rate": self.candidate_selection_rate,
             "candidate_modification_rate": self.candidate_modification_rate,
-            # Deliberately absent while GAP-2 is open: eligible_units,
-            # realized_probability. There is no honest value for either, and an
-            # artifact must not imply one. See docs/spec/decisions.md D-B2-003.
+            # The scientific denominator and rate appear ONLY when the policy is
+            # resolved. Under the provisional fallback there is no honest value
+            # and an artifact must not imply one (docs/spec/decisions.md D-B2-003).
+            **(
+                {}
+                if self.provisional_eligibility
+                else {
+                    "eligible_units": self.eligible_units,
+                    "realized_probability": self.realized_probability,
+                    "realized_modification_rate": self.realized_modification_rate,
+                }
+            ),
             "source_is_clean": self.source_is_clean,
             "base_text": self.clean_decomposition.base_text,
             "base_invariant": self.clean_decomposition.base_text == self.corrupted_decomposition.base_text,

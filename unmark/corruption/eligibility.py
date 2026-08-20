@@ -66,10 +66,21 @@ class EligibilityPolicy(Enum):
     resolved state has a name before it has an implementation."""
 
 
-# The policy this repository is currently operating under. Changing it is an
-# experiment-spec change, not a configuration tweak: it changes the denominator
-# of every corruption rate.
-ACTIVE_ELIGIBILITY_POLICY = EligibilityPolicy.UNRESOLVED
+def active_eligibility_policy() -> EligibilityPolicy:
+    """The policy actually in force right now.
+
+    Resolved when the pinned Vietnamese syllable inventory is present and
+    verified, `UNRESOLVED` otherwise -- so deleting the git-ignored cache
+    re-arms the guard rather than silently falling back to candidate spans.
+    Computed rather than hard-coded for exactly that reason.
+    """
+    from unmark.linguistics import try_load_inventory
+
+    return (
+        EligibilityPolicy.VIETNAMESE_SYLLABLE_INVENTORY
+        if try_load_inventory() is not None
+        else EligibilityPolicy.UNRESOLVED
+    )
 
 
 class CorruptionPurpose(Enum):
@@ -113,26 +124,34 @@ The deterministic engine itself is final and unaffected; only the denominator
 and the span filter are open.
 
 WHAT TO DO
-  * For implementation verification, pass purpose=CorruptionPurpose.SELF_CHECK.
-    Results are stamped provisional_eligibility=True and their counts are named
-    `candidate_*`, never `eligible_*`.
-  * For real stage-1 training or evaluation generation, GAP-2 must be closed
-    first. Owner: B3 / pre-training. See docs/spec/decisions.md D-B2-003.
+  * GAP-2 is closed in code (B3A), but the inventory itself is NOT committed --
+    the upstream gist carries no license statement. Fetch and verify it:
+
+        .venv/bin/python scripts/fetch_vietnamese_syllable_inventory.py
+
+    That is almost certainly why you are seeing this message.
+  * For implementation verification without the inventory, pass
+    purpose=CorruptionPurpose.SELF_CHECK. Results are stamped
+    provisional_eligibility=True and their counts are named `candidate_*`,
+    never `eligible_*`.
+  * See docs/spec/decisions.md D-B2-003 and D-B3A-001.
 """
 
 
 def require_resolved_eligibility(
     context: str = "stage-1 training or evaluation generation",
-    policy: EligibilityPolicy = ACTIVE_ELIGIBILITY_POLICY,
+    policy: EligibilityPolicy | None = None,
 ) -> None:
     """Raise unless the eligibility policy is resolved.
 
     The point is that it is *impossible* to generate scientific corruption data
     under the provisional fallback by accident.
     """
+    policy = active_eligibility_policy() if policy is None else policy
     if policy is EligibilityPolicy.UNRESOLVED:
         raise EligibilityUnresolved(_UNRESOLVED_MESSAGE.format(context=context, policy=policy.name))
 
 
-def is_resolved(policy: EligibilityPolicy = ACTIVE_ELIGIBILITY_POLICY) -> bool:
+def is_resolved(policy: EligibilityPolicy | None = None) -> bool:
+    policy = active_eligibility_policy() if policy is None else policy
     return policy is not EligibilityPolicy.UNRESOLVED

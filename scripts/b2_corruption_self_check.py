@@ -27,7 +27,7 @@ from typing import Any, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from unmark.corruption import (  # noqa: E402
-    ACTIVE_ELIGIBILITY_POLICY,
+    active_eligibility_policy,
     CONDITIONS,
     CORRUPTION_SCHEMA_VERSION,
     UNIMPLEMENTED_CONDITIONS,
@@ -171,31 +171,44 @@ def run_checks() -> tuple[list[dict[str, Any]], list[str]]:
         genuine.oracle_tone_is_genuine_ngang and stripped.oracle_tone_is_missing,
         "H4 oracle views wrong",
     )
-    # --- the pre-training guard must be active -----------------------------
-    check(not is_resolved(), "eligibility policy is resolved but GAP-2 is still open")
-    try:
-        corrupt("Tôi", "P50", seed=SEED, sample_id="guard")
-        failures.append("SCIENTIFIC-purpose corruption did not raise while eligibility is unresolved")
-    except EligibilityUnresolved as exc:
-        message = str(exc)
-        check("GAP-2" in message, "guard message does not name GAP-2")
-        check("B3" in message, "guard message does not name the B3 resolution owner")
+    # --- the eligibility guard must match the active policy -----------------
+    resolved = is_resolved()
+    if resolved:
+        # B3A closed GAP-2 and the pinned inventory is present: scientific
+        # corruption must work and must expose a real denominator.
+        scientific = corrupt("Tôi đang học", "P50", seed=SEED, sample_id="guard")
+        check(not scientific.provisional_eligibility, "resolved run still flagged provisional")
+        check(scientific.eligible_units >= 1, "resolved run exposes no eligible units")
+        check("eligible_units" in scientific.to_dict(), "resolved artifact omits eligible_units")
+        english = corrupt("toi dung Python va PyTorch", "P100", seed=SEED, sample_id="mixed")
+        check(english.eligible_units < english.candidate_units, "English spans not filtered out")
+        check("Python" in english.corrupted_text, "an ineligible English span was modified")
+        check(
+            corrupt("café ngon", "STRIP_ALL", seed=SEED, sample_id="loan").corrupted_text.startswith("café"),
+            "an ineligible loanword was stripped",
+        )
+    else:
+        # The inventory is absent, so the guard must still refuse.
+        try:
+            corrupt("Tôi", "P50", seed=SEED, sample_id="guard")
+            failures.append("SCIENTIFIC corruption did not raise while eligibility is unresolved")
+        except EligibilityUnresolved as exc:
+            message = str(exc)
+            check("GAP-2" in message, "guard message does not name GAP-2")
 
-    # --- provisional counts must not be presented as eligible syllables ------
-    provisional = corrupt("toi dung Python", "P50", seed=SEED, sample_id="prov", purpose=PURPOSE)
-    check(provisional.provisional_eligibility, "provisional result not flagged")
-    check(
-        all(d.eligibility is Eligibility.UNDECIDED for d in provisional.decisions),
-        "a candidate span was reported as resolved-eligible",
-    )
-    payload = provisional.to_dict()
-    check("eligible_units" not in payload, "artifact exposes eligible_units while GAP-2 is open")
-    check("realized_probability" not in payload, "artifact exposes realized_probability")
-    try:
-        provisional.eligible_units
-        failures.append("eligible_units returned a provisional number")
-    except EligibilityUnresolved:
-        pass
+        provisional = corrupt("toi dung Python", "P50", seed=SEED, sample_id="prov", purpose=PURPOSE)
+        check(provisional.provisional_eligibility, "provisional result not flagged")
+        check(
+            all(d.eligibility is Eligibility.UNDECIDED for d in provisional.decisions),
+            "a candidate span was reported as resolved-eligible",
+        )
+        payload = provisional.to_dict()
+        check("eligible_units" not in payload, "artifact exposes eligible_units while unresolved")
+        try:
+            provisional.eligible_units
+            failures.append("eligible_units returned a provisional number")
+        except EligibilityUnresolved:
+            pass
 
     return records, failures
 
@@ -209,13 +222,13 @@ def summarize(records: Sequence[dict[str, Any]], failures: Sequence[str]) -> dic
             "cases": len(rows),
             "cases_changed": len(changed),
             "candidate_units": sum(r["candidate_units"] for r in rows),
-            "selected_candidates": sum(r["selected_candidates"] for r in rows),
-            "modified_candidates": sum(r["modified_candidates"] for r in rows),
+            "selected_units": sum(r["selected_units"] for r in rows),
+            "modified_units": sum(r["modified_units"] for r in rows),
             "base_invariant_all": all(r["base_invariant"] for r in rows),
         }
     return {
         "schema_version": CORRUPTION_SCHEMA_VERSION,
-        "eligibility_policy": ACTIVE_ELIGIBILITY_POLICY.value,
+        "eligibility_policy": active_eligibility_policy().value,
         "provisional_eligibility": not is_resolved(),
         "purpose": PURPOSE.name,
         "num_cases": len(CASES),
@@ -241,12 +254,14 @@ def render_report(run_config: dict[str, Any], summary: dict[str, Any], records: 
     a(f"Eligibility policy: `{summary['eligibility_policy']}`  ")
     a(f"Purpose: `{summary['purpose']}`")
     a("")
-    a("> **Provisional eligibility.** GAP-2 is open, so the counts below are over")
-    a("> *candidate spans* -- every maximal alphabetic run, English words included --")
-    a("> not over confirmed Vietnamese syllables. This is an implementation fallback,")
-    a("> not the scientific protocol: `corrupt()` refuses by default and had to be")
-    a("> asked for `SELF_CHECK` mode explicitly. GAP-2 must be closed before stage-1")
-    a("> training or the main experiments. Owner: B3 / pre-training.")
+    if summary["provisional_eligibility"]:
+        a("> **Provisional eligibility.** The pinned Vietnamese syllable inventory is not")
+        a("> present, so the counts below are over *candidate spans* -- every maximal")
+        a("> alphabetic run, English words included -- not over eligible Vietnamese")
+        a("> syllables. Run `scripts/fetch_vietnamese_syllable_inventory.py` to resolve.")
+    else:
+        a("> **Resolved eligibility.** Counts are over eligible Vietnamese syllables,")
+        a("> decided by stripped-form membership of the pinned inventory (B3A).")
     a("")
     a("> These are curated implementation-verification examples.")
     a("> They are **not a dataset, not a benchmark and not a training corpus**, and")
@@ -260,7 +275,7 @@ def render_report(run_config: dict[str, Any], summary: dict[str, Any], records: 
     for name, block in summary["by_condition"].items():
         a(
             f"| `{name}` | {block['cases']} | {block['cases_changed']} | {block['candidate_units']} | "
-            f"{block['selected_candidates']} | {block['modified_candidates']} | {block['base_invariant_all']} |"
+            f"{block['selected_units']} | {block['modified_units']} | {block['base_invariant_all']} |"
         )
     a("")
     a("`Selected` counts units the deterministic score chose; `Modified` counts units whose")
@@ -322,14 +337,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "status": status,
-        "eligibility_policy": ACTIVE_ELIGIBILITY_POLICY.value,
+        "eligibility_policy": active_eligibility_policy().value,
         "provisional_eligibility": not is_resolved(),
         "purpose": PURPOSE.name,
         "note": (
             "Curated implementation-verification examples only. Not a dataset, benchmark "
-            "or training corpus; nothing was downloaded. Counts are over CANDIDATE spans, "
-            "not confirmed Vietnamese syllables: GAP-2 is open and must be closed before "
-            "stage-1 training or the main experiments (owner: B3/pre-training)."
+            "or training corpus; nothing was downloaded. When provisional_eligibility is "
+            "true the counts are over candidate spans rather than eligible Vietnamese "
+            "syllables, because the pinned inventory was absent."
         ),
     }
 
@@ -341,7 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     (run_dir / "report.md").write_text(render_report(run_config, summary, records), encoding="utf-8")
 
     print(f"schema   : {CORRUPTION_SCHEMA_VERSION}")
-    print(f"policy   : {ACTIVE_ELIGIBILITY_POLICY.value} (provisional: {not is_resolved()})")
+    print(f"policy   : {active_eligibility_policy().value} (provisional: {not is_resolved()})")
     print(f"cases    : {summary['num_cases']} x {summary['num_conditions']} conditions = {summary['num_records']} records")
     print(f"failures : {summary['num_failures']}")
     for failure in failures[:10]:
@@ -349,7 +364,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print()
     print(f"Status: {status}")
     print("Curated verification examples only - not a dataset, benchmark or corpus.")
-    print("Counts are over CANDIDATE spans, not confirmed Vietnamese syllables (GAP-2 open).")
+    if summary["provisional_eligibility"]:
+        print("Counts are over CANDIDATE spans, not eligible Vietnamese syllables (inventory absent).")
+    else:
+        print("Counts are over ELIGIBLE Vietnamese syllables (pinned inventory, B3A).")
     print()
     print(f"Results: {run_dir}")
     return 0 if not failures else 1
