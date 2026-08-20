@@ -1,6 +1,19 @@
-"""Torch-free contracts for the UNMARK neural adapter (B4A).
+"""Contracts and neural implementation for the UNMARK adapter.
 
-The real `nn.Module` belongs to B4B. Nothing in this package imports torch.
+**This module is torch-free and must stay that way.** It is imported by the
+deterministic pipeline and by the ML-free local environment, so it re-exports
+only the pure-data contracts (B4A).
+
+The B4B neural modules are **deliberately not re-exported**, because importing
+them pulls in torch. Import them explicitly, from an environment that has it::
+
+    from unmark.modeling.adapter import OrthographyInputAdapter, UnmarkEncoder
+    from unmark.modeling.collate import build_example, collate_examples
+    from unmark.modeling.pooling import masked_mean_non_special
+
+`unmark.modeling.collate` is a special case: only its final tensor-packing step
+imports torch, and it does so lazily, so `build_example` and `padded_batch` are
+usable and testable without it.
 """
 
 from unmark.modeling.config import (

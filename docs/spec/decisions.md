@@ -33,6 +33,8 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-B3B1C-001 (manual alignment validated; tone ownership by candidate count) |
 | **RESOLVED DECISION** (cont.) | D-B3B2-001 (deterministic B3B COMPLETE), D-B4A-001, D-B4A-007 |
 | **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
+| **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) |
+| **OPEN — EMPIRICAL PROBE REQUIRED** (cont.) | D-B4B-002 (`position_ids` under `inputs_embeds`) — decision *rule* pre-committed, result pending the Colab probe |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
 
 ---
@@ -1450,3 +1452,217 @@ choice is an implementation decision, not a scientific one.
 §4.7 / §8.2 correct the letter-table cardinality from the stale `~10` to `5`. The
 remaining B4A entries are extractions and recorded decisions, not proposal
 changes. **Compiled PDF stale: YES.**
+
+---
+
+## B4B — neural adapter implementation
+
+### D-B4B-001 — the adapter is implemented exactly as B4A locked it
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation); real-model validation **PENDING** the Colab probe |
+| **Owner** | B4B |
+
+`unmark/modeling/adapter.py` implements proposal §4.5 with no deviation:
+
+```
+q_i = [ e_i ; t_i ; l_i ]
+f_i = LN( W_f q_i + c_f )
+g_i = sigmoid( W_g q_i + c_g )
+z_i = g_i * f_i + (1 - g_i) * e_i
+```
+
+`W_f` and `W_g` are each `Linear(3d -> d, bias=True)`; the adapter LayerNorm has
+dimension `d`; there is **no activation between `W_f` and the LayerNorm**, and
+the combination is **convex, not residual**.
+
+**Channel implementation.** The tone table has exactly 7 rows and the letter
+table exactly 5. Both channels replace the out-of-table `NA` sentinel with row 0
+*before* the lookup and then zero the result by the mask, so **the sentinel never
+reaches `nn.Embedding`** and the substituted row cannot leak through. Unmasked
+ids outside the table raise `ChannelContractViolation` rather than silently
+indexing the wrong row. The letter mean clamps its denominator for vectorisation
+and then multiplies by `(count > 0)`, which is what makes the zero-contributor
+output **exactly** zero rather than zero by the accident that an empty sum is
+zero.
+
+**Initialisation.** `W_g = 0` and `c_g = logit(0.01)` per D-B4A-003. `W_f`, the
+adapter LayerNorm and both embedding tables keep PyTorch's conventional module
+defaults — the proposal locks no separate initialisation for them and inventing
+one would be a new hyperparameter.
+
+**Gate-zero.** `convex_combination(gate, fused, base)` is a free function, so the
+forced `g := 0` wiring identity is testable **on the primitive**. No public
+gate-zero flag exists on the module or config; a test asserts this across all
+neural modules and the probe.
+
+**Scope boundary.** The adapter consumes tensors only. It performs no
+tokenization, no orthographic decomposition, no corruption and no eligibility
+classification; `unmark/modeling/collate.py` is the documented seam between the
+deterministic metadata and the tensors.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — this is the proposal's own equation, implemented. PDF stale: **YES** (unchanged) |
+
+### D-B4B-002 — `position_ids` under `inputs_embeds`: decision rule pre-committed
+
+| | |
+|---|---|
+| **Status** | **OPEN — EMPIRICAL PROBE REQUIRED.** The *rule* is fixed here; the *result* needs the real model. |
+| **Owner** | B4B |
+
+Audit 014 flagged that PhoBERT is RoBERTa-family, whose position ids are derived
+from `input_ids` through a padding-aware offset, while passing only
+`inputs_embeds` takes a different code path. **This was not verified and is not
+verifiable locally** — the local environment has no torch and no weights.
+
+**The rule is committed in advance so the result cannot be read selectively:**
+
+| Observation | Consequence |
+|---|---|
+| Path B uses exactly the same effective position ids as path A in **every** required case | no explicit `position_ids` are needed |
+| **Any** case differs | B4B must compute and pass explicit `position_ids` reproducing the authoritative `input_ids` path |
+
+Required cases: one sentence with no padding; a batch with right padding; a batch
+containing unequal sequence lengths; and real PhoBERT special tokens.
+
+**Method.** `scripts/b4b_phobert_adapter_probe.py` registers a forward hook on
+the real position-embedding module and records the **actual index tensors**.
+Position ids are not inferred from library source.
+
+**Reporting discipline.** The frozen-model control reports `max_abs_diff` and
+`mean_abs_diff`, split into attended and padding positions. A mismatch confined
+to padding is a materially different finding from one at content positions, and
+the split says which it is. **A loose tolerance must not be used to hide a
+mismatch**; if material differences remain at content positions, B4B is BLOCKED.
+
+This is an **engineering integration decision derived from real-model
+behaviour**, not a change to the adapter architecture.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — a model-API integration detail does not alter the scientific description. PDF stale: **YES** (unchanged) |
+
+### D-B4B-003 — torch is kept out of `unmark.modeling.__init__`
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | B4B |
+
+`unmark/modeling/__init__.py` re-exports the B4A pure-data contracts only. The
+B4B modules (`adapter`, `pooling`, `collate`) are **not** re-exported, because
+importing them pulls in torch and the local development environment is
+deliberately ML-free — `import unmark.modeling` must keep working there.
+
+`collate.py` goes further: only its final tensor-packing step imports torch, and
+it does so lazily. Label-to-id mapping, the `NA` sentinel decision, and laying
+content projections out against the model's own special tokens are therefore
+pure Python and **genuinely tested locally** rather than only statically.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-B4B-004 — freezing weights and disabling dropout are different contracts
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation safety) |
+| **Owner** | B4B |
+
+**The gap.** `requires_grad = False` freezes *weights*. `eval()` disables
+*stochastic training behaviour* such as dropout. Freezing does not imply eval,
+and `nn.Module.train()` **recurses into registered children** -- so calling
+`wrapper.train()` on a `UnmarkEncoder` would have flipped the pretrained encoder
+into train mode and silently reactivated its dropout, while every encoder
+parameter stayed correctly frozen. Calling `encoder.eval()` once at construction
+is not enough.
+
+**Why it matters for UNMARK specifically.** §4.6 aligns the adapted branch to a
+reference branch produced by *the same frozen encoder*. If the encoder ran
+dropout during adapter training, the two branches would see different dropout
+draws of the same weights, injecting avoidable stochasticity straight into the
+alignment objective. The failure is silent: training proceeds, the loss
+decreases, and the alignment signal is noisier than the design intends.
+
+**The contract.**
+
+| Call | `wrapper.training` | `encoder.training` | `adapter.training` |
+|---|---|---|---|
+| after construction | — | **False** | — |
+| `wrapper.train()` | True | **False** | True |
+| `wrapper.eval()` | False | **False** | False |
+| `wrapper.train()` again | True | **False** | True |
+
+**Implementation.** `UnmarkEncoder.train(mode)` calls `super().train(mode)` for
+normal `nn.Module` semantics -- the adapter follows `mode`, `self.training` is
+set, and `self` is returned -- and then explicitly restores `self.encoder.eval()`.
+`requires_grad` state is untouched: this is about module mode only.
+
+**There is no flag to disable it.** A frozen representation encoder running
+dropout is not a configuration anyone should be able to select by accident;
+changing it requires a logged scientific decision. A test asserts `train()` takes
+`(self, mode)` and nothing else.
+
+**Affects.** `UnmarkEncoder.train`; the Colab probe, which now exercises the full
+transition sequence and fails the run if the invariant breaks; future Stage-1
+training.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §5.1 already locks "encoder fully frozen"; this is how that is enforced against a PyTorch default, not a change of semantics. PDF stale: **YES** (unchanged) |
+
+### D-B4B-005 — gradient routing is validated from the encoder output, not from `z`
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (probe design) |
+| **Owner** | B4B |
+
+**The gap.** The first B4B probe computed its diagnostic scalar as `z.sum()`,
+where `z` is the adapter output. That validates only `phi -> z -> loss`. It would
+have passed unchanged if the real integration path contained `z.detach()`, or ran
+the encoder inside `torch.no_grad()` -- leaving Stage-1 **unable to train
+`A_phi` through the encoder** while the probe reported success.
+
+**The decision.** The gradient-routing diagnostic must be derived from the
+**real encoder's final hidden state**, through the same wrapper future code will
+use:
+
+```
+phi -> z = inputs_embeds -> frozen E_theta -> final hidden states -> scalar -> backward
+```
+
+The scalar is `masked_mean_non_special(hidden, attention_mask,
+special_tokens_mask).sum()` -- a finite diagnostic over attended, non-special
+positions. **It is not a scientific objective**; Stage-1's cosine loss belongs to
+a later phase.
+
+**Success conditions.** Encoder: `requires_grad == False` everywhere, and no
+pretrained parameter carries a nonzero gradient. Adapter: gradients exist for
+`W_g` weight and bias, `W_f` weight and bias, the adapter LayerNorm, and both
+embedding tables; all observed gradients finite; at least one nonzero, so that a
+connected-but-severed graph cannot pass. Embedding rows the batch does not touch
+are **not** required to receive gradients, and `W_g` starting at zero does not
+excuse a missing gradient *tensor*.
+
+**Graph-break prohibition, scoped.** No `detach()` and no `no_grad` may sit on the
+adapted path used for gradient validation or future Stage-1 training. The
+separate `input_ids` vs `inputs_embeds` **equivalence control remains
+inference-only and correctly uses `model.eval()` under `torch.no_grad()`** --
+`no_grad` is not banned from the probe, only from the trainable path. Tests
+enforce both halves.
+
+**If the encoder-derived loss cannot backpropagate into `A_phi`, B4B is
+INCOMPLETE.**
+
+**Affects.** `scripts/b4b_phobert_adapter_probe.py`; the artifact records
+`gradient_loss_source = "encoder_final_hidden_state"` and
+`gradient_path_includes_encoder = true` so the run proves which path was tested.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |

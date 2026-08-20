@@ -452,21 +452,28 @@ def test_contract_modules_import_no_ml_dependency(name):
     }
 
 
-def test_no_nn_module_was_written():
-    """B4A is a specification task. The real module belongs to B4B.
+def test_pure_data_contract_modules_define_no_nn_module():
+    """The *contract* modules stay pure data.
+
+    B4A asserted this of the whole `unmark/modeling` package, when B4B's
+    `nn.Module` did not exist yet. B4B added `adapter.py`, `pooling.py` and
+    `collate.py`, which legitimately use torch; the assertion is therefore
+    rescoped to the modules that must never depend on it. `test_neural_adapter.py`
+    guards the neural side.
 
     Structural, not textual: the docstrings legitimately *mention* `nn.Module`
-    when saying it is B4B's job. What must not exist is a class that subclasses
-    one, or a `forward` method.
+    when saying it is B4B's job. What must not exist here is a class that
+    subclasses one, or a `forward` method.
     """
-    for path in sorted((REPO / "unmark/modeling").glob("*.py")):
+    for name in CONTRACT_MODULES + ("unmark/modeling/__init__.py",):
+        path = REPO / name
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
                 bases = [ast.unparse(base) for base in node.bases]
-                assert not any("Module" in base for base in bases), f"{path.name}: {node.name}"
+                assert not any("Module" in base for base in bases), f"{name}: {node.name}"
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                assert node.name != "forward", f"{path.name} defines forward()"
+                assert node.name != "forward", f"{name} defines forward()"
 
 
 # ---------------------------------------------------------------------------
