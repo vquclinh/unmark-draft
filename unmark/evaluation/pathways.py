@@ -110,19 +110,28 @@ def encode_split(
     pathway: SystemPathway,
     tokenizer: Any,
     head_config: HeadConfig,
+    padding: bool | str = True,
 ) -> EncodedSplit:
     """Tokenize one split under one pathway. **Imports torch lazily.**
 
     `head_config` is required rather than optional because `max_length` is one of
     the §5.2 values pinned during spec lock -- there is no default to fall back
     on, and truncation length is a scientific choice.
+
+    Args:
+        padding: passed straight through to the tokenizer. The default `True`
+            (pad to the longest sequence in the batch) is the general Stage-2
+            behaviour. The pre-G1 diagnostic pins `"max_length"` instead, because
+            its representation cache is keyed on a fixed shape -- see
+            `preg1_head.PREG1_TOKENIZATION`. It is a parameter rather than a
+            constant so neither caller inherits the other's choice by accident.
     """
     import torch
 
     texts = [pathway_text(example.text, pathway) for example in task_split.examples]
     encoded = tokenizer(
         texts,
-        padding=True,
+        padding=padding,
         truncation=True,
         max_length=head_config.max_length,
         return_tensors="pt",
