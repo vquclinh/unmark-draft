@@ -3250,6 +3250,33 @@ derived file digest were **observed on Colab against the real corpus** and are
 recorded here as external evidence. They were **not** produced by the local
 ML-free suite, which has no access to the corpus and never will.
 
+**Reproduction recipe** (Audit 023 Revision 1 — recovered, not decided). The
+derived csv is deliberately not committed, so reproducing digest `a20c0f77…`
+requires the exact serialisation, which was previously recorded nowhere and had
+to be recovered by forensic inspection of the historical notebook. It is
+recorded here so the next reconstruction needs no notebook:
+
+*Adapter step* — read the official `sents.txt` + `sentiments.txt`; **no**
+normalisation, **no** label transformation; write columns exactly
+`id,text,label` with Python `csv.DictWriter` and **LF** terminators; sample ids
+are `<split>:<zero-padded five-digit zero-based index>` (e.g. `train:00000`).
+Adapter TRAIN is 11 426 rows / 1 067 637 bytes, SHA-256
+`5bf8587343ef76231f14d57f1806387d387900c3cbc1635ecb24b97c248c9a9f` — the digest
+of the **csv bytes**, not of any source file.
+
+*Derived step* — exclude the entire conflicting group (`train:11293`,
+`train:11417`), **no relabel**, retain all other rows in original order, write
+with the same writer and terminators; copy dev/test byte-for-byte. This
+reproduces TRAIN 11 424 rows / 1 067 331 bytes / `a20c0f77…`, DEV
+`9c475c8998871c0c7317ee200b3e7db827128cd2dfec9de5c689aca299acc8d0`, TEST
+`33b58c83a0783e45a12954f8aa761104d2ae0a59a81a641df066e356f6162910`.
+
+Verified by rebuilding from a fresh official download whose ten raw-file digests
+matched the Audit-022 records. **A first attempt that omitted the five-digit
+zero-padding failed visibly and its output was discarded** — the digest lock was
+never relaxed to accommodate it. **Nothing about this decision changed;** the
+recipe makes an existing decision reproducible.
+
 **Affected.** `unmark/evaluation/preg1_protocol.py`
 (`CONFLICTING_GROUP_POLICY`, `OBSERVED_CONFLICTING_GROUPS`,
 `DERIVED_TRAIN_SIZE`, `DERIVED_TRAIN_LABEL_COUNTS`,
@@ -3476,6 +3503,26 @@ run state), `tests/test_preg1_split.py` (new), `tests/test_preg1_profiling.py`.
 Cross-references [D-PREG1-011](#d-preg1-011--conflicting-canonical-groups-are-excluded-whole),
 which supplied the derived pool this splitter consumes; D-PREG1-011, -012 and
 -013 are otherwise unchanged.
+
+**Empirical closure.** Executed on the real approved pool at HEAD
+`66f4522fa86e5f02f583204ddcad560a62b013c0`, schema `preg1-split-v1`, seed
+**17486**. The observed split matched the precommitted aggregates **exactly** —
+`protocol-train` 9 139 (4 259 / 366 / 4 514), `protocol-dev` 2 285
+(1 065 / 92 / 1 128) — with zero cross-part canonical leakage and zero
+conflicting-label groups. All 11 424 canonical groups were confirmed singleton
+on the real pool, which is the premise the per-class arithmetic rested on.
+
+Assignment digest
+`7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84`. A **second
+independent materialisation** into a fresh directory produced **byte-identical**
+artifacts — identical bytes, not merely identical counts — confirming both the
+determinism contract and the runtime/deterministic artifact separation, since
+run 2 omitted the runtime file and the scientific artifacts did not move.
+
+**The decision itself is unchanged.** Running a precommitted measurement is not
+a decision; no new decision id was created. See
+[Audit 023](../audits/023-pre-g1-internal-split-materializer-and-fail-closed-contract.md)
+§§M–P.
 
 | | |
 |---|---|

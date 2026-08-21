@@ -4,22 +4,47 @@
 |---|---|
 | **Audit id** | 023 |
 | **Created (UTC)** | 2026-08-21 |
-| **Baseline HEAD** | `819d09f2df95ca57444a63c86363e614b44ce458` |
-| **Scope** | Harden the committed splitter against three probe-found failures; build the deterministic split materialiser; do **not** materialise the real split |
+| **Baseline HEAD** | `819d09f2df95ca57444a63c86363e614b44ce458` (implementation task) |
+| **Execution HEAD** | **`66f4522fa86e5f02f583204ddcad560a62b013c0`** (real materialisation) |
+| **Scope** | Harden the committed splitter against three probe-found failures; build the deterministic split materialiser; **and — Revision 1 — close the real materialisation** |
+| **Revision 1b** | **2026-08-21** — **temporal-truthfulness repair only.** §J limitation 7 claimed the reproduction recipe was "now committed"; it is recorded in this **pending, uncommitted** revision, and the notebook dependency stays live until the researcher commits. A related implicature in §R is qualified the same way. **Nothing else changed.** |
+| **Revision 1a** | **2026-08-21** — **documentation-consistency repair only.** Header `Type` row now distinguishes the implementation-era task from the Revision-1 real-data closure; §K is split into **K.1 (historical)** and **K.2 (current)** so the implementation-era "no real membership" item reads as superseded rather than contradictory; over-literal "unchanged" claims about §§B–L are corrected. **No constant, hash, count, decision, membership, result or code changed.** |
+| **Revision 1** | **2026-08-21** — **REAL SPLIT CLOSED.** The derived pool's exact bytes were reconstructed from historical notebook evidence, the split was materialised twice independently at HEAD `66f4522f…`, and the two runs are **byte-identical**. Verdict moves **IMPLEMENTATION PASS → FINAL PASS**. §§B–L are preserved substantively as the implementation-era record, with explicit historical/discharged annotations where a claim would otherwise read as current; §§M–P carry the execution evidence. **No scientific constant, decision or implementation changed.** |
 | **Predecessors** | [021](021-pre-g1-dataset-profile-and-protocol-precommit.md), [022](022-uit-vsfc-real-data-profile-integrity-closure.md) |
 | **Phase** | pre-G1, after Audit 022 FINAL PASS |
-| **Type** | **Implementation hardening + materialiser.** No real data, no training, no optimizer, no downstream score |
+| **Type** | **Implementation hardening + materialiser** (original task: **no real data**), **closed by Revision 1 with externally observed real-data split-materialisation evidence**. At no point: no model weights, no optimizer, no training, no HPO, no classifier execution, no downstream score |
 
 ---
 
 ## A. VERDICT
 
-**IMPLEMENTATION PASS — REAL SPLIT NOT YET MATERIALISED**
+**FINAL PASS — REAL SPLIT MATERIALISED AND BYTE-DETERMINISTIC**
 
-The splitter is hardened, the materialiser exists, and both are covered by
-executable tests. **No real membership has been produced or observed.** This
-audit will be revised **in place** after the real Colab materialisation; there
-will be no Audit 024 for that closure.
+Five distinct things were established, in order, and they must not be collapsed:
+
+| Stage | What it established | Where |
+|---|---|---|
+| 1. **Implementation verification** | splitter hardened against three probe-found failures; materialiser built; 55 executable tests. **No real data at that task.** | §§B–L (implementation-era record) |
+| 2. **Reproducibility-chain closure** | the Audit-022 derived csv was not retained; its exact bytes were reconstructed from historical notebook evidence and **matched the locked digest** | §M |
+| 3. **First real materialisation** | the split ran on the approved pool at HEAD `66f4522f…` and hit the precommitted aggregates **exactly** | §N |
+| 4. **Independent determinism** | a second run into a fresh directory produced **byte-identical** artifacts | §O |
+| 5. **Safe persistence** | five files to Drive; **no corpus text, no derived csv, no raw data** | §P |
+
+**The state transition is:**
+
+**IMPLEMENTATION PASS — REAL SPLIT NOT YET MATERIALISED → FINAL PASS — REAL
+SPLIT MATERIALISED AND BYTE-DETERMINISTIC**
+
+**§§B–L below are preserved substantively as the implementation-era record**,
+with explicit historical / discharged annotations (§I, §L, §K.1) wherever a
+sentence would otherwise read as a current claim. They describe a task in which
+no real data was touched, and that remains true **of that task**. Nothing is
+back-dated, and nothing is erased.
+
+**Nothing downstream has happened.** No head was trained, no optimizer created,
+no model weights loaded, no classifier executed, no Vanilla-vs-Base-only result
+produced, no Stage-1 training or HPO run. The split is a **membership**, not a
+result.
 
 **2199 local tests pass, 56 skip** — 55 of them new in `tests/test_preg1_split.py`
 (2144/56 at Audit 022).
@@ -31,11 +56,13 @@ will be no Audit 024 for that closure.
 | Record input order | **invariant** |
 | Conflicting-label canonical group | **fail-closed** |
 | Duplicate sample id | **fail-closed** |
-| Materialiser | **implemented; real run pending** |
-| Real membership | **not observed** |
+| Materialiser | **implemented and executed on real data** |
+| Real membership | **materialised, verified, byte-deterministic** |
+| Assignment digest | `7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84` |
 
 **No head trainer. No downstream score. No Stage-1 training or HPO.**
-**D-B3B0-002 remains OPEN.** The compiled PDF **remains stale**.
+**D-B3B0-002 remains OPEN. Final Stage-2 pooling remains OPEN.** The compiled
+PDF **remains stale**.
 
 ---
 
@@ -47,8 +74,13 @@ groups), the channel densities are measured, and the tokenizer geometry is
 characterised. Audit 022 §L explicitly deferred the 80/20 split to a later task
 **after researcher review**.
 
-This is that task, minus the run. It builds the mechanism and refuses to use it
+This was that task, minus the run: it built the mechanism and refused to use it
 on real data, because the probes found the mechanism was not yet trustworthy.
+
+*(Revision 1: the run has since happened — §§M–P. Sections B–L are preserved
+substantively as the implementation-era record, with explicit historical /
+discharged annotations where a claim would otherwise read as current, and
+describe the state at that time.)*
 
 ---
 
@@ -193,7 +225,10 @@ is what makes them a **precommitment**: they were computable before any
 membership existed, and a synthetic pool with the real class totals reproduces
 them exactly under the locked seed.
 
-**No real membership ids are hard-coded anywhere.** None have been observed.
+**No real membership ids are hard-coded anywhere** — that remains true of the
+code and of this audit. *(At the implementation task none had been observed at
+all; the real membership was subsequently materialised — §§N–P — and lives only
+in the persisted artifacts, never in committed source or documentation.)*
 
 ---
 
@@ -281,8 +316,10 @@ own documentation. See §J.
 
 ## I. WHAT HAS NOT HAPPENED
 
-- **The real 80/20 split has not been materialised.** No membership exists.
-- **No real UIT-VSFC data was read**, locally or otherwise. Nothing downloaded.
+- *(Historical, at the implementation task: the real split had not been
+  materialised and no real UIT-VSFC data had been read. **Superseded by
+  Revision 1** — §§M–P. Nothing was downloaded to this local environment at any
+  point; the real run was Colab-only.)*
 - **No head trainer.** No optimizer, no checkpoint, no LR selection.
 - **No downstream score.** No Vanilla-vs-Base-only result exists.
 - **No Stage-1 training or HPO.** Stage-1 is untouched.
@@ -295,14 +332,14 @@ own documentation. See §J.
 
 ## J. LIMITATIONS
 
-1. **The precommitted counts are verified only on synthetic pools.** A synthetic
-   pool with the real *class totals* reproduces 9139 / 2285 exactly, and the
-   real pool has zero canonical duplicates so the arithmetic should carry over —
-   but "should" is doing work there. The real run is what settles it.
-2. **The digest gate is the only thing tying this to the approved corpus**, and
-   this environment cannot check that the digest belongs to the corpus it claims
-   to. If the wrong file were produced upstream with a matching digest, nothing
-   here would notice — that is what a digest is.
+1. *(Settled by Revision 1.)* At the implementation task the precommitted counts
+   were verified only on synthetic pools, and "should carry over" was doing the
+   work. **The real run reproduced 9139 / 2285 and the exact per-class counts.**
+2. **The digest gate is still the only thing tying this to the approved corpus**,
+   and this environment cannot check that a digest belongs to the corpus it
+   claims to. §M substantially strengthens the chain — the ten official raw
+   files re-verified, and the derived bytes rebuilt from them — but the argument
+   remains hash-based, which is what a digest is.
 3. **The equal-fraction tie-break is arbitrary.** Ascending name is a total order,
    not a principled one. It does not affect the locked 80/20 mapping, where the
    fractions differ, but a future equal-fraction protocol should decide the rule
@@ -320,10 +357,30 @@ own documentation. See §J.
    compared unequal to an expectation that listed it as `0`. On the locked pool
    no class is empty in either part, so it would not have fired — a latent
    failure waiting for a different corpus.
+7. **The derived csv still is not persisted** (Revision 1). §M is the recipe for
+   rebuilding it, and it worked — but it worked partly because a notebook still
+   existed to inspect. The recipe is now recorded in **this pending,
+   uncommitted documentation revision**; **once this closure is committed**,
+   reproducing the derived view will no longer depend on rediscovering the
+   historical notebook. Until then the dependency is still live. The underlying
+   tension between "commit no corpus" and "be reproducible" is managed, not
+   eliminated.
+8. **Revision 1 rests on evidence this session did not produce.** §Q states
+   exactly what was and was not checked here. The arithmetic and byte-size
+   cross-checks are strong and all passed, but a run that was internally
+   consistent and wrong would pass every one of them.
 
 ---
 
 ## K. TASK-END SELF-AUDIT
+
+### K.1 — original implementation-task self-audit (HISTORICAL RECORD)
+
+> **Rows 1–33 are the self-audit as performed at the implementation task**, when
+> no real data had been touched. They are preserved as the historical record and
+> are **not** restated as current. In particular **row 20 was true at that time
+> and is superseded by Revision 1** (§§M–P), where the real membership was
+> materialised. Nothing here is erased.
 
 | # | Check | Result |
 |---|---|---|
@@ -346,7 +403,7 @@ own documentation. See §J.
 | 17 | Real derived SHA enforced; wrong SHA fails | **yes** — unit and CLI (exit 2) |
 | 18 | Artifacts byte-identical across repeated synthetic runs | **yes** |
 | 19 | Overwrite refused; failed run leaves nothing | **yes** — staged writes |
-| 20 | **No real membership materialised** | **yes** |
+| 20 | **No real membership materialised** | **yes at the implementation task** — **SUPERSEDED by Revision 1 §§M–P**, where the real split was materialised, independently reproduced and persisted |
 | 21 | No UIT-VSFC or model downloaded locally | **yes** — `.venv` remains ML-free |
 | 22 | Official validation role unchanged | **yes** |
 | 23 | Official test seal unchanged | **yes** |
@@ -361,31 +418,390 @@ own documentation. See §J.
 | 32 | Everything unstaged | **yes** |
 | 33 | No prohibited git operation | **yes** |
 
+### K.2 — Revision 1 self-audit (CURRENT)
+
+| # | Check | Result |
+|---|---|---|
+| 34 | Audit 023 revised **in place**, not duplicated; **no Audit 024** | **yes** |
+| 35 | Original implementation-only state preserved as historical fact | **yes** — §§B–L preserved substantively, with §I, §K.1 and §L explicitly annotated historical/discharged |
+| 36 | Real materialisation evidence clearly separated from implementation | **yes** — §§M–P, and §A stages them |
+| 37 | All reported hashes and counts copied exactly from the observed evidence | **yes** — transcribed, then arithmetically cross-checked (§Q) |
+| 38 | `5bf858…` described as the **adapter TRAIN csv** SHA, **not** a code hash | **yes** — §M states it explicitly |
+| 39 | Assignment digest exactly `7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84` | **yes** — §§A, N, O, and the status block |
+| 40 | Deterministic vs runtime artifacts correctly distinguished | **yes** — four vs one; §O proves the separation empirically |
+| 41 | **Both** independent runs recorded | **yes** — §N and §O |
+| 42 | Safe Drive persistence recorded, with the copied/not-copied boundary | **yes** — §P |
+| 43 | Failed reconstruction probe recorded honestly, not hidden, not called corruption | **yes** — §M, framed as forensic evidence and as the mechanism working |
+| 44 | No digest lock weakened; no corpus identity substituted | **yes** — the near-miss was rejected, not adopted |
+| 45 | Raw corpus text absent from all committed docs | **yes** — ids, digests, counts only |
+| 46 | Official validation / test boundaries preserved | **yes** — neither was an input |
+| 47 | No downstream, training, HPO or model-weight claim made | **yes** — §A and §S say so explicitly |
+| 48 | D-B3B0-002 **OPEN**; Stage-2 pooling **OPEN** | **yes** — §S |
+| 49 | Compiled PDF **STALE** | **yes** |
+| 50 | No scientific constant silently changed | **yes** — seed, tag, fractions, digest, rows, exclusion re-verified from the modules |
+| 51 | No unnecessary new decision invented | **yes** — §R explains why, and what was recorded instead |
+| 52 | Committed code unmodified by this task | **yes** — documentation only |
+| 53 | Worktree left unstaged; no git add/commit/push/tag/stash/reset/checkout/restore | **yes** |
+| | **— Revision 1a: documentation-consistency repair —** | |
+| 54 | Header `Type` row distinguishes implementation-era (no real data) from Revision 1 (externally observed real-data evidence) | **yes** |
+| 55 | Header `Type` still states no weights / optimizer / training / HPO / classifier / downstream score **at any point** | **yes** |
+| 56 | §K split into **K.1 (historical)** and **K.2 (current)**; row 20 preserved and marked superseded, not erased | **yes** |
+| 57 | Over-literal "unchanged / exactly as written" claims about §§B–L replaced with "preserved substantively … with explicit annotations" | **yes** — three sites |
+| 58 | Swept §§B–L for any other unqualified claim that real membership does not exist | **yes** — one found (§E "None have been observed") and scoped |
+| 59 | No scientific constant, hash, count, decision, membership or code changed | **yes** — documentation only |
+| | **— Revision 1b: temporal-truthfulness repair —** | |
+| 60 | §J limitation 7 no longer claims the recipe is already committed | **yes** — states it is recorded in this **pending, uncommitted** revision, dependency still live until commit |
+| 61 | Swept all three modified docs for other "already committed" claims | **yes** — one borderline implicature in §R qualified; three remaining uses verified true (workflow code **is** committed at HEAD `66f4522f…`; "no corpus file is committed" is standing policy) |
+| 62 | No claim that this uncommitted documentation is already committed | **yes** |
+| 63 | No hash, count, membership, constant, decision, result, code or verdict changed | **yes** — wording only |
+
 ---
 
-## L. REQUIRED NEXT ACTION
+## L. REQUIRED NEXT ACTION — DISCHARGED BY REVISION 1
 
-**Only after researcher review and commit**, run
-`scripts/materialize_preg1_split.py` on Colab against the derived train csv,
-into a **new** directory, and revise **this audit in place** with the observed
-manifest, the id-file digests and the assignment digest.
+*(Historical.)* The implementation task required: run
+`scripts/materialize_preg1_split.py` on Colab against the derived train csv into
+a **new** directory, and revise this audit in place with the observed manifest,
+id-file digests and assignment digest. It required the run to reproduce
+`protocol-train` **9139** (4259/366/4514), `protocol-dev` **2285**
+(1065/92/1128), zero cross-part canonical leakage and `preg1-split-v1` — and
+stated that any deviation would be a finding rather than a surprise to accept.
 
-The real run must reproduce: `protocol-train` **9139** (4259/366/4514),
-`protocol-dev` **2285** (1065/92/1128), zero cross-part canonical leakage, and
-`preg1-split-v1` in the manifest. Any deviation is a finding, not a surprise to
-be accepted.
+**Every one of those conditions was met.** See §§M–P. There was no deviation.
+
+**The next phase is the pre-G1 Vanilla-vs-Base-only burden diagnostic**, which
+requires a head trainer that does **not** exist. Nothing in this audit authorises
+starting it.
+
+---
+
+## M. REPRODUCIBILITY-CHAIN CLOSURE — RECONSTRUCTING THE DERIVED CSV
+
+**Evidence status.** Everything in §§M–P was **observed on Colab** and supplied
+to this session. The artifacts are not in this repository and were **not**
+independently opened, hashed or recomputed here. What this session did verify is
+recorded in §Q.
+
+### The gap
+
+The Audit-022-approved derived TRAIN csv was **deliberately not retained as raw
+data** — no corpus file is committed, by standing policy. That policy has a
+cost, and this task paid it: to materialise the split, the exact bytes behind
+digest `a20c0f77…` had to be reproduced from the official distribution.
+
+### Re-verification of the official source
+
+The official UIT-VSFC v1.0 public-distribution files were downloaded again.
+**All ten official raw-file SHA-256 values matched the Audit-022 historical
+records.** The starting point was therefore provably the same corpus.
+
+The historical conflicting canonical group was independently recovered:
+
+| | |
+|---|---|
+| Canonical digest | `a193a8ff49cc5ab43da189f9126aea19a0a0e9df1e16acc0a710cf7e880d0daa` |
+| Members | `train:11293`, `train:11417` |
+| Labels | `0` and `2` |
+| Source texts | confirmed identical |
+| Id convention | confirmed **zero-based** |
+
+This independently reproduces the Audit-022 / D-PREG1-011 finding from the raw
+distribution.
+
+### The failed first reconstruction — recorded, not hidden
+
+An initial controlled reconstruction probe **failed visibly**. It did not
+reproduce the historical **five-digit zero-padded** id serialisation, so its
+bytes did not match. **It wrote no authoritative derived output.**
+
+This is **historical forensic evidence, not a scientific failure**, and it is
+worth being precise about what it was and was not:
+
+- **no digest lock was weakened** — the target digest `a20c0f77…` was never
+  relaxed to accommodate a near-miss;
+- **no new corpus identity was substituted** — a differently-serialised csv was
+  rejected rather than adopted;
+- **nothing was corrupted** — the scientific dataset was never at risk; a probe
+  produced non-matching bytes and was discarded;
+- the probe **failing** is the mechanism working. A reconstruction that silently
+  accepted a different serialisation would have been the actual failure.
+
+### Recovered historical adapter semantics
+
+Forensic inspection of the historical Colab notebook recovered the exact adapter
+that produced the Audit-022 inputs:
+
+| | |
+|---|---|
+| Source | official `sents.txt` + `sentiments.txt` |
+| Normalisation | **none** |
+| Label transformation | **none** |
+| Columns | exactly `id,text,label` |
+| Writer | Python `csv.DictWriter` |
+| Line terminator | **LF** |
+| Id format | `<split>:<zero-padded five-digit zero-based index>`, e.g. `train:00000` |
+| Round-trip | text and label **lossless**, verified |
+
+**Historical adapter TRAIN** — 11 426 rows, **1 067 637 bytes**, SHA-256
+`5bf8587343ef76231f14d57f1806387d387900c3cbc1635ecb24b97c248c9a9f`.
+
+**`5bf858…` is the SHA-256 of the historical adapter TRAIN csv *bytes*.** It is
+**not** a hash of source code, and must not be cited as one.
+
+### Derived construction and the match
+
+Consume the adapter train csv; exclude the **entire** conflicting group
+(`train:11293`, `train:11417`); **no relabel**; retain all other rows in
+original order; write with the same `csv.DictWriter`, fields `id,text,label`,
+LF terminator; copy adapter dev/test byte-for-byte.
+
+The reconstructed artifacts matched the historical Audit-022 bytes **exactly**:
+
+| Split | Rows | Bytes | SHA-256 |
+|---|---|---|---|
+| **train** | 11 424 | 1 067 331 | **`a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301`** |
+| dev | 1 583 | 139 001 | `9c475c8998871c0c7317ee200b3e7db827128cd2dfec9de5c689aca299acc8d0` |
+| test | 3 166 | 291 625 | `33b58c83a0783e45a12954f8aa761104d2ae0a59a81a641df066e356f6162910` |
+
+Train label counts: `0` 5 324 · `1` 458 · `2` 5 642 — the locked values.
+
+**This is a reproducibility-chain closure, not a protocol or scientific
+change.** The previously missing upstream link was **recovered** from historical
+notebook evidence. No locked digest was altered, no decision was revisited, and
+the bytes that were approved in Audit 022 are the bytes that were split.
+
+---
+
+## N. FIRST REAL MATERIALISATION — S3P12
+
+| | |
+|---|---|
+| **Repository HEAD** | `66f4522fa86e5f02f583204ddcad560a62b013c0` |
+| **Materialiser** | `scripts/materialize_preg1_split.py` (committed, unmodified) |
+| **Input digest** | `a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301` |
+| **Schema** | `preg1-split-v1` |
+| **Seed tag / seed** | `UNMARK-PREG1-SPLIT-UITVSFC-v1` / **17486** |
+
+### The observed split matched the precommitment exactly
+
+| Part | negative | neutral | positive | total |
+|---|---|---|---|---|
+| `protocol-train` | 4 259 | 366 | 4 514 | **9 139** |
+| `protocol-dev` | 1 065 | 92 | 1 128 | **2 285** |
+
+These are **exactly** the aggregates §E recorded **before** any membership
+existed, derived from committed class totals and the allocation rule. The
+precommitment was falsifiable and was not falsified.
+
+**Assignment digest:**
+`7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84`
+
+### Independent verification observed
+
+| Check | Result |
+|---|---|
+| train / dev disjoint | **PASS** |
+| union equals all 11 424 approved derived TRAIN ids | **PASS** |
+| each sample occurs exactly once | **PASS** |
+| all 11 424 canonical groups singleton in the approved pool | **confirmed** |
+| canonical cross-part leakage | **0** |
+| conflicting-label groups | **0** |
+| official validation as input | **no** |
+| official test as input | **no** |
+| downstream score / head / optimizer / model weights / training | **none** |
+| raw text printed by the verification | **none** |
+
+The singleton-group confirmation matters: it is the premise the precommitted
+per-class arithmetic rested on, and it was verified on the real pool rather than
+assumed from the Audit-022 duplicate counts.
+
+### Deterministic artifacts
+
+| File | SHA-256 | Bytes |
+|---|---|---|
+| `protocol-train.ids.txt` | `275ae66d16582418093a1f4500904faefedd5936bb5cf383c52be302e151172e` | 109 668 |
+| `protocol-dev.ids.txt` | `d342950ae183e6c08bfeecaeacfb0e42aaf3751c12dec0baf0ca515922ca5e31` | 27 420 |
+| `split-manifest.json` | `225b109ea5fa58476e98bdf050a42ca89f12c6df02b37a882dc09cdc958b3685` | 3 240 |
+| `report.md` | `17a9a6f116b1277bc063ff53d0840e20cae1b034177d6d2ae014a6428ee20459` | 796 |
+
+### Runtime metadata is NOT part of the scientific artifact
+
+| File | SHA-256 | Bytes | Keys |
+|---|---|---|---|
+| `runtime-environment.json` | `0ed15fc3f717e1d316194021969ec6fc8288073de99a051980d94f6b86bc2c6e` | 168 | `note`, `platform`, `python` |
+
+This file is **runtime evidence only**. It is excluded from the deterministic
+membership set by design (§F), and §O is what demonstrates the design works:
+run 2 omitted it entirely and the four deterministic files were unchanged.
+
+---
+
+## O. INDEPENDENT SECOND MATERIALISATION — S3P13
+
+A second materialisation into a **different, previously absent** directory,
+using the same approved derived TRAIN bytes, the same committed materialiser and
+the same repository HEAD — **without** runtime-environment output.
+
+It produced **exactly four** files, and **all four were byte-identical to run 1**,
+with the same four SHA-256 values recorded in §N.
+
+| | |
+|---|---|
+| Manifest semantic identity | **PASS** |
+| Assignment digest | `7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84` — identical |
+| `protocol-train` membership | **identical** |
+| `protocol-dev` membership | **identical** |
+| Class counts | 4 259 / 366 / 4 514 and 1 065 / 92 / 1 128 — identical |
+
+**PASS — THE REAL SPLIT IS BYTE-DETERMINISTIC ACROSS INDEPENDENT RUNS.**
+
+This is the strongest evidence in the audit, and it is stronger than equal
+counts. Identical aggregates would be consistent with a different assignment;
+identical **bytes** are not. It also confirms the runtime/deterministic
+separation empirically: run 1 wrote runtime metadata, run 2 did not, and the
+scientific artifacts did not move.
+
+---
+
+## P. SAFE PERSISTENCE — S3P14
+
+Destination:
+`/content/drive/MyDrive/UNMARK/preg1-uit-vsfc-internal-split/preg1-split-v1-66f4522a-7bd5d189`
+
+Exactly five files were persisted — the four deterministic artifacts plus
+`runtime-environment.json`. **Post-copy SHA verification PASS for all five**,
+against the digests in §N.
+
+Persisted membership: `protocol-train` **9 139**, `protocol-dev` **2 285**,
+disjointness **PASS**.
+
+### The persistence boundary, explicitly
+
+| Item | Copied |
+|---|---|
+| raw UIT-VSFC | **NO** |
+| reconstructed derived TRAIN csv | **NO** |
+| validation csv | **NO** |
+| test csv | **NO** |
+| any corpus-text artifact | **NO** |
+| split membership ids | yes |
+| scientific manifest | yes |
+| report | yes |
+| runtime metadata | yes |
+| model weights loaded | **NO** |
+| training performed | **NO** |
+| downstream score | **NO** |
+
+The reconstructed derived csv was **not** persisted, which is the same choice
+Audit 022 made and the reason §M was necessary at all. That is a deliberate,
+repeated cost: the recipe in §M is what makes it affordable, and it is now
+recorded rather than living only in a notebook.
+
+---
+
+## Q. WHAT THIS SESSION VERIFIED, AND WHAT IT DID NOT
+
+**Not verified:** this session did not execute the materialiser on real data,
+did not open the Colab artifacts, and did not recompute any reported digest. All
+of §§M–P is externally observed evidence.
+
+**Verified here, from the committed code and arithmetic:**
+
+| Check | Result |
+|---|---|
+| observed per-class counts equal `expected_split_counts()` computed by committed code | **exact** |
+| observed totals equal `expected_split_totals()` | **exact** |
+| 9 139 + 2 285 = 11 424 = `DERIVED_TRAIN_SIZE` | **exact** |
+| per class: 4 259+1 065 = 5 324, 366+92 = 458, 4 514+1 128 = 5 642 | **exact**, matches the locked pool |
+| **id-file byte sizes** — 9 139 × 12 = **109 668**, 2 285 × 12 = **27 420** | **exact** |
+| committed `_id_file_body` writes `"<id>\n"`, sorted | confirmed |
+| committed materialiser writes exactly those four deterministic files plus optional runtime | confirmed |
+| repository HEAD equals the execution HEAD `66f4522f…` | confirmed |
+| all three reported digests are well-formed 64-hex | confirmed |
+
+The **id-file size check is an independent cross-check I derived rather than
+took**: `train:NNNNN` is 11 characters plus LF = 12 bytes, so the file sizes
+confirm *both* the counts *and* the five-digit zero-padded id convention
+recovered in §M. Two separately-sourced facts agree, which is worth more than
+either alone.
+
+**A byte delta consistent with the exclusion:** adapter 1 067 637 → derived
+1 067 331 is **306 bytes** for the two removed rows. Consistent, not proof.
+
+---
+
+## R. DECISION-LOG REVIEW — NO NEW DECISION WARRANTED
+
+**No new scientific decision was created**, and none should be. Execution of a
+precommitted measurement is not a decision; the whole point of precommitting was
+that running it would settle a question already framed. Specifically:
+
+- **§M recovered a fact, it did not choose one.** The adapter serialisation was
+  historical and was reconstructed, not decided. Had it been unrecoverable, or
+  had a *different* recipe been adopted to reach the digest, that would have
+  been a decision — and a serious one.
+- **§§N–P confirmed a precommitment.** The aggregates were derived and recorded
+  in §E before any membership existed. Matching them changes nothing.
+
+What was recorded instead: an **empirical closure** note on
+[D-PREG1-014](../spec/decisions.md#d-preg1-014--internal-split-materialisation-is-fail-closed-and-mapping-order-independent),
+and the **reproduction recipe** appended to
+[D-PREG1-011](../spec/decisions.md#d-preg1-011--conflicting-canonical-groups-are-excluded-whole),
+which is the decision that defines the derived pool and was not reproducible
+from committed information alone — and, until this revision is committed, still
+is not. Both follow the existing `**Empirical result.**` precedent. D-PREG1-012 and D-PREG1-013 are untouched.
+
+---
+
+## S. STILL OPEN AFTER THIS CLOSURE
+
+| | |
+|---|---|
+| [D-B3B0-002](../spec/decisions.md#d-b3b0-002--the-first-backbone-checkpoint-is-not-locked) | **OPEN** — the backbone checkpoint is a probe revision |
+| Final Stage-2 pooling | **OPEN** |
+| Compiled proposal PDF | **STALE** |
+| Head trainer | **not implemented, never executed on downstream data** |
+| Vanilla-vs-Base-only downstream result | **none exists** |
+| Stage-1 HPO / training | **not run** |
+| Official TEST | **sealed** for downstream scoring and protocol selection |
+| Official validation | **measurement-dev; took no part in the internal 80/20 split** |
+
+**A split is not a result.** This closure establishes which examples are in
+which internal part, and nothing whatsoever about whether UNMARK works.
 
 ---
 
 ```
-AUDIT 023 CREATED:
+AUDIT 023 REVISED IN PLACE:
 YES
 
-VERDICT:
-IMPLEMENTATION PASS — REAL SPLIT NOT YET MATERIALIZED
+NEW AUDIT CREATED:
+NO
 
-BASELINE HEAD:
+VERDICT:
+FINAL PASS — REAL SPLIT MATERIALISED AND BYTE-DETERMINISTIC
+
+TRANSITION:
+IMPLEMENTATION PASS — REAL SPLIT NOT YET MATERIALISED
+-> FINAL PASS — REAL SPLIT MATERIALISED AND BYTE-DETERMINISTIC
+
+BASELINE HEAD (implementation):
 819d09f2df95ca57444a63c86363e614b44ce458
+
+EXECUTION HEAD (real run):
+66f4522fa86e5f02f583204ddcad560a62b013c0
+
+DERIVED CSV RECONSTRUCTION:
+EXACT BYTE MATCH TO a20c0f77... (10/10 official raw hashes re-verified)
+
+ADAPTER TRAIN CSV SHA (bytes, NOT code):
+5bf8587343ef76231f14d57f1806387d387900c3cbc1635ecb24b97c248c9a9f
+
+ASSIGNMENT DIGEST:
+7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84
+
+BYTE-DETERMINISM ACROSS INDEPENDENT RUNS:
+PASS
 
 SPLITTER:
 HARDENED / SINGLE IMPLEMENTATION
@@ -416,14 +832,31 @@ EXPECTED PROTOCOL-DEV:
 2285
 NEG 1065 / NEU 92 / POS 1128
 
+OBSERVED PROTOCOL-TRAIN:
+9139
+NEG 4259 / NEU 366 / POS 4514
+
+OBSERVED PROTOCOL-DEV:
+2285
+NEG 1065 / NEU 92 / POS 1128
+
+CROSS-PART CANONICAL LEAKAGE:
+0
+
 MATERIALIZER:
-IMPLEMENTED / REAL RUN PENDING
+IMPLEMENTED AND EXECUTED ON REAL DATA
 
 ARTIFACT SCHEMA:
 preg1-split-v1
 
 REAL MEMBERSHIP:
-NOT OBSERVED
+MATERIALISED / VERIFIED / PERSISTED (IDS ONLY)
+
+RAW CORPUS PERSISTED:
+NO
+
+NEW SCIENTIFIC DECISION:
+NONE WARRANTED
 
 OFFICIAL VALIDATION:
 UNTOUCHED MEASUREMENT-DEV
@@ -441,6 +874,9 @@ STAGE-1 TRAINING:
 NOT RUN
 
 D-B3B0-002:
+OPEN
+
+STAGE-2 POOLING:
 OPEN
 
 PDF:
