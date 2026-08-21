@@ -573,16 +573,51 @@ requires_torch = pytest.mark.skipif(
 )
 
 
+# ---------------------------------------------------------------------------
+# The synthetic vocabulary contract (C24-1-R3B)
+# ---------------------------------------------------------------------------
+# `StubTokenizer` and `stub_encoder` are two halves of one test double, and they
+# only work together if they agree on how many ids exist. That agreement used to
+# be implicit: the tokenizer happened to emit ids in [7, 11] and the encoder
+# happened to declare a vocabulary of 64. Revision 3 made the tokenizer
+# accent-sensitive with `7 + crc32(token) % 4093` -- ids up to 4099 -- and the
+# agreement broke silently, so eight unrelated runtime tests died inside
+# `nn.Embedding` before reaching the property each of them names.
+#
+# The contract is now explicit and single-sourced: ids are produced by exactly
+# one function, bounded by exactly one constant, and the encoder is built from
+# that same constant. Neither half can drift from the other again.
+STUB_VOCAB_SIZE = 512
+"""The one number both halves of the test double are built from."""
+
+STUB_PAD_ID = 1
+"""Also the encoder's `padding_idx`, so padded positions embed to zeros."""
+
+STUB_FIRST_CONTENT_ID = 7
+"""Ids below this are reserved for special/pad tokens."""
+
+
+def stub_token_id(token: str) -> int:
+    """A deterministic, **accent-sensitive**, in-vocabulary id for one token.
+
+    Accent-sensitive because it hashes the codepoints: NFC Vietnamese diacritics
+    do not change a token's *length*, so the old `len(token) % 5` rule mapped
+    `"Tôi"` and `"Toi"` to the same id and no test could observe the pathway
+    difference (C24-1-R2B, Group B).
+
+    In-vocabulary **by construction** -- the modulus is derived from
+    `STUB_VOCAB_SIZE`, so this function cannot emit an id the stub encoder
+    cannot embed.
+    """
+    span = STUB_VOCAB_SIZE - STUB_FIRST_CONTENT_ID
+    return STUB_FIRST_CONTENT_ID + zlib.crc32(token.encode("utf-8")) % span
+
+
 class StubTokenizer:
     """Whitespace stand-in returning tensors in the HF shape.
 
-    **Accent-sensitive by construction.** The previous id rule was
-    `7 + len(token) % 5`, which keys only on character count -- and NFC
-    Vietnamese diacritics do not change a token's length, so `"Tôi"` and
-    `"Toi"` produced identical ids. A test asserting that the two pathways
-    differ could not pass, because the stub could not represent the difference
-    (C24-1-R2B, Group B). The id now depends on the codepoints, so a stripped
-    token maps to a different id whenever the text actually changed.
+    Ids come from `stub_token_id`, so the stub is accent-sensitive *and* stays
+    inside `STUB_VOCAB_SIZE`. See the vocabulary contract above.
     """
 
     def __call__(self, texts, padding=True, truncation=True, max_length=None,
@@ -592,7 +627,7 @@ class StubTokenizer:
         ids, attention, special = [], [], []
         for row in rows:
             pad = width - len(row)
-            ids.append([7 + (zlib.crc32(tok.encode("utf-8")) % 4093) for tok in row] + [1] * pad)
+            ids.append([stub_token_id(tok) for tok in row] + [STUB_PAD_ID] * pad)
             attention.append([1] * len(row) + [0] * pad)
             special.append([1] + [0] * (len(row) - 2) + [1] + [1] * pad)
         return {
@@ -608,7 +643,8 @@ def stub_encoder(d: int = 8):
     class Encoder(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.embed = nn.Embedding(64, d, padding_idx=1)
+            # Built from the SAME constant the tokenizer is bounded by.
+            self.embed = nn.Embedding(STUB_VOCAB_SIZE, d, padding_idx=STUB_PAD_ID)
 
         def forward(self, input_ids=None, attention_mask=None, **_):
             return self.embed(input_ids)
@@ -665,12 +701,57 @@ def test_runtime_pathways_produce_different_token_ids():
 
 
 def test_stub_tokenizer_is_actually_accent_sensitive():
-    """Guards the fixture the test above depends on. Runs without torch."""
-    import zlib as _zlib
+    """Guards the fixture the pathway test depends on. Runs without torch."""
+    assert stub_token_id("Tôi") != stub_token_id("Toi")
+    assert stub_token_id("đang") != stub_token_id("dang")
+    assert stub_token_id("học") != stub_token_id("hoc")
 
-    marked = 7 + (_zlib.crc32("Tôi".encode("utf-8")) % 4093)
-    stripped = 7 + (_zlib.crc32("Toi".encode("utf-8")) % 4093)
-    assert marked != stripped, "the stub tokenizer cannot represent the pathway difference"
+
+def test_every_stub_id_is_inside_the_stub_encoder_vocabulary():
+    """The contract that C24-1-R3B broke. Runs without torch.
+
+    Eight evaluation-harness runtime tests died inside `nn.Embedding` because
+    the tokenizer's ids outgrew the encoder's vocabulary — none of them reached
+    the property it names. This asserts the invariant over the **actual fixture
+    texts under both pathways**, plus the special and pad ids.
+    """
+    from unmark.evaluation.pathways import pathway_text
+
+    tokens = {"<s>", "</s>"}
+    for example in synthetic_split().examples:
+        for pathway in (SystemPathway.VANILLA, SystemPathway.BASE_ONLY):
+            tokens |= set(pathway_text(example.text, pathway).split())
+
+    for token in sorted(tokens):
+        identifier = stub_token_id(token)
+        assert STUB_FIRST_CONTENT_ID <= identifier < STUB_VOCAB_SIZE, (
+            f"{token!r} -> {identifier}, outside the stub vocabulary "
+            f"[{STUB_FIRST_CONTENT_ID}, {STUB_VOCAB_SIZE})"
+        )
+    assert 0 <= STUB_PAD_ID < STUB_FIRST_CONTENT_ID, "pad id must be reserved"
+
+
+def test_the_two_halves_of_the_test_double_share_one_vocabulary_constant():
+    """Structural: the encoder must be built from `STUB_VOCAB_SIZE`, not a literal.
+
+    A hard-coded size is exactly how the two halves drifted apart.
+    """
+    import ast
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    embeddings = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Embedding"
+    ]
+    assert embeddings, "the stub encoder must build an embedding"
+    for call in embeddings:
+        assert isinstance(call.args[0], ast.Name) and call.args[0].id == "STUB_VOCAB_SIZE", (
+            "the stub encoder's vocabulary must come from STUB_VOCAB_SIZE, "
+            f"got {ast.unparse(call.args[0])}"
+        )
 
 
 @requires_torch

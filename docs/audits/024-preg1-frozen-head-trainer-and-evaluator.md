@@ -9,6 +9,7 @@
 | **Predecessors** | [021](021-pre-g1-dataset-profile-and-protocol-precommit.md), [022](022-uit-vsfc-real-data-profile-integrity-closure.md), [023](023-pre-g1-internal-split-materializer-and-fail-closed-contract.md) |
 | **Phase** | pre-G1 |
 | **Type** | **Implementation + audit.** No real training, no LR sweep, no downstream score. **No model or dataset was downloaded during the local implementation/audit work** — the local `.venv` stayed ML-free. *(Separately: an accidental Colab probe execution occurred under a broken negative test; whether it downloaded or cache-loaded assets is **NOT ESTABLISHED** — §Q.4 Group C.)* |
+| **Revision 3b** | **2026-08-21** — **C24-1-R3B: repairs pass, a shared fixture did not.** At `f6ad4eef21cff9826f6ba58191a3dbcfcbed491a` the targeted suite reproduced **136/0/0** and the **exact eight R3 repairs passed 8/8**. The broader related/safety group then **failed 8/328**, so the full repository suite was **NOT REACHED**. Root cause (§R): Revision 3's accent-sensitive `StubTokenizer` emitted ids up to 4099 while `stub_encoder` declared a 64-token vocabulary — **my own fixture change broke an implicit agreement**, and eight unrelated tests died in `nn.Embedding` before reaching their named properties. **Test-fixture regression; no production defect.** Repaired with one single-sourced vocabulary contract plus two mutation-verified local guards. **No production line changed.** |
 | **Revision 3a** | **2026-08-21** — **evidence-consistency sweep after C24-1-R2.** §F still called the on-disk cache path "torch-gated and pending"; §I's rows still showed Q4/Q5 `PENDING` and Q6/Q7/Q11–Q13 `PARTIAL`/`PENDING` while its own summary already said otherwise; §A still listed "the torch runtime" among the unverified; and the no-download claim was unqualified beside the accidental-probe uncertainty. All corrected. **Every upgraded label was checked against an actual `@requires_torch` test in `tests/test_preg1_head.py` before relabelling** — 14 tests confirmed. **Documentation only.** |
 | **Revision 3** | **2026-08-21** — **C24-1-R2 targeted PASS + repository-wide regression repair.** At HEAD `52ebca0657dc39b8e8e25ebd71c90ae7a4687501` the targeted suite returned **136 passed / 0 failed / 0 skipped** — that gate is **closed**. The repository-wide suite then returned **2 383 passed / 8 failed** after the pinned inventory was recovered (a resource requirement, not a defect). All eight were inspected and classified: **none was an implementation defect** — six stale fixtures, one non-discriminative stub, one environment-sensitive test. Repaired in §Q. **One production change: an additive `ChannelContractViolation` grid-agreement guard (+26/−0), classified as implementation hardening**; the verified-position rule was **not** weakened and `VERIFIED_POSITION_PROFILES` still holds exactly one entry. **Repository-wide Torch regression remains PENDING REPAIR.** |
 | **Revision 2a** | **2026-08-21** — **temporal / evidence wording repair.** §A still said "Nothing was run" after C24-1-R1 had executed 134 tests on GPU; §I defined PENDING as "has not run anywhere" when **26 of the 28** torch-gated tests had executed and passed; §E called unexecuted tests "tested". All corrected. **No label was upgraded** — Q4 and Q5 remain PENDING, now for the accurate reason (a passing test inside a failing run is not *accepted* evidence) rather than the false one (never executed). **Documentation only.** |
@@ -53,7 +54,8 @@ run" stopped being true at that moment, and this audit does not say it.
 | Baseline at Audit 023 | 2199 passed, 56 skipped |
 | **First Colab Torch run (C24-1-R1)** | **132 passed, 2 FAILED, 0 skipped** — all 134 then-current tests executed; see §P |
 | **Targeted Colab rerun (C24-1-R2)** | **136 passed / 0 failed / 0 skipped** at `52ebca06…` — **PASS**; see §Q |
-| **Repository-wide Colab run (C24-1-R2B)** | **2 383 passed / 8 failed** — **PENDING REPAIR**; see §Q |
+| **Repository-wide Colab run (C24-1-R2B)** | **2 383 passed / 8 failed** — see §Q |
+| **Revision-3 verification (C24-1-R3B)** | targeted **136/0/0 PASS**; the eight R3 repairs **8/8 PASS**; broader group **8 failed / 328 passed**; full suite **NOT REACHED** — see §R |
 
 **The Audit-024 targeted Torch gate is CLOSED.** C24-1-R2 reran the whole file
 at HEAD `52ebca06…`: **136 passed / 0 failed / 0 skipped**. All 28 torch-gated
@@ -63,10 +65,13 @@ parameter groups, the on-disk cache path and the end-to-end training loop.
 `tests/test_preg1_head.py` is **unmodified since that commit**, so the result
 applies to the file as it stands today.
 
-**That is not repository-wide health.** C24-1-R2B then ran the whole repository
-and returned **2 383 passed / 8 failed** — eight older regression tests, none in
-this file, none an implementation defect (§Q). Their repairs are authored and
-**have not run on Torch**. Two separate gates; only the first is closed.
+**That is not repository-wide health.** C24-1-R2B returned **2 383 passed / 8
+failed** — eight older regression tests, none in this file, none an
+implementation defect (§Q). C24-1-R3B then confirmed all eight repairs pass on
+Torch, but exposed a **new** fixture interaction that failed eight
+*evaluation-harness* tests and stopped the run before the full suite (§R). That
+is repaired here and **not yet rerun**. Two separate gates; only the first is
+closed.
 
 **No new scientific decision was created**, and §L explains why none is
 warranted — including for the Revision-1 repair, which makes the implementation
@@ -506,12 +511,13 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
    are exercised only on Colab. Audit 022 is the standing reminder that a real
    run finds things fixtures do not.
 3. **Targeted Torch coverage is clean; repository-wide Torch health is not.**
-   C24-1-R2 closed the Audit-024 targeted gate (136/0/0), so the tensor-level
-   claims in this file are verified. C24-1-R2B then exposed **eight older
-   regression tests** elsewhere (§Q) — six stale fixtures, one non-discriminative
-   stub, one environment-sensitive test. **Seven of those repairs are torch-gated
-   and have not executed.** A green file is not a green repository, and I had
-   only ever been running the file I was working on.
+   C24-1-R2 closed the Audit-024 targeted gate (136/0/0). C24-1-R2B exposed
+   eight older regression tests elsewhere (§Q); C24-1-R3B confirmed those eight
+   repairs pass on Torch — and exposed **eight more** failures from a fixture
+   interaction my own repair introduced (§R). The full repository suite has
+   still **never completed**. A green file is not a green repository, and each
+   round of repair has so far revealed the next thing the local environment
+   could not see.
 4. **The precommitted counts from Audit 023 are not re-verified by this module.**
    It trusts the membership files it is given, checking their internal
    consistency and optionally their digests. It does not re-derive the split.
@@ -667,6 +673,17 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 92 | No-download claim scoped; accidental-probe status left **NOT ESTABLISHED** | **yes** — type row, §K, §N row 8, status block |
 | 93 | Historical rows scoped, history not rewritten | **yes** — rows 44, 46, 47, 60, 61, 65 marked SUPERSEDED |
 | 94 | No code or test changed in this pass | **yes** — documentation only |
+| | **— Revision 3b: C24-1-R3B —** | |
+| 95 | Root cause classified from the actual code | **yes** — encoder vocab 64 vs ids to 4099, recomputed on the fixture |
+| 96 | No production change | **yes** — `git diff` on `unmark/` and `scripts/` is empty |
+| 97 | `StubTokenizer` remains accent-sensitive | **yes** — `Tôi`≠`Toi`, `đang`≠`dang`, `học`≠`hoc` |
+| 98 | Tokenizer ids and encoder vocabulary share an explicit contract | **yes** — one `STUB_VOCAB_SIZE`; ids in-range by construction |
+| 99 | Both new guards mutation-verified, and both run locally | **yes** — hard-coded 64 fails the AST test; `% 4093` fails the range test |
+| 100 | The prior exact eight repairs preserved and passing on Torch | **yes** — 8/8 in C24-1-R3B |
+| 101 | Targeted 136/0/0 history preserved and reproduced | **yes** — §Q.1 and §R |
+| 102 | Full R3 suite recorded as **NOT REACHED**, not failed | **yes** — §R step 4 |
+| 103 | The eight harness repairs **not** claimed to work | **yes** — torch-gated, unverified; only the fixture accident is excluded |
+| 104 | No new scientific decision | **yes** — a fixture repair is not a decision |
 
 ---
 
@@ -1100,6 +1117,137 @@ hardening are none of them scientific or specification decisions.
 
 ---
 
+## R. C24-1-R3B — THE REPAIRS PASS, A SHARED FIXTURE DID NOT
+
+| | |
+|---|---|
+| **Run id** | `C24-1-R3B` |
+| **Execution HEAD** | `f6ad4eef21cff9826f6ba58191a3dbcfcbed491a` |
+| **Evidence status** | externally observed on Colab; not reproduced here |
+
+| Step | Result |
+|---|---|
+| 1. `tests/test_preg1_head.py` | **136 passed / 0 failed / 0 skipped — PASS** |
+| 2. the exact eight R3 repairs | **8 passed — PASS** |
+| 3. broader R3 related/safety group | **FAILED — 8 failed / 328 passed** |
+| 4. full repository suite | **NOT REACHED** — step 3 failed first |
+
+**Step 4 is *not reached*, not *failed*.** The repository-wide gate has no
+result at this HEAD, and this audit does not manufacture one.
+
+**Both prior gates held.** The targeted suite reproduced 136/0/0, and all eight
+Revision-3 repairs — six stale fixtures, the non-discriminative stub and the
+environment-sensitive negative test — passed on GPU. The eight new failures are
+**different tests**, in `tests/test_evaluation_harness.py`:
+
+`test_runtime_extraction_returns_unpooled_hidden_states`,
+`…masks_travel_with_the_hidden_states`,
+`…scientific_path_cannot_reach_masked_mean`,
+`…test_only_pooling_works_for_diagnostics`,
+`…encoder_is_not_mutated_by_extraction`,
+`…cross_pathway_head_reuse_is_refused`,
+`…dev_representations_cannot_train_a_head`,
+`…task_mismatch_is_refused`.
+
+All eight died identically: `IndexError: index out of range in self`, inside the
+synthetic encoder's `nn.Embedding` lookup.
+
+### Root cause — verified from the code, and it is mine
+
+`stub_encoder` declared `nn.Embedding(64, d, padding_idx=1)`. My Revision-3
+change made `StubTokenizer` accent-sensitive with
+`7 + crc32(token) % 4093`, emitting ids up to **4099**. The previous rule,
+`7 + len(token) % 5`, emitted ids in **[7, 11]** — always inside 64.
+
+Recomputed here from the actual fixture: the old rule's maximum id is **11**;
+the new rule produces **12, 14, 233, 291, 1070, 1097, 2239, 2282, 2433, 2536,
+2593, 2886, 2905, 2987, 3399, 3739** — matching the values the run reported.
+
+**The two halves of one test double had an implicit, undocumented vocabulary
+agreement, and I changed one side.** The eight tests never reached the property
+each of them names; they died in the fixture.
+
+**Classification: TEST-FIXTURE INTERACTION / REGRESSION** — introduced by
+Revision 3's own fixture change. **Not a production defect and not a scientific
+defect.** No production code was inspected into suspicion and none was changed.
+
+### Repair — one explicit, single-sourced contract
+
+The agreement is no longer implicit:
+
+```python
+STUB_VOCAB_SIZE = 512          # the one number both halves are built from
+STUB_PAD_ID = 1                # also the encoder's padding_idx
+STUB_FIRST_CONTENT_ID = 7      # below this: special/pad
+
+def stub_token_id(token):
+    span = STUB_VOCAB_SIZE - STUB_FIRST_CONTENT_ID
+    return STUB_FIRST_CONTENT_ID + zlib.crc32(token.encode("utf-8")) % span
+```
+
+`StubTokenizer` produces every id through `stub_token_id`; `stub_encoder` builds
+`nn.Embedding(STUB_VOCAB_SIZE, …)`. **Ids are in-vocabulary by construction** —
+the modulus is *derived from* the bound, so the function cannot emit an id the
+encoder cannot embed.
+
+**Why this design.** The alternative fixes — enlarging the encoder, or clamping
+ids at the call site — would each have restored the *behaviour* while leaving
+the *coupling* implicit and free to drift again. A single constant that both
+halves are built from removes the class of defect, not the instance. It also
+keeps the double small: the encoder still emulates nothing.
+
+**Accent sensitivity is retained**, which was the whole point of the Revision-3
+change. Verified on the fixture: `Tôi`≠`Toi`, `đang`≠`dang`, `học`≠`hoc`, and
+the per-sentence id sequences still differ between pathways. Maximum id emitted
+by the fixture is **473**, comfortably inside 512.
+
+### Two new fixture-level tests — and both run locally
+
+- `test_every_stub_id_is_inside_the_stub_encoder_vocabulary` walks the **actual
+  fixture texts under both pathways**, plus the special and pad ids, and asserts
+  each is in `[STUB_FIRST_CONTENT_ID, STUB_VOCAB_SIZE)`.
+- `test_the_two_halves_of_the_test_double_share_one_vocabulary_constant` asserts
+  by AST that the embedding's size argument is the **name** `STUB_VOCAB_SIZE`,
+  not a literal — a hard-coded size is precisely how the halves drifted.
+
+Both were **mutation-verified**: restoring `nn.Embedding(64, …)` fails the AST
+test; restoring `% 4093` fails the range test. Neither needs torch, so **this
+class of mismatch is now caught in the ML-free local suite** rather than costing
+a GPU round trip.
+
+### Do the eight tests now reach their named properties?
+
+They are torch-gated, so they still skip locally and **their repair is
+unverified**. What changed is that the *fixture accident* that stopped them is
+now excluded by an invariant checked locally — the embedding lookup can no
+longer be the reason they fail. Whether each then proves its named property is
+for the rerun to establish.
+
+### Scope
+
+| | |
+|---|---|
+| Files changed | `tests/test_evaluation_harness.py` only |
+| Production changed | **none** — `git diff` on `unmark/` and `scripts/` is empty |
+| Grid guard from Revision 3 | untouched; not implicated |
+| Scientific values | none touched |
+| New decision | **none warranted** — a fixture repair is not a decision |
+
+### Current evidence state
+
+| Gate | State |
+|---|---|
+| Audit-024 targeted Torch | **PASS / CLOSED** — 136/136, reproduced at `f6ad4eef…` |
+| The exact eight R3 repairs | **PASS** — 8/8 on Torch |
+| Broader R3 related/safety group | **FAILED 8/328** — fixture interaction, repaired here, **rerun pending** |
+| Full repository R3 suite | **NOT REACHED** |
+| Real PhoBERT integration | **PENDING** |
+| Real-data boundary dry-run | **PENDING** |
+| Scientifically closed | **NO** |
+
+
+---
+
 ```
 AUDIT 024 CREATED:
 YES
@@ -1121,9 +1269,17 @@ PASS / CLOSED — 136 passed / 0 failed / 0 skipped at HEAD 52ebca06
 FILE UNMODIFIED SINCE THAT COMMIT
 
 REPOSITORY-WIDE TORCH REGRESSION:
-PENDING R3 RERUN — C24-1-R2B RETURNED 2383 passed / 8 failed
-ALL EIGHT CLASSIFIED; NONE AN IMPLEMENTATION DEFECT
-SEVEN REPAIRS TORCH-GATED AND NOT YET EXECUTED
+PENDING RERUN — NEVER COMPLETED
+C24-1-R2B: 2383 passed / 8 failed (all eight classified, none an implementation defect)
+C24-1-R3B: THOSE EIGHT REPAIRS PASSED 8/8 ON TORCH;
+  BROADER GROUP THEN FAILED 8/328 ON A SHARED-FIXTURE INTERACTION (§R);
+  FULL SUITE **NOT REACHED**
+
+C24-1-R3B (HEAD f6ad4eef):
+TARGETED 136/0/0 PASS; EIGHT R3 REPAIRS 8/8 PASS;
+BROADER GROUP 8 FAILED / 328 PASSED; FULL SUITE NOT REACHED
+ROOT CAUSE: TEST-FIXTURE REGRESSION (STUB VOCAB 64 vs IDS TO 4099)
+REPAIRED VIA ONE SHARED STUB_VOCAB_SIZE CONTRACT; NO PRODUCTION CHANGE
 
 PINNED INVENTORY:
 RECOVERED VIA REPOSITORY FETCHER — RESOURCE REQUIREMENT, NOT A DEFECT
@@ -1215,7 +1371,7 @@ PDF:
 STALE
 
 LOCAL TESTS:
-full suite 2310 passed, 89 skipped
+full suite 2312 passed, 89 skipped
 targeted file: 136 authored / 108 passed locally / 28 torch-gated
 OF THE 8 REPAIRED TESTS: 1 RUNS AND PASSES LOCALLY, 7 REMAIN TORCH-GATED
 
