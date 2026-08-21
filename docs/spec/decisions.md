@@ -3329,6 +3329,22 @@ summary, summary.provenance, provenance and the report heading -- verified by
 tests that run the profiler rather than search its source. **No metric,
 denominator or density semantic changed.**
 
+**Empirical closure.** Measured on the real corpus by run
+`uit-vsfc-v1.0-profile-v2-analysis-v1-5e707ecd-r2` (HEAD
+`5e707ecdabc7df378f535bed80e8dd0adb99861e`), with the pinned B3A inventory
+verified and `eligibility_resolved = true` on all three splits:
+
+| Split | tone observed / eligible | tone density | letter observed / eligible | letter density |
+|---|---|---|---|---|
+| derived train | 104 731 / 142 467 | 0.7351246253518359 | 85 253 / 502 706 | 0.16958818872263312 |
+| validation | 13 826 / 18 794 | 0.7356603171224859 | 11 130 / 66 451 | 0.16749183608975035 |
+| test | 29 100 / 39 197 | 0.742403755389443 | 23 315 / 138 857 | 0.16790655134418864 |
+
+Densities are **not** diacritization or missing-diacritic rates; the profiler
+measures what is present. See
+[Audit 022 §N](../audits/022-uit-vsfc-real-data-profile-integrity-closure.md).
+The decision itself is unchanged.
+
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §4.3 already fixes the granularity; the profiler was measuring at the wrong one. PDF stale: **YES** (unchanged) |
@@ -3366,6 +3382,18 @@ pathway split requires a rerun.
 
 **Affected.** `scripts/preg1_dataset_profile.py`,
 `tests/test_preg1_profiling.py`.
+
+**Empirical closure.** Run
+`uit-vsfc-v1.0-profile-v2-analysis-v1-5e707ecd-r2` reports
+`vanilla_unk_token_count = 4`, `base_only_unk_token_count = 0`,
+`total_unk_token_count = 4`, `unk_count_is_per_pathway = true`. The previously
+unattributable `4` was **entirely Vanilla**.
+
+**Narrow reading.** The RAW_BASE token-length burden in this corpus is **not**
+explained by an increase in Base-only UNK tokens. It does **not** follow that
+Base-only carries no tokenizer burden — Base-only sequences are measurably
+longer. This remains a tokenization observation, not a downstream result. The
+decision itself is unchanged.
 
 | | |
 |---|---|
