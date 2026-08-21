@@ -533,11 +533,36 @@ def test_runtime_wrapper_rejects_an_unverified_backbone():
 
 
 @requires_torch
-def test_runtime_wrapper_supplies_positions_automatically():
+def test_runtime_wrapper_supplies_positions_automatically(monkeypatch):
+    """The wrapper computes and supplies authoritative position ids.
+
+    C24-1-R2B, Group A: this fixture predates the B4B fail-closed hardening, so
+    construction now (correctly) raises `UnsupportedPositionSemantics` for an
+    unmeasured stand-in. The property under test is the position **arithmetic**,
+    not the permission check, so a **test-only** profile is injected here and is
+    deliberately never added to `VERIFIED_POSITION_PROFILES`. The permission
+    check keeps its own unpatched tests below.
+    """
     from torch import nn
 
+    from unmark.modeling import adapter as adapter_module
     from unmark.modeling.adapter import OrthographyInputAdapter, UnmarkEncoder
     from unmark.modeling.config import AdapterConfig
+
+    test_only_profile = adapter_module.VerifiedPositionProfile(
+        checkpoint="TEST_ONLY_synthetic",
+        model_type="roberta",
+        model_class="RobertaLike",
+        position_rule="roberta_input_ids_offset",
+        evidence="TEST-ONLY fixture. Not a measured backbone. Never registered.",
+    )
+    # The rule must still be the measured RoBERTa one, or the assertion below
+    # would be checking arithmetic the wrapper was never asked to perform.
+    assert test_only_profile.position_rule == "roberta_input_ids_offset"
+    assert test_only_profile not in adapter_module.VERIFIED_POSITION_PROFILES
+    monkeypatch.setattr(
+        adapter_module, "resolve_position_profile", lambda _enc: test_only_profile
+    )
 
     seen: dict[str, object] = {}
 
@@ -565,6 +590,44 @@ def test_runtime_wrapper_supplies_positions_automatically():
         letter_mask=torch.zeros(1, 5, 1, dtype=torch.bool),
     )
     assert seen["position_ids"] == [[2, 3, 4, 5, 1]], "wrapper did not supply authoritative ids"
+
+
+@requires_torch
+def test_runtime_the_patched_fixture_is_still_rejected_unpatched():
+    """The Group-A seam must not become a permanent hole.
+
+    Exactly the encoder the test above injects a profile for is rejected when
+    the resolver is left alone. If someone ever registered it for real, this
+    fails.
+    """
+    import types
+
+    from torch import nn
+
+    from unmark.modeling import adapter as adapter_module
+    from unmark.modeling.adapter import (
+        OrthographyInputAdapter,
+        UnmarkEncoder,
+        UnsupportedPositionSemantics,
+    )
+    from unmark.modeling.config import AdapterConfig
+
+    class RobertaLike(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed = nn.Embedding(20, 16, padding_idx=1)
+            self.embeddings = types.SimpleNamespace(padding_idx=1, word_embeddings=self.embed)
+            self.config = types.SimpleNamespace(model_type="roberta", pad_token_id=1)
+
+        def get_input_embeddings(self):
+            return self.embed
+
+    with pytest.raises(UnsupportedPositionSemantics, match="no verified"):
+        UnmarkEncoder(RobertaLike(), OrthographyInputAdapter(AdapterConfig(hidden_size=16)))
+
+    registered = {p.model_class for p in adapter_module.VERIFIED_POSITION_PROFILES}
+    assert "RobertaLike" not in registered and "TinyEncoder" not in registered
+    assert len(adapter_module.VERIFIED_POSITION_PROFILES) == 1
 
 
 # ---------------------------------------------------------------------------

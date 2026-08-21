@@ -471,10 +471,93 @@ def test_probe_uses_raw_bpe_tokens_not_an_id_round_trip():
     assert "convert_tokens_to_ids" in source
 
 
-def test_probe_refuses_locally_without_transformers():
-    result = subprocess.run(
-        [sys.executable, str(PROBE)], cwd=REPO_ROOT, capture_output=True, text=True,
+BLOCK_TRANSFORMERS_BOOTSTRAP = """
+import runpy, sys
+
+class _BlockTransformers:
+    '''Make `import transformers` raise, whatever this interpreter has installed.'''
+    def find_spec(self, name, path=None, target=None):
+        if name == "transformers" or name.startswith("transformers."):
+            raise ImportError("transformers blocked by the negative-dependency test")
+        return None
+
+sys.meta_path.insert(0, _BlockTransformers())
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def run_probe_without_transformers(tmp_path):
+    """Run the probe in an interpreter where `transformers` cannot be imported.
+
+    C24-1-R2B, Group C: the previous version passed `sys.executable` and only
+    constrained `PATH`. On Colab `sys.executable` was `.venv-colab/bin/python`,
+    which **has** transformers -- so the assumed environment did not exist, the
+    probe ran its success path and returned 0 instead of 2. Constraining `PATH`
+    cannot help when the chosen interpreter already owns the package.
+
+    A `sys.meta_path` blocker makes the outcome depend on nothing but this test:
+    project imports still resolve, and the import the guard is about fails
+    deterministically -- before any model is named, fetched or loaded.
+    """
+    return subprocess.run(
+        [
+            sys.executable, "-c", BLOCK_TRANSFORMERS_BOOTSTRAP,
+            str(PROBE), "--output-root", str(tmp_path / "must-not-appear"),
+        ],
+        cwd=REPO_ROOT, capture_output=True, text=True,
         env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}, timeout=120,
     )
-    assert result.returncode == 2
+
+
+def test_probe_refuses_locally_without_transformers(tmp_path):
+    result = run_probe_without_transformers(tmp_path)
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "transformers is not installed" in result.stderr
+
+
+def test_the_negative_dependency_test_cannot_enter_the_success_path(tmp_path):
+    """The negative test must fail loudly rather than quietly succeed.
+
+    Two independent proofs that the probe stopped at the dependency guard:
+    it wrote **no** output directory, and it never printed the line it emits
+    immediately before loading the tokenizer.
+    """
+    output_root = tmp_path / "must-not-appear"
+    result = run_probe_without_transformers(tmp_path)
+
+    assert not output_root.exists(), "the probe produced output despite the missing dependency"
+    assert "Loading slow tokenizer" not in result.stdout
+    assert "results/b3b1" not in result.stdout
+    assert result.returncode == 2
+
+
+def test_the_import_blocker_works_on_a_package_that_is_actually_installed():
+    """Proves the mechanism under Colab's condition, not the local one.
+
+    Locally `transformers` is absent anyway, so blocking it proves nothing. This
+    blocks **pytest** -- certainly installed in whatever interpreter runs these
+    tests -- and asserts it becomes unimportable. If the blocker were inert, the
+    Colab failure it exists to prevent would recur silently.
+    """
+    control = subprocess.run(
+        [sys.executable, "-c", "import pytest; print('IMPORTABLE')"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert "IMPORTABLE" in control.stdout, "pytest must be installed for this control"
+
+    probe_source = (
+        BLOCK_TRANSFORMERS_BOOTSTRAP.replace("transformers", "pytest")
+        .replace('sys.argv = sys.argv[1:]', "")
+        .replace('runpy.run_path(sys.argv[0], run_name="__main__")',
+                 'try:\n'
+                 '    import pytest\n'
+                 'except ImportError:\n'
+                 '    print("BLOCKED")\n'
+                 'else:\n'
+                 '    print("NOT BLOCKED")')
+    )
+    blocked = subprocess.run(
+        [sys.executable, "-c", probe_source], capture_output=True, text=True, timeout=60
+    )
+    assert "BLOCKED" in blocked.stdout, blocked.stdout + blocked.stderr

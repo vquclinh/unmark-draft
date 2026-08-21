@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import zlib
 
 import pytest
 
@@ -573,7 +574,16 @@ requires_torch = pytest.mark.skipif(
 
 
 class StubTokenizer:
-    """Whitespace stand-in returning tensors in the HF shape."""
+    """Whitespace stand-in returning tensors in the HF shape.
+
+    **Accent-sensitive by construction.** The previous id rule was
+    `7 + len(token) % 5`, which keys only on character count -- and NFC
+    Vietnamese diacritics do not change a token's length, so `"Tôi"` and
+    `"Toi"` produced identical ids. A test asserting that the two pathways
+    differ could not pass, because the stub could not represent the difference
+    (C24-1-R2B, Group B). The id now depends on the codepoints, so a stripped
+    token maps to a different id whenever the text actually changed.
+    """
 
     def __call__(self, texts, padding=True, truncation=True, max_length=None,
                  return_tensors=None, return_special_tokens_mask=False):
@@ -582,7 +592,7 @@ class StubTokenizer:
         ids, attention, special = [], [], []
         for row in rows:
             pad = width - len(row)
-            ids.append([7 + (len(tok) % 5) for tok in row] + [1] * pad)
+            ids.append([7 + (zlib.crc32(tok.encode("utf-8")) % 4093) for tok in row] + [1] * pad)
             attention.append([1] * len(row) + [0] * pad)
             special.append([1] + [0] * (len(row) - 2) + [1] + [1] * pad)
         return {
@@ -623,8 +633,28 @@ def synthetic_split(split: Split = Split.TRAIN) -> TaskSplit:
 
 @requires_torch
 def test_runtime_pathways_produce_different_token_ids():
-    """The whole diagnostic rests on the two pathways differing."""
-    from unmark.evaluation.pathways import encode_split
+    """The whole diagnostic rests on the two pathways differing.
+
+    Proved in two independent steps, so a non-discriminative tokenizer can never
+    make this pass or fail for the wrong reason:
+
+    1. the pathway **texts** are exactly `canon(x)` and `b(canon(x))`, and they
+       differ for the deliberately marked fixture;
+    2. the tokenizer -- which is accent-sensitive by construction -- therefore
+       yields different ids.
+
+    Step 1 is the scientific claim. Step 2 only checks the plumbing.
+    """
+    from unmark.evaluation.pathways import encode_split, pathway_text
+    from unmark.orthography import canon, decompose
+
+    for example in synthetic_split().examples:
+        vanilla_text = pathway_text(example.text, SystemPathway.VANILLA)
+        base_text = pathway_text(example.text, SystemPathway.BASE_ONLY)
+        assert vanilla_text == canon(example.text)
+        assert base_text == decompose(canon(example.text)).base_text
+        assert vanilla_text != base_text, "fixture must carry strippable marks"
+        assert "_" not in vanilla_text and "_" not in base_text, "no segmentation"
 
     tokenizer, config = StubTokenizer(), diagnostic_head()
     vanilla = encode_split(synthetic_split(), SystemPathway.VANILLA, tokenizer, config)
@@ -632,6 +662,15 @@ def test_runtime_pathways_produce_different_token_ids():
     assert vanilla.pathway is SystemPathway.VANILLA
     assert base.pathway is SystemPathway.BASE_ONLY
     assert not torch.equal(vanilla.input_ids, base.input_ids)
+
+
+def test_stub_tokenizer_is_actually_accent_sensitive():
+    """Guards the fixture the test above depends on. Runs without torch."""
+    import zlib as _zlib
+
+    marked = 7 + (_zlib.crc32("Tôi".encode("utf-8")) % 4093)
+    stripped = 7 + (_zlib.crc32("Toi".encode("utf-8")) % 4093)
+    assert marked != stripped, "the stub tokenizer cannot represent the pathway difference"
 
 
 @requires_torch

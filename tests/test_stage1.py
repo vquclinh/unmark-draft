@@ -715,7 +715,38 @@ def build_stack(d: int = 16):
 
 
 def synthetic_batch(reference_len: int = 7, base_len: int = 5, batch: int = 2):
-    """Deliberately unequal reference and base lengths."""
+    """Deliberately unequal reference and base lengths.
+
+    **The orthography channels follow `base_len`, not a hard-coded 5.**
+    C24-1-R2B, Group D: they previously stayed at length 5 while `base_len`
+    moved, so `synthetic_batch(base_len=4)` produced a batch that violated the
+    adapted-grid contract -- base ids at L=4 beside tone/letter channels at
+    L=5 -- and the adapter failed inside `torch.cat`. The test then appeared to
+    say "unequal reference/base lengths do not work", which is the opposite of
+    the Stage-1 contract.
+
+    The contract these two lengths express:
+
+    * `reference_len` is independent -- the clean reference branch may tokenize
+      to a different length than the adapted branch, and that is the point;
+    * everything on the **adapted/base grid** -- base ids, tone ids, tone mask,
+      letter ids, letter mask -- must share one length.
+    """
+    if base_len < 3:
+        raise ValueError("base_len must leave room for two special tokens and content")
+
+    def base_grid_tone(fill: int) -> list[int]:
+        return [-1] + [fill] * (base_len - 2) + [-1]
+
+    def base_grid_mask() -> list[bool]:
+        return [False] + [True] * (base_len - 2) + [False]
+
+    def base_grid_letter(fill: int) -> list[list[int]]:
+        return [[-1]] + [[fill]] * (base_len - 2) + [[-1]]
+
+    def base_grid_letter_mask() -> list[list[bool]]:
+        return [[False]] + [[True]] * (base_len - 2) + [[False]]
+
     return {
         "reference_input_ids": torch.randint(4, 60, (batch, reference_len)),
         "reference_attention_mask": torch.ones(batch, reference_len, dtype=torch.long),
@@ -725,14 +756,14 @@ def synthetic_batch(reference_len: int = 7, base_len: int = 5, batch: int = 2):
         "base_input_ids": torch.randint(4, 60, (batch, base_len)),
         "base_attention_mask": torch.ones(batch, base_len, dtype=torch.long),
         "base_special_tokens_mask": torch.tensor([[1] + [0] * (base_len - 2) + [1]] * batch),
-        "clean_tone_ids": torch.tensor([[-1, 0, 1, 2, -1]] * batch),
-        "clean_tone_mask": torch.tensor([[False, True, True, True, False]] * batch),
-        "clean_letter_ids": torch.tensor([[[-1], [0], [2], [3], [-1]]] * batch),
-        "clean_letter_mask": torch.tensor([[[False], [True], [True], [True], [False]]] * batch),
-        "corrupt_tone_ids": torch.tensor([[-1, 5, 5, 2, -1]] * batch),
-        "corrupt_tone_mask": torch.tensor([[False, True, True, True, False]] * batch),
-        "corrupt_letter_ids": torch.tensor([[[-1], [0], [0], [3], [-1]]] * batch),
-        "corrupt_letter_mask": torch.tensor([[[False], [True], [True], [True], [False]]] * batch),
+        "clean_tone_ids": torch.tensor([base_grid_tone(1)] * batch),
+        "clean_tone_mask": torch.tensor([base_grid_mask()] * batch),
+        "clean_letter_ids": torch.tensor([base_grid_letter(2)] * batch),
+        "clean_letter_mask": torch.tensor([base_grid_letter_mask()] * batch),
+        "corrupt_tone_ids": torch.tensor([base_grid_tone(5)] * batch),
+        "corrupt_tone_mask": torch.tensor([base_grid_mask()] * batch),
+        "corrupt_letter_ids": torch.tensor([base_grid_letter(0)] * batch),
+        "corrupt_letter_mask": torch.tensor([base_grid_letter_mask()] * batch),
     }
 
 

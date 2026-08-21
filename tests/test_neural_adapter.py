@@ -777,8 +777,46 @@ def test_probe_records_mode_invariants():
     assert "adapter_follows_mode" in body
 
 
+# ---------------------------------------------------------------------------
+# Test-only position-profile seam (Audit 024 / C24-1-R2B, Group A)
+# ---------------------------------------------------------------------------
+def grant_test_only_position_profile(monkeypatch, encoder_class_name: str):
+    """Let ONE synthetic encoder past the verified-profile gate, for this test only.
+
+    Production refuses any backbone whose `inputs_embeds` position semantics were
+    never measured (D-B4B-002; D-B3B0-002 is OPEN), and that fail-closed rule is
+    **not** relaxed here: the profile below is constructed locally and is
+    deliberately **never added to `VERIFIED_POSITION_PROFILES`**. Only the
+    resolver is patched, and only inside the test that calls this.
+
+    The properties these tests name -- train/eval mode, encoder freezing, gradient
+    connectivity -- are independent of *which* backbone is permitted. The
+    permission check has its own dedicated tests, which still run unpatched:
+    `test_runtime_wrapper_refuses_an_unverified_backbone` and friends.
+    """
+    from unmark.modeling import adapter as adapter_module
+
+    profile = adapter_module.VerifiedPositionProfile(
+        checkpoint="TEST_ONLY_synthetic",
+        model_type="roberta",
+        model_class=encoder_class_name,
+        position_rule="roberta_input_ids_offset",
+        evidence="TEST-ONLY fixture. Not a measured backbone. Never registered.",
+    )
+    monkeypatch.setattr(adapter_module, "resolve_position_profile", lambda _enc: profile)
+    return profile
+
+
+def tiny_encoder_config():
+    """A minimal `config`/`embeddings` surface, so padding-index detection is
+    genuinely exercised rather than patched away."""
+    import types
+
+    return types.SimpleNamespace(model_type="roberta", pad_token_id=1)
+
+
 @requires_torch
-def test_runtime_train_mode_invariants():
+def test_runtime_train_mode_invariants(monkeypatch):
     from torch import nn
 
     from unmark.modeling.adapter import UnmarkEncoder
@@ -786,8 +824,9 @@ def test_runtime_train_mode_invariants():
     class TinyEncoder(nn.Module):
         def __init__(self, d: int) -> None:
             super().__init__()
-            self.embed = nn.Embedding(10, d)
+            self.embed = nn.Embedding(10, d, padding_idx=1)
             self.dropout = nn.Dropout(0.5)
+            self.config = tiny_encoder_config()
 
         def get_input_embeddings(self):
             return self.embed
@@ -795,6 +834,7 @@ def test_runtime_train_mode_invariants():
         def forward(self, inputs_embeds=None, attention_mask=None, **_):
             return self.dropout(inputs_embeds)
 
+    grant_test_only_position_profile(monkeypatch, "TinyEncoder")
     encoder = TinyEncoder(16)
     wrapper = UnmarkEncoder(encoder, build_adapter(16))
 
@@ -820,7 +860,7 @@ def test_runtime_train_mode_invariants():
 
 
 @requires_torch
-def test_runtime_encoder_stays_frozen_across_mode_changes():
+def test_runtime_encoder_stays_frozen_across_mode_changes(monkeypatch):
     from torch import nn
 
     from unmark.modeling.adapter import UnmarkEncoder, trainable_parameters
@@ -828,7 +868,8 @@ def test_runtime_encoder_stays_frozen_across_mode_changes():
     class TinyEncoder(nn.Module):
         def __init__(self, d: int) -> None:
             super().__init__()
-            self.embed = nn.Embedding(10, d)
+            self.embed = nn.Embedding(10, d, padding_idx=1)
+            self.config = tiny_encoder_config()
 
         def get_input_embeddings(self):
             return self.embed
@@ -836,6 +877,7 @@ def test_runtime_encoder_stays_frozen_across_mode_changes():
         def forward(self, inputs_embeds=None, attention_mask=None, **_):
             return inputs_embeds
 
+    grant_test_only_position_profile(monkeypatch, "TinyEncoder")
     encoder = TinyEncoder(16)
     adapter = build_adapter(16)
     wrapper = UnmarkEncoder(encoder, adapter)
@@ -849,7 +891,7 @@ def test_runtime_encoder_stays_frozen_across_mode_changes():
 
 
 @requires_torch
-def test_runtime_gradients_reach_the_adapter_through_a_stand_in_encoder():
+def test_runtime_gradients_reach_the_adapter_through_a_stand_in_encoder(monkeypatch):
     """Connectivity check with a trivial frozen encoder.
 
     The real check runs on Colab against PhoBERT; this proves the *wiring* --
@@ -862,8 +904,9 @@ def test_runtime_gradients_reach_the_adapter_through_a_stand_in_encoder():
     class TinyEncoder(nn.Module):
         def __init__(self, d: int) -> None:
             super().__init__()
-            self.embed = nn.Embedding(10, d)
+            self.embed = nn.Embedding(10, d, padding_idx=1)
             self.proj = nn.Linear(d, d)
+            self.config = tiny_encoder_config()
 
         def get_input_embeddings(self):
             return self.embed
@@ -871,6 +914,7 @@ def test_runtime_gradients_reach_the_adapter_through_a_stand_in_encoder():
         def forward(self, inputs_embeds=None, attention_mask=None, **_):
             return self.proj(inputs_embeds)
 
+    grant_test_only_position_profile(monkeypatch, "TinyEncoder")
     encoder = TinyEncoder(16)
     adapter = build_adapter(16)
     wrapper = UnmarkEncoder(encoder, adapter)
@@ -897,7 +941,7 @@ def test_runtime_gradients_reach_the_adapter_through_a_stand_in_encoder():
 
 
 @requires_torch
-def test_runtime_gate_weight_gradient_exists_despite_zero_init():
+def test_runtime_gate_weight_gradient_exists_despite_zero_init(monkeypatch):
     """`W_g` starts at zero, but its gradient must still be able to exist."""
     from torch import nn
 
@@ -906,7 +950,8 @@ def test_runtime_gate_weight_gradient_exists_despite_zero_init():
     class TinyEncoder(nn.Module):
         def __init__(self, d: int) -> None:
             super().__init__()
-            self.embed = nn.Embedding(10, d)
+            self.embed = nn.Embedding(10, d, padding_idx=1)
+            self.config = tiny_encoder_config()
 
         def get_input_embeddings(self):
             return self.embed
@@ -914,6 +959,7 @@ def test_runtime_gate_weight_gradient_exists_despite_zero_init():
         def forward(self, inputs_embeds=None, attention_mask=None, **_):
             return inputs_embeds
 
+    grant_test_only_position_profile(monkeypatch, "TinyEncoder")
     adapter = build_adapter(16)
     wrapper = UnmarkEncoder(TinyEncoder(16), adapter)
     wrapper.train()
@@ -929,3 +975,39 @@ def test_runtime_gate_weight_gradient_exists_despite_zero_init():
     assert adapter.gate.weight.grad is not None
     assert adapter.gate.bias.grad is not None
     assert torch.isfinite(adapter.gate.weight.grad).all()
+
+
+# ---------------------------------------------------------------------------
+# Adapted-grid agreement (Audit 024 / C24-1-R2B, Group D)
+# ---------------------------------------------------------------------------
+@requires_torch
+@pytest.mark.parametrize("channel", ["tone_ids", "tone_mask", "letter_ids", "letter_mask"])
+def test_runtime_adapted_channels_must_share_the_base_token_grid(channel):
+    """A channel off the base grid fails closed, naming the grids.
+
+    Previously this reached `torch.cat` and produced a raw size error, which
+    reads as though unequal reference/base lengths were unsupported — the exact
+    misreading that hid a fixture defect (§P, Group D).
+    """
+    from unmark.modeling.adapter import ChannelContractViolation
+
+    adapter = build_adapter(16)
+    good = dict(
+        base_embeddings=torch.randn(1, 4, 16),
+        tone_ids=torch.tensor([[-1, 0, 1, -1]]),
+        tone_mask=torch.tensor([[False, True, True, False]]),
+        letter_ids=torch.tensor([[[-1], [0], [2], [-1]]]),
+        letter_mask=torch.tensor([[[False], [True], [True], [False]]]),
+    )
+    adapter(**good)  # the aligned case must still work
+
+    bad = dict(good)
+    wrong = {
+        "tone_ids": torch.tensor([[-1, 0, 1, 2, -1]]),
+        "tone_mask": torch.tensor([[False, True, True, True, False]]),
+        "letter_ids": torch.tensor([[[-1], [0], [2], [3], [-1]]]),
+        "letter_mask": torch.tensor([[[False], [True], [True], [True], [False]]]),
+    }[channel]
+    bad[channel] = wrong
+    with pytest.raises(ChannelContractViolation, match="different token grid"):
+        adapter(**bad)

@@ -225,6 +225,32 @@ class OrthographyInputAdapter(nn.Module):
                 f"letter_ids must be [B, L, K], got {tuple(letter_ids.shape)}"
             )
 
+        # Every channel must sit on the SAME base-token grid. Stage-1 allows the
+        # clean reference branch to tokenize to a different length than the
+        # adapted branch, but WITHIN the adapted branch base ids, tone ids/mask
+        # and letter ids/mask all index the same tokens -- that is what makes
+        # `[e; t; l]` a per-token concatenation rather than three unrelated
+        # sequences. Without this check a misalignment surfaces only as a raw
+        # `torch.cat` size error naming tensor dims, which is exactly the kind of
+        # message that gets misread as "unequal reference/base lengths do not
+        # work". Implementation hardening: it rejects only inputs that would
+        # already have failed, and changes no equation, value or contract.
+        grid = e.shape[:2]
+        for name, channel in (
+            ("tone_ids", tone_ids),
+            ("tone_mask", tone_mask),
+            ("letter_ids", letter_ids),
+            ("letter_mask", letter_mask),
+        ):
+            if tuple(channel.shape[:2]) != tuple(grid):
+                raise ChannelContractViolation(
+                    f"{name} is on a different token grid than base_embeddings: "
+                    f"{name}[:2]={tuple(channel.shape[:2])} vs [B, L]={tuple(grid)}. "
+                    "Base ids, tone and letter channels must share one base-token "
+                    "grid; only the Stage-1 clean REFERENCE branch may differ in "
+                    "length."
+                )
+
         t = self.tone_channel(tone_ids, tone_mask)
         l = self.letter_channel(letter_ids, letter_mask)
         q = torch.cat([e, t, l], dim=-1)
