@@ -37,7 +37,9 @@ apart at a glance:
 | **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
-| **OPEN — RESEARCHER DECISION REQUIRED** (cont.) | D-G1-004 — task/dataset and every classification-head concrete value; §5 names these as blocking **G1** |
+| **OPEN — RESEARCHER DECISION REQUIRED** (cont.) | D-G1-004 — every classification-head concrete value for the **full §6 grid**; §5 names these as blocking **G1** |
+| **SUPERSEDED** | D-PREG1-001 (SA-VLSP2016), D-PREG1-004 (70/15/15), D-PREG1-008 (`max_length` coverage rule) — all superseded **before any downstream result existed** |
+| **RESOLVED DECISION** (cont.) | D-PREG1-001b … D-PREG1-010 — the **active** pre-G1 protocol on **UIT-VSFC v1.0**, including the paired reproducibility lock |
 | **RESOLVED DECISION** (cont.) | D-B4B-001 (adapter implemented), D-B4B-003 (torch kept out of the package `__init__`), D-B4B-004 (frozen encoder stays in eval), D-B4B-005 (gradient validation via encoder output) — **all confirmed on real PhoBERT, run `20260820T081554Z`, 27/27** |
 | **RESOLVED DECISION** (cont.) | D-B4B-002 — **CLOSED** by the real PhoBERT run: explicit authoritative `position_ids` are required; D-B4B-006 (model provenance verifier repaired) |
 | **RESOLVED DECISION** (cont.) | D-B3B0-001 (RAW_BASE selected, closed by D-B3B1A-001) |
@@ -2541,3 +2543,635 @@ unchanged, and a test asserts it.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §4.6 and §5.2 are unchanged; this stops one from being read as the other. PDF stale: **YES** (unchanged) |
+
+---
+
+## Pre-G1 burden diagnostic — precommitted protocol
+
+Everything in this block is scoped to **one descriptive pre-G1 clean-path burden
+diagnostic**. It is **not** full G1 (§7 attaches the fusion layer), **not** the
+§6 multi-task protocol, and **not** a final Stage-2 decision for the paper.
+
+### D-PREG1-001 — SA-VLSP2016 selected as the primary pre-G1 dataset
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — precommitted **before** any project Vanilla-vs-Base-only score exists |
+| **Owner** | pre-G1 |
+
+**Proposal wording.** §6.2 names four task *categories* — "emotion recognition,
+hate-speech detection, sentiment analysis, and spam-review detection" — and no
+dataset. §5's open-items table and §13 item 2 leave "Dataset versions and splits"
+OPEN.
+
+**Implemented decision.** **SA-VLSP2016**, three-class sentiment classification,
+as the primary dataset for the pre-G1 burden diagnostic.
+
+**Rationale, recorded before the measurement.**
+
+* Three-class Vietnamese sentiment, matching one of §6.2's named categories.
+* A published downstream protocol of **5,100 train / 1,050 test**, so the
+  measurement is small enough to run cheaply and repeatedly.
+* The original training set is **balanced** across positive / neutral /
+  negative, which keeps macro-F1 interpretable without reweighting.
+* Sources are TinhTe, VnExpress and Facebook, with published collected-pool
+  counts of roughly **TinhTe 2,710 · VnExpress 7,998 · Facebook 1,488** — so
+  Facebook is about **12.21%** of the pool.
+* ViSoBERT's analysis describes the TinhTe/VnExpress portions as comparatively
+  **proper-form Vietnamese**, which matters here: the diagnostic measures the
+  burden of *removing* marks, so text that carries marks in the first place is
+  what makes the comparison meaningful.
+* Prior published PhoBERT diacritic-removal evidence shows substantial task
+  sensitivity, so the task is **not trivially insensitive** to orthography — a
+  dataset where stripping marks changed nothing would make the diagnostic
+  uninformative.
+
+**What is explicitly not claimed.** No published fine-tuned score is treated as
+an expected UNMARK result, or as a target. Those numbers come from different
+protocols, different splits and full fine-tuning; this diagnostic freezes the
+encoder and trains a linear head.
+
+**Comparators.** UIT-VSMEC, UIT-ViHSD and ViSpamReviews may be *profiled* to
+validate the choice. They are **not** alternative primaries. Switching the
+primary after this precommitment requires explicit evidence and its own logged
+decision — **never** because another dataset produced a nicer downstream number.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py`;
+`scripts/preg1_dataset_profile.py`; the future pre-G1 run.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §6.2's categories are unchanged; this selects one dataset for one diagnostic, not the paper's task suite. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-002 — dataset provenance must distinguish OFFICIAL from MIRROR
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (reproducibility); authorised-copy acquisition remains **OPEN** |
+| **Owner** | pre-G1 |
+
+**The situation.** The official VLSP distribution requires a signed user
+agreement. A public mirror may be inspected during profiling, but the two are not
+interchangeable for a published result.
+
+**Implemented decision.** `DatasetProvenance` requires an explicit
+`DatasetSourceType` (`OFFICIAL` / `MIRROR`) and an explicit
+`authorisation_established` boolean — **neither has a default**. It stamps the
+source name, revision where applicable, per-file SHA-256, row counts, column
+schema, label mapping and licence status. `usable_for_scientific_run` is true
+only for an **authorised official** copy.
+
+**Reason.** Silently presenting a mirror as the official dataset would make a
+result unreproducible in the one way nobody would think to check. Following the
+`vietnamese_syllables.yaml` precedent, the data itself is **not vendored into
+git**; only provenance is recorded.
+
+**Affected.** `unmark/evaluation/profiling.py`; every profile artifact; the
+pre-G1 run, which requires an authorised copy or one proven equivalent.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §11 already requires reproducibility. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-003 — the official TEST split is SEALED
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | pre-G1 |
+
+**Proposal wording.** §5.4: test is for "one final evaluation, for the tables
+that appear in the paper", and "the risk of drifting into decisions made on test
+is high".
+
+**Implemented decision.** The official test split must **not** be used for
+dataset choice, head-protocol choice, LR selection, pooling choice, checkpoint
+selection, the pre-G1 measurement, or HPO. The pre-G1 diagnostic is **not** that
+one final evaluation, so it does not touch test at all. The profiler may read
+test for *integrity checking only* — duplicates and cross-split leakage — and
+selects `max_length` from **train alone**.
+
+**Affected.** `scripts/preg1_dataset_profile.py`, where `max_length` is computed
+from `records["train"]` only; tests assert it.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-004 — intended 70/15/15 internal division of the official TRAIN set
+
+| | |
+|---|---|
+| **Status** | **RECORDED INTENT**; the splitter is **not materialised** pending duplicate inspection |
+| **Owner** | pre-G1 |
+
+Because test is sealed, the official **train** set is divided internally:
+
+| Split | Fraction | Role |
+|---|---|---|
+| protocol-train | 70% | head training |
+| protocol-dev | 15% | shared head-protocol and checkpoint selection |
+| measurement-dev | 15% | final descriptive pre-G1 burden measurement |
+
+Separating protocol-dev from measurement-dev is what stops the protocol from
+being tuned on the same data the headline gap is reported on.
+
+**The eventual splitter must be** label-stratified as closely as possible;
+deterministic and stable under rerun; **group-aware by canonical text**, so a
+canonical duplicate cannot cross splits; and independent of any downstream score.
+
+**Precondition.** The splitter is **not built until duplicates have been
+inspected**. If conflicting-label canonical duplicate groups exist, they are
+**reported** and their handling left **OPEN** — silently dropping or relabelling
+them would change the label distribution before anyone decided to.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py` (intent only);
+`analyse_duplicates`; the future splitter.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §5.4 is unchanged; this is an internal division of train. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-005 — `<s>` first-token pooling, for this pre-G1 protocol only
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, scoped to the pre-G1 diagnostic. The full §6 grid's head pooling remains **OPEN** (D-G1-005). |
+| **Owner** | pre-G1 |
+
+**Implemented decision.** Stage-2 pooling for this diagnostic is the **`<s>`
+first-token (classifier-token) representation**.
+
+**Reason, in order of weight.**
+
+1. It is the native sentence-classification convention for the PhoBERT/RoBERTa
+   family, so it is the least surprising choice for this backbone.
+2. It avoids importing the **Stage-1 §4.6 masked-mean** rule into Stage-2, which
+   D-G1-005 exists to prevent.
+3. It avoids making a **length-dependent mean** an extra difference between
+   Vanilla and Base-only. Their sequence lengths differ by construction, so a
+   mean would vary with length in a way the first token does not — that would
+   add a second confound to a measurement whose entire purpose is to isolate one.
+
+**Scope, stated so it cannot creep.** This resolves pooling for **one
+diagnostic on one dataset**. §5.2's classification-head pooling for the paper's
+grid stays OPEN, and the Stage-1 rule is untouched — tests assert both.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py`; the future pre-G1 head.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-006 — linear head, shared primary protocol, secondary sensitivity
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (recorded); **nothing is trained** |
+| **Owner** | pre-G1 |
+
+**Head.** A single linear layer with bias, **no hidden layer, no dropout**,
+shaped `d -> 3`. `d` comes from `model.config.hidden_size`; on the pinned probe
+revision that is 768, so the head is `768 -> 3`. **`d` is not hardcoded** —
+[D-B3B0-002](#d-b3b0-002) remains OPEN.
+
+**Search budget, fixed in advance.** AdamW, weight decay `0.01`, batch size
+`128` over cached frozen representations, at most `30` epochs, LR grid
+`{1e-4, 3e-4, 1e-3, 3e-3}`, checkpoint on **protocol-dev Macro-F1**, ties broken
+by higher Accuracy then earliest epoch.
+
+**Primary protocol — shared.** One LR is selected on protocol-dev using
+**Vanilla only**, *before* any measurement-dev result is observed, then
+**frozen and reused unchanged for both pathways**. §6.4 requires all systems to
+share the head architecture, hyperparameters, seeds and training budget; a shared
+LR is what makes the two systems differ **only** in their input pathway.
+
+**The caveat that must travel with it.** Tuning on Vanilla does **not** make
+Vanilla an upper bound. It makes the protocol shared and the comparison
+interpretable; it does not establish that Base-only could not do better under its
+own tuning.
+
+**Secondary sensitivity analysis.** Each pathway may later get the **same**
+search space and **same** budget, selecting its own LR on protocol-dev. That
+answers a different question and **must not replace** the primary shared-protocol
+result.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py`. **Neither search is run in
+this task**, and no head trainer exists.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-007 — precommitted, derivable seeds and paired reporting
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | pre-G1 |
+
+**Seeds.** Two disjoint sets, from two different tags:
+
+| Purpose | Tag | Seeds |
+|---|---|---|
+| Tuning | `UNMARK-PREG1-TUNE-v1` | 5509, 19422, 11800 |
+| Final paired measurement | `UNMARK-PREG1-MEASURE-v1` | 53148, 59945, 42941, 720, 9428 |
+
+**Derivation rule:** SHA-256 of the ASCII tag, read as successive 2-byte
+big-endian words — `seed_i = int.from_bytes(sha256(tag)[2i:2i+2], "big")`.
+
+**Reason.** Fully determined by the tag string, so anyone can recompute them and
+verify they were not selected after seeing a result. A test recomputes both sets
+from their tags. Using **different tags** for tuning and measurement keeps the
+protocol from being selected on the same randomness the headline is reported on.
+
+**Paired reporting.** The headline is the **paired per-seed gap**
+`Delta_s = Score_vanilla_s - Score_baseonly_s`, for **Macro-F1** and
+**Accuracy**. Report `mean(Delta)`, sample `std(Delta)`, and the raw per-seed
+scores for both pathways. Pairing matters: the two pathways share a seed, so the
+per-seed difference removes seed-to-seed variance that would otherwise swamp the
+effect.
+
+**No pre-G1 threshold.** None exists in the proposal and none is invented; §7's
+"within ≈1 point" belongs to the fusion-attached full G1. The result is
+**descriptive**, and must **not** be called an upper bound or ceiling on UNMARK.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-008 — `max_length` from train token coverage, never from a score
+
+| | |
+|---|---|
+| **Status** | **RULE RESOLVED; VALUE UNRESOLVED** pending the real tokenizer profile |
+| **Owner** | pre-G1 |
+
+**Rule.** Choose the **smallest** value in `{64, 128, 256}` such that **at least
+99%** of **TRAIN** examples fit in **both** the Vanilla and Base-only
+tokenizations, including the evaluator's special tokens.
+
+**Both pathways, jointly.** The binding constraint is the *worse* pathway, and
+that is not a formality: Base-only tokenizations of stripped text can differ in
+length from Vanilla, so a bound satisfying one may fail the other. A test covers
+exactly that case.
+
+**Failure is loud.** If no candidate satisfies the rule, `select_max_length`
+raises and `max_length` stays **UNRESOLVED** for researcher review. Exceeding the
+verified backbone limit would be a scientific change, not a fallback.
+
+**Never from a downstream score.** The value is decided from token coverage
+alone, before any measurement exists — a `max_length` tuned on a score would be
+selecting a protocol on the result it is meant to produce.
+
+**Current state: UNRESOLVED.** `Preg1Protocol().max_length is None`, because the
+real tokenizer profile has not been run. The local environment is ML-free.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §5.3 pins a maximum sequence length per task without giving one. PDF stale: **YES** (unchanged) |
+
+---
+
+## Pre-G1 protocol — supersession to UIT-VSFC v1.0
+
+**Timing, stated first because it is what makes the change legitimate.** At the
+moment of this supersession, **zero real Vanilla-vs-Base-only downstream scores
+existed** — no dataset had been profiled, no head had been trained, and
+`results/preg1` did not exist. Verified by inspection before editing. A dataset
+change *after* seeing a result would be indefensible; before one, it is ordinary
+specification work.
+
+### D-PREG1-001b — UIT-VSFC v1.0 supersedes SA-VLSP2016 for the pre-G1 diagnostic
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, superseding [D-PREG1-001](#d-preg1-001--sa-vlsp2016-selected-as-the-primary-pre-g1-dataset) |
+| **Owner** | pre-G1 |
+
+**Original decision (preserved, not erased).** D-PREG1-001 selected
+**SA-VLSP2016**, three-class sentiment, on the grounds of a balanced training
+set, published source counts and comparatively proper-form Vietnamese in the
+TinhTe/VnExpress portions.
+
+**Superseding decision.** **UIT-VSFC version 1.0** — Vietnamese Students'
+Feedback Corpus — **sentiment task only**, labels `0 negative / 1 neutral /
+2 positive`.
+
+| Split | Size | negative | neutral | positive |
+|---|---|---|---|---|
+| train | 11,426 | 5,325 | 458 | 5,643 |
+| validation | 1,583 | 705 | 73 | 805 |
+| test | 3,166 | 1,409 | 167 | 1,590 |
+
+Each row sums exactly to its split size — checked, not assumed.
+
+**Why changed.** The pre-G1 diagnostic wants the **cleanest identifiable
+`x -> b(x)` manipulation**, not the most realistic noisy social-media benchmark.
+The two goals pull in opposite directions, and the earlier choice optimised the
+wrong one for this particular measurement. UIT-VSFC fits better because:
+
+* the original paper describes an explicit **normalization phase** — sentence
+  segmentation, abbreviation expansion, misspelling correction, personal-name
+  anonymisation — producing >16,000 normalized sentences;
+* it has an **official train/validation/test structure**, so the measurement set
+  need not be carved out of train;
+* its size makes a stable paired probe inexpensive;
+* its **official validation split can stay untouched** by head-protocol tuning,
+  which is what lets protocol selection and measurement use genuinely different
+  data.
+
+**What is not claimed.** This does **not** claim the corpus is perfectly
+diacritized. A paper's normalization description is not evidence about
+orthographic exposure; the profiler must measure that directly on the real data
+(D-PREG1-009).
+
+**Locked.** Profiling is an **integrity and characterisation gate**, not a
+downstream-score-based selection contest. If profiling reveals a catastrophic
+integrity problem, **STOP** and require a new explicit researcher decision — do
+not automatically switch again.
+
+**SA-VLSP2016 remains eligible** for the later full benchmark; it is superseded
+for this diagnostic only.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py`,
+`unmark/evaluation/profiling.py`, `scripts/preg1_dataset_profile.py`,
+`tests/test_preg1_profiling.py`; the future pre-G1 run.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §6.2's task categories are unchanged; this selects one dataset for one diagnostic. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-002b — access model: official public distribution is not the same as a license
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, repairing [D-PREG1-002](#d-preg1-002--dataset-provenance-must-distinguish-official-from-mirror) |
+| **Owner** | pre-G1 |
+
+**Original assumption.** D-PREG1-002 encoded an SA-VLSP-specific fact — that
+official access requires a signed user agreement — as a boolean
+`authorisation_established`, with `usable_for_scientific_run` true only for an
+*authorised* official copy.
+
+**The defect.** UIT's official NLP dataset page lists **UIT-VSFC (version 1.0)**
+with a **direct public download**, and — unlike several other datasets on that
+same page — presents no instruction to email the group and sign an agreement.
+The boolean therefore misclassified an officially and publicly distributed
+corpus as unusable, for a reason that does not apply to it.
+
+**Repaired model.** `DatasetAccess` with four states:
+`OFFICIAL_PUBLIC_DISTRIBUTION`, `OFFICIAL_AGREEMENT_AUTHORISED`, `MIRROR`,
+`UNKNOWN`. `usable_for_scientific_run` is true for **either** official form and
+false for a mirror or unknown provenance.
+
+**License kept strictly separate.** `license_status` defaults to
+`NOT_ESTABLISHED` and is **not** part of the usability test. *Official public
+distribution* and *an explicitly identified license* are **different facts**; no
+license is invented, and no legal claim is made beyond the evidence supplied. The
+profiler's report prints a distinct warning for each.
+
+Raw dataset files are still **never redistributed through git**; artifacts carry
+provenance, hashes and counts, not corpus text.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-004b — split roles: official validation is measurement, train splits 80/20
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, superseding [D-PREG1-004](#d-preg1-004--intended-701515-internal-division-of-the-official-train-set) |
+| **Owner** | pre-G1 |
+
+**Original decision.** A 70/15/15 internal division of official train into
+protocol-train / protocol-dev / measurement-dev, because SA-VLSP2016 offered no
+separate development split.
+
+**Superseding decision.** UIT-VSFC has an official validation split, so:
+
+| Split | Role |
+|---|---|
+| official **test** | **SEALED** — integrity, hash and duplicate checks only; never protocol decisions, never scores |
+| official **validation** | **measurement-dev** — never used to select dataset, pooling, LR, epoch, or any head hyperparameter |
+| official **train** | split internally **80% protocol-train / 20% protocol-dev** |
+
+**Why 80/20.** UIT-VSFC sentiment is strongly imbalanced — `neutral` is about
+**4%** of train — so a 20% protocol-dev gives a more stable macro-F1 tuning
+sample while still leaving over 9,000 training examples. Using the official
+validation as measurement is what frees the internal division to be two-way.
+
+**Split seed, precommitted.** Tag `UNMARK-PREG1-SPLIT-UITVSFC-v1`, SHA-256, first
+2-byte big-endian word = **17486**. Recomputed and verified. A **third** tag,
+distinct from the tuning and measurement tags, so split, tuning and measurement
+randomness are independent.
+
+**Splitter properties**, implemented as a generic mechanism
+(`profiling.stratified_group_split`): deterministic and stable across reruns;
+label-stratified as closely as grouping allows; **group-aware by canonical
+text**, so a canonical duplicate cannot cross protocol-train/protocol-dev;
+independent of any downstream score; and using a keyed digest rather than
+`random`, so it is stable across processes.
+
+**Not run on real data** in this phase: conflicting-label canonical groups must
+be inspected first, and how to handle them is a researcher decision.
+
+**Duplicate contract.** Canonical duplicates stay in one group; official
+train↔validation overlap is detected and reported before head training;
+conflicting-label groups are reported with ids and counts, **never** silently
+relabelled or dropped; and if such groups affect split integrity, **STOP** for
+researcher review before downstream training.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §5.4 is unchanged. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-008b — `max_length` fixed at 256, not selected from data
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, superseding [D-PREG1-008](#d-preg1-008--max_length-from-train-token-coverage-never-from-a-score) |
+| **Owner** | pre-G1 |
+
+**Original rule.** The smallest of `{64, 128, 256}` covering ≥99% of train on
+both pathways.
+
+**Superseding decision.** **`max_length = 256`** for both pathways, with
+`truncation = true` and `padding = "max_length"`.
+
+**Why.** Pre-G1 aims to **minimise truncation**, not optimise inference
+efficiency, and compute is not a constraint here. PhoBERT's pretrained positional
+capacity is 256 for a task sequence, so this is the maximum supported length.
+Fixing it removes an otherwise **data-dependent protocol decision** from the
+measurement — the earlier rule made the protocol a function of the corpus, which
+is one more thing that could differ between a rerun and the original.
+
+**Statistics are still reported, and still matter.** Length distributions,
+coverage at 64/128/256, the **overflow rate at 256**, and the Vanilla/Base-only
+length delta. They now **characterise** the corpus and quantify truncation rather
+than selecting the value. If records overflow 256, the exact aggregate rate is
+reported and ordinary truncation applies; the verified backbone limit is never
+exceeded automatically.
+
+The selection machinery is **removed from the code**, not merely unused — a test
+asserts `select_max_length`, `max_length_evidence`, `MaxLengthUnresolved` and the
+old constants no longer exist, so a future caller cannot silently re-enable
+data-driven selection.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §5.3 pins a maximum sequence length per task without giving one. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-009 — the final pre-G1 probe protocol
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (recorded); **nothing is trained** |
+| **Owner** | pre-G1 |
+
+**Pathways, unchanged from Audit 020.** `VANILLA: canon(x) -> tokenizer ->
+frozen encoder`; `BASE_ONLY: canon(x) -> b(x) -> the SAME tokenizer -> the SAME
+frozen encoder`. **No word segmenter is introduced into either** — the
+diagnostic must differ in the pathway transformation only, and adding
+segmentation would introduce a second variable. Consistent with the locked
+`RAW_BASE` contract (D-B3B1A-001). The known caveat is **preserved**: standard
+PhoBERT usage expects word-segmented Vietnamese, and RAW_BASE is a deliberate
+design choice and possible distribution shift — not something to silently "fix".
+
+**Pooling.** `<s>` first token. No mean pooling. Scoped to **this diagnostic
+only**: it does not change Stage-1's masked mean and does not lock pooling for
+the full grid.
+
+**Head.** `Linear(d, 3, bias=True)`, `d` from `model.config.hidden_size`. No
+hidden layer, no dropout, no LayerNorm, no activation. **`768` is never
+hardcoded** — D-B3B0-002 is OPEN.
+
+**Loss.** Ordinary multiclass cross-entropy. **No class weights, no focal loss,
+no label smoothing** — the imbalance is *exposed* through macro-F1 and per-class
+F1 rather than compensated by a second modelling intervention that would itself
+become a variable. Per-class F1 is reported as a diagnostic, `neutral` above all.
+
+**Encoder and numerics.** Frozen, `eval()`, extraction under `torch.no_grad()`,
+**FP32** throughout, cached representations in FP32, **no AMP, no BF16/FP16**.
+Checkpoint `vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6` —
+a pin for **this probe's reproducibility** that **does not close D-B3B0-002**.
+
+**Optimisation.** AdamW, `betas=(0.9, 0.999)`, `eps=1e-8`,
+`weight_decay=0.01`, `amsgrad=false`; **CONSTANT** schedule; warmup **0**; **no**
+gradient clipping; batch size **128**; **30 complete epochs**; early stopping
+**OFF**; shuffling **on** and deterministic under the run seed; no encoder
+gradient or update.
+
+**Primary LR search.** Grid `{1e-4, 3e-4, 1e-3, 3e-3, 1e-2}`. For each LR and
+each of the 3 tuning seeds: train all 30 epochs, evaluate every epoch on
+protocol-dev, select that run's checkpoint by highest macro-F1, then higher
+accuracy, then earliest epoch. Aggregate across seeds by highest mean macro-F1,
+then highest mean accuracy, then **lowest sample SD of macro-F1**, then smaller
+LR. **Vanilla only.** The winner is then **frozen and reused unchanged for both
+pathways**. Official validation is never used here, and the grid is not altered
+after viewing Base-only results.
+
+**The caveat travels with it:** tuning on Vanilla does **not** make Vanilla an
+upper bound; it makes the protocol shared and the comparison interpretable.
+
+**Primary measurement.** For each of the 5 measurement seeds, train a Vanilla
+head and a Base-only head sharing split, LR, optimizer, scheduler, loss, batch
+size, epoch budget, seed, checkpoint criterion, architecture, `max_length` and
+precision. **Each pathway trains its own head through its own clean pathway and
+may select its own best epoch** under the same checkpoint rule — "same protocol"
+does not require an identical epoch number, and demanding one would force a
+pathway onto a checkpoint its own dev curve did not choose. Then freeze and
+evaluate on the untouched official validation split.
+
+Report `Delta_s = Score_vanilla_s - Score_baseonly_s` for **macro-F1** (primary)
+and **accuracy** (secondary): all five raw paired scores, all five deltas,
+`mean(Delta)`, sample `std(Delta)`, and raw per-pathway mean/std. **No p-value is
+required for n = 5, and none is invented.**
+
+**Secondary sensitivity**, precommitted but not run: each pathway may later
+select its own LR under exactly the same grid, seeds, protocol-dev, budget and
+checkpoint rule. It answers a different question and **must not replace** the
+primary shared-LR result.
+
+**No pre-G1 threshold.** The result is descriptive; full G1's "within
+approximately 1 point" is not borrowed. **Neither result may be called an upper
+bound or ceiling on UNMARK.**
+
+**Stage-1 is unaffected** — no Stage-1 mathematics, objective or pooling changed.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+### D-PREG1-010 — paired initialisation and optimiser detail
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, completing [D-PREG1-009](#d-preg1-009--the-final-pre-g1-probe-protocol) |
+| **Owner** | pre-G1 |
+
+**The gap.** D-PREG1-009 said the two pathways share a run seed. Sharing a seed
+**label** is not the same as starting from identical parameters: if Vanilla runs
+first and Base-only then draws from the same advancing RNG stream, the second
+head starts from **different** weights, and that difference lands in `Delta_s`
+attributed to the pathway. For a paired measurement whose entire purpose is to
+isolate one variable, that is the failure mode most likely to go unnoticed.
+
+**Head initialisation, explicit.**
+
+```
+weight -> torch.nn.init.xavier_uniform_
+bias   -> torch.nn.init.zeros_
+```
+
+`nn.Linear`'s implicit default is **not** relied upon: it is a Kaiming-uniform
+variant whose exact form has changed across PyTorch versions, so depending on it
+would make the comparison silently version-sensitive.
+
+**Per-run sequence.** For **every** independent head-training run: reset the run
+RNGs from the declared run seed **before** head construction; construct the head;
+**explicitly** apply the initialisation above; construct the deterministic
+shuffle generator from the same run seed.
+
+**Paired guarantee.** For measurement seed `s`, `Vanilla(s)` and `BaseOnly(s)`
+start from **bit-identical** classifier parameters, because each re-seeds from
+`s` rather than inheriting RNG state from the other. The **data order is paired
+too**: same example ids, same labels, same deterministic shuffle schedule. Only
+the input pathway differs.
+
+**Optimiser parameter groups.**
+
+| Parameter | weight decay |
+|---|---|
+| head weight matrix | **0.01** |
+| head bias | **0.0** |
+
+The classifier intercept is **not** decayed. Shrinking it pulls the decision
+boundary toward the origin, which on a corpus where `neutral` is ~4% of train
+would penalise the minority class through a regularisation choice rather than
+through the data — and macro-F1 is exactly the metric that would absorb it.
+
+**Loss.** `CrossEntropyLoss(weight=None, label_smoothing=0.0, reduction="mean")`.
+
+**Batching.** `gradient_accumulation_steps = 1`, `drop_last = false`.
+
+**Checkpoint eligibility.** Evaluate and select after each **complete** epoch;
+epochs are numbered **1..30**; **epoch 0 — the untrained head — is not
+eligible.** An untrained linear head on a 4%-neutral corpus can post a
+deceptively reasonable accuracy by favouring a majority class, and letting it
+win would report the initialisation rather than the pathway.
+
+**Unchanged.** `betas=(0.9, 0.999)`, `eps=1e-8`, `amsgrad=false`, constant LR,
+warmup 0, no gradient clipping, batch 128, 30 epochs, no early stopping.
+
+**Runtime options are not hyperparameters.** Implementation-level AdamW options
+(`foreach`, `fused`, `capturable`) vary by PyTorch version. They must **not** be
+tuned; the run artifact records the actual runtime version and options in force.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py`,
+`tests/test_preg1_profiling.py`; the future pre-G1 head trainer.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §6.4 already requires systems to share hyperparameters and seeds; this states what "same seed" has to mean in code. PDF stale: **YES** (unchanged) |
