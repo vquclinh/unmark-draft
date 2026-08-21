@@ -22,12 +22,18 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from unmark.evaluation.contracts import EvaluationContractViolation
-from unmark.orthography import LetterDiacritic, ObservedTone, canon, decompose
+from unmark.orthography import (
+    Eligibility,
+    LetterDiacritic,
+    ObservedTone,
+    canon,
+    decompose,
+)
 
-PROFILE_SCHEMA_VERSION = "preg1-profile-v1"
+PROFILE_SCHEMA_VERSION = "preg1-profile-v2"
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +247,25 @@ def noise_descriptives(text: str) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 # Orthographic observables
 # ---------------------------------------------------------------------------
+UNIT_DENSITY_SEMANTICS = (
+    "Proposal §4.3 fixes the granularity of each channel, and the denominators "
+    "follow from it rather than from convenience:\n"
+    "  * TONE is a **syllable** property -- 'one syllable carries exactly one "
+    "tone'. The denominator is therefore the count of syllables whose "
+    "Eligibility is VIETNAMESE_CANDIDATE, and the numerator is those whose "
+    "ObservedTone is not UNMARKED.\n"
+    "  * LETTER diacritics are a **character** property -- 'one syllable may "
+    "carry several of them at once, on different characters'. The denominator "
+    "is therefore the count of character units whose LetterDiacritic is not NA, "
+    "and the numerator is those whose LetterDiacritic is neither NA nor NONE.\n"
+    "NA is NOT folded into NONE. §4.3 keeps them distinct: NONE means 'a letter "
+    "that could carry a Vietnamese letter diacritic and does not', while NA "
+    "means the channel does not apply at all (digits, punctuation, symbols). "
+    "Counting NA in the denominator would deflate the density by the corpus's "
+    "punctuation rate."
+)
+
+
 @dataclass(frozen=True)
 class OrthographyObservation:
     """What is *observable* in one text. No inference about what was lost."""
@@ -263,6 +288,21 @@ class OrthographyObservation:
     total_units: int
     syllables: int
 
+    # --- unit-level channel densities (§4.3 granularity) -----------------
+    tone_eligible_syllables: int = 0
+    """Denominator for the tone channel: syllables with Eligibility
+    VIETNAMESE_CANDIDATE. Zero when eligibility is unresolved."""
+    tone_observed_syllables: int = 0
+    """Numerator: eligible syllables whose ObservedTone is not UNMARKED."""
+    letter_eligible_units: int = 0
+    """Denominator for the letter channel: character units whose
+    LetterDiacritic is **not NA**."""
+    letter_observed_units: int = 0
+    """Numerator: eligible units whose LetterDiacritic is neither NA nor NONE."""
+    eligibility_resolved: bool = False
+    """False when no classifier was supplied, so every syllable is UNDECIDED and
+    the tone denominator is not meaningful."""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "canon_changed": self.canon_changed,
@@ -273,18 +313,31 @@ class OrthographyObservation:
             "units_with_observed_letter": self.units_with_observed_letter,
             "total_units": self.total_units,
             "syllables": self.syllables,
+            "tone_eligible_syllables": self.tone_eligible_syllables,
+            "tone_observed_syllables": self.tone_observed_syllables,
+            "letter_eligible_units": self.letter_eligible_units,
+            "letter_observed_units": self.letter_observed_units,
+            "eligibility_resolved": self.eligibility_resolved,
         }
 
 
-def observe_orthography(text: str) -> OrthographyObservation:
+def observe_orthography(
+    text: str, classifier: Callable[[str], Eligibility] | None = None
+) -> OrthographyObservation:
     """Profile one text with the **authoritative** `canon` and base decomposition.
 
-    Deliberately delegates: stripping rules live in `unmark.orthography` and are
-    not reimplemented here, so a profile can never disagree with the pipeline it
-    is profiling.
+    Deliberately delegates: stripping rules and channel labels live in
+    `unmark.orthography` and are not reimplemented here, so a profile can never
+    disagree with the pipeline it is profiling.
+
+    Args:
+        classifier: the B3A eligibility classifier. Without it every syllable is
+            `UNDECIDED`, so the tone denominator is not meaningful and
+            `eligibility_resolved` is False -- the same fail-visible discipline
+            B2 applies through `EligibilityPolicy.UNRESOLVED`.
     """
     canonical = canon(text)
-    parts = decompose(canonical)
+    parts = decompose(canonical, eligibility_classifier=classifier)
     base = parts.base_text
 
     changed_characters = sum(
@@ -299,6 +352,22 @@ def observe_orthography(text: str) -> OrthographyObservation:
         for u in parts.units
         if u.letter_diacritic not in (LetterDiacritic.NONE, LetterDiacritic.NA)
     )
+
+    # §4.3: tone is a SYLLABLE property; the denominator is eligible syllables.
+    eligible_syllables = [
+        span for span in parts.syllables if span.eligibility is Eligibility.VIETNAMESE_CANDIDATE
+    ]
+    tone_observed = sum(
+        1 for span in eligible_syllables if span.observed_tone is not ObservedTone.UNMARKED
+    )
+
+    # §4.3: letter diacritics are a CHARACTER property; NA is excluded from the
+    # denominator, NONE is included.
+    letter_eligible = [u for u in parts.units if u.letter_diacritic is not LetterDiacritic.NA]
+    letter_observed = sum(
+        1 for u in letter_eligible if u.letter_diacritic is not LetterDiacritic.NONE
+    )
+
     return OrthographyObservation(
         canonical=canonical,
         base=base,
@@ -310,6 +379,11 @@ def observe_orthography(text: str) -> OrthographyObservation:
         units_with_observed_letter=letter_units,
         total_units=len(parts.units),
         syllables=len(parts.syllables),
+        tone_eligible_syllables=len(eligible_syllables),
+        tone_observed_syllables=tone_observed,
+        letter_eligible_units=len(letter_eligible),
+        letter_observed_units=letter_observed,
+        eligibility_resolved=classifier is not None,
     )
 
 
@@ -331,6 +405,11 @@ class SplitProfile:
     base_equivalent: int = 0
     with_observed_tone: int = 0
     with_observed_letter: int = 0
+    tone_eligible_syllables: int = 0
+    tone_observed_syllables: int = 0
+    letter_eligible_units: int = 0
+    letter_observed_units: int = 0
+    eligibility_resolved: bool = False
     changed_unit_distribution: dict[str, float] = field(default_factory=dict)
     character_length_distribution: dict[str, float] = field(default_factory=dict)
     noise: dict[str, int] = field(default_factory=dict)
@@ -344,6 +423,28 @@ class SplitProfile:
     def base_equivalent_rate(self) -> float:
         """Fraction with **no observed mark**. Not a missing-diacritic rate."""
         return self.base_equivalent / self.examples if self.examples else 0.0
+
+    @property
+    def observed_tone_unit_density(self) -> float | None:
+        """Eligible syllables carrying a readable tone, over eligible syllables.
+
+        `None` when eligibility is unresolved or nothing is eligible -- an
+        unresolved denominator must not be reported as a rate of zero.
+        """
+        if not self.eligibility_resolved or not self.tone_eligible_syllables:
+            return None
+        return self.tone_observed_syllables / self.tone_eligible_syllables
+
+    @property
+    def observed_letter_unit_density(self) -> float | None:
+        """Applicable character units carrying a letter mark, over applicable units.
+
+        `None` only when no unit is applicable. This density does **not** depend
+        on the syllable inventory: NA/NONE come from the decomposition itself.
+        """
+        if not self.letter_eligible_units:
+            return None
+        return self.letter_observed_units / self.letter_eligible_units
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -360,6 +461,14 @@ class SplitProfile:
             "base_equivalent_rate": self.base_equivalent_rate,
             "with_observed_tone": self.with_observed_tone,
             "with_observed_letter": self.with_observed_letter,
+            "tone_eligible_syllables": self.tone_eligible_syllables,
+            "tone_observed_syllables": self.tone_observed_syllables,
+            "observed_tone_unit_density": self.observed_tone_unit_density,
+            "letter_eligible_units": self.letter_eligible_units,
+            "letter_observed_units": self.letter_observed_units,
+            "observed_letter_unit_density": self.observed_letter_unit_density,
+            "eligibility_resolved": self.eligibility_resolved,
+            "unit_density_semantics": UNIT_DENSITY_SEMANTICS,
             "changed_unit_distribution": self.changed_unit_distribution,
             "character_length_distribution": self.character_length_distribution,
             "noise": dict(self.noise),
@@ -367,7 +476,9 @@ class SplitProfile:
 
 
 def profile_split(
-    split_name: str, records: Iterable[tuple[str, str, Any]]
+    split_name: str,
+    records: Iterable[tuple[str, str, Any]],
+    classifier: Callable[[str], Eligibility] | None = None,
 ) -> tuple[SplitProfile, dict[str, list[tuple[str, Any]]]]:
     """Profile one split.
 
@@ -380,7 +491,11 @@ def profile_split(
         not text**.
     """
     records = list(records)
-    profile = SplitProfile(split_name=split_name, examples=len(records))
+    profile = SplitProfile(
+        split_name=split_name,
+        examples=len(records),
+        eligibility_resolved=classifier is not None,
+    )
     exact_seen: Counter[str] = Counter()
     canonical_index: dict[str, list[tuple[str, Any]]] = {}
     changed_units: list[float] = []
@@ -393,7 +508,7 @@ def profile_split(
             profile.empty_or_invalid += 1
             continue
 
-        observed = observe_orthography(text)
+        observed = observe_orthography(text, classifier)
         if observed.canon_changed:
             profile.canon_changed += 1
         if observed.base_equivalent:
@@ -402,6 +517,10 @@ def profile_split(
             profile.with_observed_tone += 1
         if observed.units_with_observed_letter:
             profile.with_observed_letter += 1
+        profile.tone_eligible_syllables += observed.tone_eligible_syllables
+        profile.tone_observed_syllables += observed.tone_observed_syllables
+        profile.letter_eligible_units += observed.letter_eligible_units
+        profile.letter_observed_units += observed.letter_observed_units
 
         changed_units.append(observed.changed_units)
         lengths.append(len(observed.canonical))

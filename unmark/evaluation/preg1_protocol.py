@@ -27,7 +27,7 @@ from unmark.evaluation.profiling import (
     derive_seeds,
 )
 
-PREG1_PROTOCOL_VERSION = "preg1-protocol-v3"
+PREG1_PROTOCOL_VERSION = "preg1-protocol-v4"
 
 # ---------------------------------------------------------------------------
 # Dataset
@@ -53,6 +53,63 @@ PUBLISHED_LABEL_COUNTS: dict[str, dict[str, int]] = {
 verified, and worth stating because the corpus is strongly imbalanced:
 `neutral` is about 4% of train, which is why macro-F1 and per-class F1 are the
 reported metrics rather than accuracy alone."""
+
+# ---------------------------------------------------------------------------
+# Conflicting canonical groups, resolved against real data (D-PREG1-011)
+# ---------------------------------------------------------------------------
+CONFLICTING_GROUP_POLICY = "EXCLUDE_ENTIRE_CONFLICTING_CANONICAL_GROUP"
+"""What to do when one canonical text carries more than one gold label.
+
+`DUPLICATE_CONTRACT` requires a STOP for researcher review rather than a silent
+fix. The review happened, and the resolution is to drop the **entire** group --
+every member -- not to keep one member, majority-vote, or relabel.
+
+Keeping a member would require choosing which annotation is correct, which this
+diagnostic has no evidence to do and no need to do.
+
+The contradictory supervision is avoidable annotation noise. Pairing does **not
+guarantee** that its effect cancels: Vanilla and Base-only use different
+representations and may respond differently during optimization or checkpoint
+selection, so a shared noisy label can still reach `Delta_s` asymmetrically.
+Excluding the whole group removes the ambiguity symmetrically without asserting
+that either annotation is correct.
+"""
+
+CONFLICTING_GROUP_EXCLUSION_SCOPE = "protocol-train pool only; the official validation and test splits are untouched"
+
+OBSERVED_CONFLICTING_GROUPS: dict[str, tuple[str, ...]] = {
+    "a193a8ff49cc5ab43da189f9126aea19a0a0e9df1e16acc0a710cf7e880d0daa": (
+        "train:11293",
+        "train:11417",
+    ),
+}
+"""Canonical-digest -> member sample ids, observed on the real TRAIN split.
+
+Digests and ids only. The raw sentence is **not** recorded here: it is corpus
+text, and the profiler's whole discipline is that committed evidence carries
+hashes and counts rather than data.
+
+Externally observed on Colab. Exactly one such group exists in TRAIN; the
+official validation and test splits have none.
+"""
+
+DERIVED_TRAIN_SIZE = 11424
+"""`PUBLISHED_SPLIT_SIZES['train']` (11426) minus the two excluded members."""
+
+DERIVED_TRAIN_LABEL_COUNTS: dict[str, int] = {
+    "negative": 5324,
+    "neutral": 458,
+    "positive": 5642,
+}
+"""The excluded pair is one `negative` and one `positive` -- which is what made
+the group conflicting. `neutral` is unchanged, so the 4% minority class the
+metric choice depends on is not affected."""
+
+DERIVED_TRAIN_CSV_SHA256 = (
+    "a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301"
+)
+"""SHA-256 of the derived exclusion-applied TRAIN csv, as produced on Colab. The
+file is **not** in this repository; the digest is the reproducibility handle."""
 
 SUPERSEDED_DATASET = "SA-VLSP2016"
 SUPERSESSION_NOTE = (
@@ -562,6 +619,14 @@ class Preg1Protocol:
                 "splitter_requirements": list(SPLITTER_REQUIREMENTS),
                 "splitter_status": SPLITTER_STATUS,
                 "duplicate_contract": list(DUPLICATE_CONTRACT),
+                "conflicting_group_policy": CONFLICTING_GROUP_POLICY,
+                "conflicting_group_exclusion_scope": CONFLICTING_GROUP_EXCLUSION_SCOPE,
+                "observed_conflicting_groups": {
+                    k: list(v) for k, v in OBSERVED_CONFLICTING_GROUPS.items()
+                },
+                "derived_train_size": DERIVED_TRAIN_SIZE,
+                "derived_train_label_counts": dict(DERIVED_TRAIN_LABEL_COUNTS),
+                "derived_train_csv_sha256": DERIVED_TRAIN_CSV_SHA256,
             },
             "optimisation": {
                 "optimizer": self.optimizer,

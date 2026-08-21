@@ -3175,3 +3175,186 @@ tuned; the run artifact records the actual runtime version and options in force.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §6.4 already requires systems to share hyperparameters and seeds; this states what "same seed" has to mean in code. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-PREG1-011 — conflicting canonical groups are excluded whole
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, discharging the STOP clause of `DUPLICATE_CONTRACT` |
+| **Owner** | pre-G1 |
+| **Trigger** | real UIT-VSFC TRAIN profile, run at HEAD `7654ce1bba3eb93d55d7821fbcf10b1fb6741bf9` |
+
+**What the real data showed.** `DUPLICATE_CONTRACT` requires that
+conflicting-label canonical groups be reported and that the pipeline **STOP for
+researcher review** rather than silently repair them. Profiling the real corpus
+raised exactly that stop. TRAIN contains **one** canonical group whose members
+disagree on the gold label:
+
+| | |
+|---|---|
+| **Canonical digest** | `a193a8ff49cc5ab43da189f9126aea19a0a0e9df1e16acc0a710cf7e880d0daa` |
+| **Members** | `train:11293`, `train:11417` |
+| **Labels in conflict** | one `negative`, one `positive` |
+
+The official **validation** and **test** splits contain no such group. The raw
+sentence is deliberately **not** recorded here or in any artifact: the profiler's
+standing discipline is that committed evidence carries digests and counts, not
+corpus text, and this decision is not an exception to it.
+
+**The decision.** `EXCLUDE_ENTIRE_CONFLICTING_CANONICAL_GROUP` — drop **every**
+member of the group. Not majority vote, not keep-first, not relabel.
+
+**Why the whole group, and not a repair.** Keeping one member means asserting
+which annotation is correct. This diagnostic has no evidence for that and no
+need of it.
+
+The contradictory supervision is **avoidable annotation noise**. Pairing does
+**not guarantee that its effect cancels**: Vanilla and Base-only use different
+representations and may respond differently during optimization, checkpoint
+selection or evaluation, so a shared noisy label can still enter `Delta_s`
+asymmetrically. The earlier phrasing here — that such an error simply "does not
+cancel" — was too categorical in the opposite direction; the honest statement is
+that cancellation is **not guaranteed**, which is reason enough not to rely on
+it. Whole-group exclusion removes the ambiguity **symmetrically**, without
+asserting that either annotation is correct. Two examples out of 11 426 are not
+worth carrying an unverifiable annotation into the measurement.
+
+**Scope.** The exclusion applies to the **protocol-train pool only**. The
+official validation split is the measurement set and the official test split is
+SEALED ([D-PREG1-003](#d-preg1-003--the-official-test-split-is-sealed)); neither
+is filtered, and neither contained such a group in any case.
+
+**Derived TRAIN, after exclusion.**
+
+| | Published | Derived |
+|---|---|---|
+| N | 11 426 | **11 424** |
+| `negative` (0) | 5 325 | 5 324 |
+| `neutral` (1) | 458 | **458 — unchanged** |
+| `positive` (2) | 5 643 | 5 642 |
+
+`neutral` is untouched, which matters: it is about 4% of TRAIN and is the reason
+the reported metric is macro-F1 rather than accuracy
+([D-PREG1-009](#d-preg1-009--the-final-pre-g1-probe-protocol)). The exclusion
+does not move the class balance the metric choice was made against.
+
+**Derived file.** The exclusion-applied TRAIN csv has SHA-256
+`a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301`. The file is
+**not** in this repository — no corpus file is. The digest is the reproducibility
+handle: regenerating the exclusion from the official TRAIN must reproduce it.
+
+**Evidence status.** The group digest, the member ids, the derived counts and the
+derived file digest were **observed on Colab against the real corpus** and are
+recorded here as external evidence. They were **not** produced by the local
+ML-free suite, which has no access to the corpus and never will.
+
+**Affected.** `unmark/evaluation/preg1_protocol.py`
+(`CONFLICTING_GROUP_POLICY`, `OBSERVED_CONFLICTING_GROUPS`,
+`DERIVED_TRAIN_SIZE`, `DERIVED_TRAIN_LABEL_COUNTS`,
+`DERIVED_TRAIN_CSV_SHA256`; protocol version `preg1-protocol-v3` ->
+`preg1-protocol-v4`), `tests/test_preg1_profiling.py`.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — the proposal does not legislate corpus-level annotation conflicts; this discharges a contract the repository already carried. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-PREG1-012 — channel densities are measured per unit, at §4.3 granularity
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION**, completing the Audit-021 profiler |
+| **Owner** | pre-G1 |
+
+**The gap.** The Audit-021 profiler counted **examples** that carry an observed
+mark. That answers "how many sentences have any diacritic at all", which is a
+much weaker question than the one the design rests on. A corpus where every
+sentence carries one mark and a corpus where every sentence is fully marked are
+indistinguishable under an example-level counter, yet they are completely
+different inputs to a tone/letter channel.
+
+**Granularity comes from §4.3, not from convenience.** The proposal fixes it:
+tone is a **syllable** property — one syllable carries exactly one tone — while
+letter diacritics are a **character** property, and one syllable may carry
+several at once on different characters. The denominators follow:
+
+| Channel | Denominator | Numerator |
+|---|---|---|
+| tone | syllables with `Eligibility.VIETNAMESE_CANDIDATE` | those whose `ObservedTone` is not `UNMARKED` |
+| letter | character units whose `LetterDiacritic` is **not `NA`** | those whose `LetterDiacritic` is neither `NA` nor `NONE` |
+
+**`NA` is not folded into `NONE`.** §4.3 keeps them distinct and so does the
+profiler. `NONE` means a letter that *could* carry a Vietnamese letter diacritic
+and does not; `NA` means the channel does not apply at all — digits,
+punctuation, whitespace, symbols. Counting `NA` in the denominator would deflate
+every letter density by the corpus's punctuation and digit rate, which on a
+student-feedback corpus is not a small number.
+
+**Unresolved eligibility reports `null`, never `0`.** The tone denominator needs
+the B3A syllable inventory. Without it every syllable is `UNDECIDED`, so
+`observed_tone_unit_density` returns `None` and serialises as JSON `null` —
+following the same fail-visible rule B2 applies through
+`EligibilityPolicy.UNRESOLVED`. A tone density of `0.0` is a *finding*; a
+missing inventory is a *defect*, and the artifact must not let the second
+impersonate the first. The letter density does not depend on the inventory and
+stays defined.
+
+**Aggregation.** A split density is `sum(numerators) / sum(denominators)`, not
+the mean of per-example rates — the latter would weight a three-word sentence
+equally with a forty-word one.
+
+**Example-level counters are retained.** `with_observed_tone` and
+`with_observed_letter` still mean what they meant. The unit densities are added
+beside them, not substituted for them, so no earlier artifact is reinterpreted.
+
+**Affected.** `unmark/evaluation/profiling.py` (schema `preg1-profile-v1` ->
+`preg1-profile-v2`, `UNIT_DENSITY_SEMANTICS`, four counters and
+`eligibility_resolved` on `OrthographyObservation` and `SplitProfile`, two
+density properties, a `classifier` parameter on `observe_orthography` and
+`profile_split`), `scripts/preg1_dataset_profile.py`,
+`tests/test_preg1_profiling.py`.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.3 already fixes the granularity; the profiler was measuring at the wrong one. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-PREG1-013 — UNK counts are attributed to a pathway
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | pre-G1 |
+
+**The defect.** The token profile emitted a single `unk_token_count`. The
+accumulator sat inside a loop running over **both** the canonical and the
+base-only surface, so the number was a Vanilla + Base-only **sum** with no
+attribution. The real run reported `unk_token_count = 4`, which is consistent
+with four unknown pieces in Vanilla and none in Base-only, none in Vanilla and
+four in Base-only, or any split between them.
+
+**Why that matters here specifically.** The question a two-pathway token profile
+exists to answer is whether stripping marks pushes text *out* of the tokenizer's
+vocabulary — whether `b(x)` is worse-covered than `x`. A summed counter cannot
+answer it in either direction.
+
+**The repair.** `vanilla_unk_token_count` and `base_only_unk_token_count` are
+reported separately; `total_unk_token_count` is retained as an explicitly named
+aggregate. **Tokenization itself is unchanged** — this is a reporting repair, and
+the tests pin that the tokenizer still sees exactly the canonical surface
+followed by the base surface and nothing else.
+
+**Status of the pre-patch number.** The reported `4` was produced by the old
+code and **cannot** be retroactively attributed. It is not reinterpreted; the
+pathway split requires a rerun.
+
+**Affected.** `scripts/preg1_dataset_profile.py`,
+`tests/test_preg1_profiling.py`.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — reporting defect. PDF stale: **YES** (unchanged) |

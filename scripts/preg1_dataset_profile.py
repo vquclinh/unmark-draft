@@ -74,24 +74,44 @@ def read_split(path: Path, text_column: str, label_column: str, id_column: str |
     return rows
 
 
-def tokenize_lengths(tokenizer, texts: Sequence[str]) -> tuple[list[int], list[int], int]:
-    """Vanilla and Base-only token lengths, including special tokens.
+def tokenize_lengths(tokenizer, texts: Sequence[str]) -> dict[str, Any]:
+    """Vanilla and Base-only token lengths and UNK counts, kept **separate**.
 
     Lengths use `build_inputs_with_special_tokens`, so they match the convention
     the future evaluator uses rather than a bare piece count.
+
+    **UNK counts are per pathway.** An earlier version accumulated one counter
+    across both, which made the reported total unattributable: a single number
+    could not say whether stripping to `b(x)` introduced unknown pieces, which is
+    exactly the question a two-pathway profile is asked. Tokenization itself is
+    unchanged.
     """
-    vanilla, base, unk = [], [], 0
+    vanilla, base = [], []
+    vanilla_unk = base_unk = 0
     unk_id = getattr(tokenizer, "unk_token_id", None)
     for text in texts:
         canonical = canon(text)
         base_text = decompose(canonical).base_text
-        for surface, sink in ((canonical, vanilla), (base_text, base)):
+        for surface, sink, is_vanilla in (
+            (canonical, vanilla, True),
+            (base_text, base, False),
+        ):
             pieces = tokenizer.tokenize(surface)
             ids = tokenizer.convert_tokens_to_ids(pieces)
             sink.append(len(tokenizer.build_inputs_with_special_tokens(ids)))
             if unk_id is not None:
-                unk += sum(1 for i in ids if i == unk_id)
-    return vanilla, base, unk
+                count = sum(1 for i in ids if i == unk_id)
+                if is_vanilla:
+                    vanilla_unk += count
+                else:
+                    base_unk += count
+    return {
+        "vanilla_lengths": vanilla,
+        "base_only_lengths": base,
+        "vanilla_unk_token_count": vanilla_unk,
+        "base_only_unk_token_count": base_unk,
+        "total_unk_token_count": vanilla_unk + base_unk,
+    }
 
 
 def render_report(config: dict[str, Any], summary: dict[str, Any]) -> str:
@@ -129,6 +149,25 @@ def render_report(config: dict[str, Any], summary: dict[str, Any]) -> str:
             f"{profile['canon_changed']} | {profile['canonical_duplicate_texts']} | "
             f"{profile['conflicting_label_groups']} |"
         )
+    a("")
+    a("### Unit-level channel densities (§4.3 granularity)")
+    a("")
+    a("| Split | observed tone syllables / eligible | density | observed letter units / applicable | density |")
+    a("|---|---|---|---|---|")
+    for name, profile in summary.get("splits", {}).items():
+        tone_density = profile.get("observed_tone_unit_density")
+        letter_density = profile.get("observed_letter_unit_density")
+        a(
+            f"| `{name}` | {profile['tone_observed_syllables']} / "
+            f"{profile['tone_eligible_syllables']} | "
+            f"{'unresolved' if tone_density is None else f'{tone_density:.4f}'} | "
+            f"{profile['letter_observed_units']} / {profile['letter_eligible_units']} | "
+            f"{'n/a' if letter_density is None else f'{letter_density:.4f}'} |"
+        )
+    a("")
+    a("Tone denominator = syllables with Eligibility `VIETNAMESE_CANDIDATE`.")
+    a("Letter denominator = character units whose `LetterDiacritic` is **not NA**;")
+    a("`NONE` is included, `NA` is not.")
     a("")
     a("`base-equivalent` = **no observed mark**. It is *not* a missing-diacritic")
     a("rate: unmarked Vietnamese is observationally ambiguous (§4.3).")
@@ -201,9 +240,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         name: read_split(path, args.text_column, args.label_column, args.id_column)
         for name, path in splits.items()
     }
+    # The B3A inventory resolves syllable eligibility, which is the DENOMINATOR
+    # of the tone-channel density (§4.3: tone is a syllable property). Without it
+    # every syllable is UNDECIDED and the density is reported unresolved rather
+    # than silently computed.
+    classifier = None
+    eligibility_resolved = False
+    try:
+        from unmark.linguistics import make_classifier, try_load_inventory
+
+        inventory = try_load_inventory()
+        if inventory is not None:
+            classifier = make_classifier(inventory)
+            eligibility_resolved = True
+    except Exception:  # pragma: no cover - inventory absence is reported, not fatal
+        classifier = None
+
     profiles, indexes = {}, {}
     for name, rows in records.items():
-        profile, index = profile_split(name, rows)
+        profile, index = profile_split(name, rows, classifier)
         profiles[name] = profile
         indexes[name] = index
     duplicates = analyse_duplicates(indexes)
@@ -238,6 +293,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "provenance": provenance.to_dict(),
         "splits": {name: p.to_dict() for name, p in profiles.items()},
         "duplicates": duplicates.to_dict(),
+        "eligibility_resolved": eligibility_resolved,
+        "eligibility_note": (
+            "tone-density denominator requires the B3A syllable inventory; "
+            "unresolved densities are reported as null, never as zero"
+        ),
         "official_test_sealed": True,
         "official_test_used_for_protocol_decisions": False,
         "head_training_performed": False,
@@ -263,7 +323,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # TRAIN ONLY. The official test split is never tokenized for a protocol
         # decision -- max_length is selected from train coverage alone.
         texts = [text for _, text, _ in records["train"]]
-        vanilla, base, unk = tokenize_lengths(tokenizer, texts)
+        measured = tokenize_lengths(tokenizer, texts)
+        vanilla = measured["vanilla_lengths"]
+        base = measured["base_only_lengths"]
         deltas = [b - v for v, b in zip(vanilla, base)]
         coverage = length_coverage(vanilla, base)
         at_fixed = next(c for c in coverage if c.threshold == FIXED_MAX_LENGTH)
@@ -275,7 +337,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "base_minus_vanilla_delta": distribution(deltas),
             "length_changed_count": sum(1 for d in deltas if d != 0),
             "length_changed_fraction": sum(1 for d in deltas if d != 0) / len(deltas),
-            "unk_token_count": unk,
+            "vanilla_unk_token_count": measured["vanilla_unk_token_count"],
+            "base_only_unk_token_count": measured["base_only_unk_token_count"],
+            "total_unk_token_count": measured["total_unk_token_count"],
+            "unk_count_is_per_pathway": True,
             "coverage": [c.to_dict() for c in coverage],
         }
         # max_length is FIXED at 256 (D-PREG1-008b). The statistics above are

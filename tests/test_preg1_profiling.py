@@ -7,6 +7,8 @@ read, no tokenizer is loaded, and nothing trains.
 from __future__ import annotations
 
 import ast
+import importlib.util
+import json
 import pathlib
 
 import pytest
@@ -72,10 +74,17 @@ from unmark.evaluation.preg1_protocol import (
     WARMUP_STEPS,
     WEIGHT_DECAY,
     Preg1Pooling,
+    CONFLICTING_GROUP_EXCLUSION_SCOPE,
+    CONFLICTING_GROUP_POLICY,
+    DERIVED_TRAIN_CSV_SHA256,
+    DERIVED_TRAIN_LABEL_COUNTS,
+    DERIVED_TRAIN_SIZE,
+    OBSERVED_CONFLICTING_GROUPS,
     Preg1Protocol,
 )
 from unmark.evaluation.profiling import (
     FIXED_MAX_LENGTH,
+    UNIT_DENSITY_SEMANTICS,
     LENGTH_REPORT_THRESHOLDS,
     LICENSE_NOT_ESTABLISHED,
     SEED_DERIVATION_RULE,
@@ -91,6 +100,7 @@ from unmark.evaluation.profiling import (
     profile_split,
     stratified_group_split,
 )
+from unmark.orthography import Eligibility
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 MODULES = (
@@ -967,10 +977,370 @@ def test_reproducibility_block_serialises():
 
 
 def test_protocol_version_records_the_reproducibility_lock():
-    assert Preg1Protocol().version == "preg1-protocol-v3"
+    assert Preg1Protocol().version == "preg1-protocol-v4"
 
 
 def test_reproducibility_lock_is_ml_free():
     """The contract is representation only; no torch is imported to express it."""
     assert not imported("unmark/evaluation/preg1_protocol.py") & {"torch"}
     assert HEAD_INIT_WEIGHT.startswith("torch.nn.init")  # a NAME, not a call
+
+
+# ---------------------------------------------------------------------------
+# Audit 022 Gap 1: unit-level channel densities (§4.3 granularity)
+# ---------------------------------------------------------------------------
+# Deterministic and ML-free. The classifier is a stub rather than the real B3A
+# inventory so the expected counts are fixed by the test, not by a data file
+# that may be revised.
+_VIETNAMESE_STUB = {"Toi", "hoc", "toi", "Hoc", "an", "com"}
+
+
+def _stub_classifier(base_syllable: str) -> Eligibility:
+    """`str -> Eligibility`, applied by `decompose` to each syllable's base form."""
+    if base_syllable in _VIETNAMESE_STUB:
+        return Eligibility.VIETNAMESE_CANDIDATE
+    return Eligibility.NOT_APPLICABLE
+
+
+def test_tone_density_denominator_is_eligible_syllables_not_units():
+    """§4.3: tone is a syllable property, so the denominator counts syllables."""
+    obs = observe_orthography("Tôi học 2026.", _stub_classifier)
+    # "Tôi" and "học" are candidates; "2026" is not a syllable candidate.
+    assert obs.tone_eligible_syllables == 2
+    # Only "học" carries a readable tone (NANG). The circumflex on "ô" is a
+    # LETTER diacritic and must not be counted in the tone channel.
+    assert obs.tone_observed_syllables == 1
+    assert obs.eligibility_resolved is True
+
+
+def test_letter_density_excludes_na_from_the_denominator():
+    """NA is not NONE: digits/punctuation/space cannot carry a letter mark."""
+    obs = observe_orthography("Tôi học 2026.", _stub_classifier)
+    # T o i h o c -> 6 applicable units. The space, "2026" and "." are NA.
+    assert obs.letter_eligible_units == 6
+    # Only "ô" (CIRCUMFLEX). "ọ" carries a TONE; its letter diacritic is NONE.
+    assert obs.letter_observed_units == 1
+
+
+def test_letter_denominator_counts_none_but_not_na():
+    """NONE is inside the denominator; folding NA into it would deflate density."""
+    letters = observe_orthography("abc", _stub_classifier)
+    assert letters.letter_eligible_units == 3  # all NONE, all applicable
+    assert letters.letter_observed_units == 0
+
+    punctuation = observe_orthography("123 !?", _stub_classifier)
+    assert punctuation.letter_eligible_units == 0  # every unit is NA
+    assert punctuation.letter_observed_units == 0
+
+
+def test_unmarked_eligible_syllable_counts_in_denominator_only():
+    """An unmarked Vietnamese syllable is eligible but not observed."""
+    obs = observe_orthography("Toi hoc", _stub_classifier)
+    assert obs.tone_eligible_syllables == 2
+    assert obs.tone_observed_syllables == 0
+    assert obs.letter_eligible_units == 6
+    assert obs.letter_observed_units == 0
+
+
+def test_ineligible_syllable_is_excluded_from_the_tone_denominator():
+    """Non-Vietnamese tokens do not dilute the tone denominator."""
+    obs = observe_orthography("hello world hoc", _stub_classifier)
+    assert obs.tone_eligible_syllables == 1  # only "hoc"
+    # ... while the LETTER denominator is orthographic and counts every letter.
+    assert obs.letter_eligible_units == len("helloworldhoc")
+
+
+def test_mixed_example_separates_the_two_channels():
+    """A syllable can be tone-marked, letter-marked, both, or neither."""
+    obs = observe_orthography("Tôi ăn cơm hoc", _stub_classifier)
+    #   Tôi  -> letter CIRCUMFLEX, no tone
+    #   ăn   -> letter BREVE, no tone
+    #   cơm  -> letter HORN, no tone
+    #   hoc  -> neither
+    # All four are eligible, so a letter-marked corpus can still have a tone
+    # density of exactly zero. The channels are measured independently.
+    assert obs.tone_eligible_syllables == 4
+    assert obs.tone_observed_syllables == 0
+    assert obs.letter_observed_units == 3  # ô, ă, ơ
+    assert obs.units_with_observed_letter == 3
+    assert obs.units_with_observed_tone == 0
+
+
+def test_densities_are_none_not_zero_when_eligibility_is_unresolved():
+    """A missing inventory must fail visibly, not report a tone density of 0."""
+    profile, _ = profile_split("t", [("1", "Tôi học", 0)], None)
+    assert profile.eligibility_resolved is False
+    assert profile.observed_tone_unit_density is None
+    # The letter channel does not depend on the inventory, so it stays defined.
+    assert profile.observed_letter_unit_density is not None
+
+
+def test_empty_split_has_no_density_rather_than_zero():
+    profile, _ = profile_split("t", [], _stub_classifier)
+    assert profile.observed_tone_unit_density is None
+    assert profile.observed_letter_unit_density is None
+
+
+def test_split_with_no_eligible_syllable_has_no_tone_density():
+    profile, _ = profile_split("t", [("1", "hello world", 0)], _stub_classifier)
+    assert profile.tone_eligible_syllables == 0
+    assert profile.observed_tone_unit_density is None
+
+
+def test_densities_aggregate_over_the_split_not_over_examples():
+    """The split density is sum(numerators)/sum(denominators), not a mean of rates."""
+    records = [("1", "Tôi học", 0), ("2", "Toi hoc", 1)]
+    profile, _ = profile_split("t", records, _stub_classifier)
+    assert profile.tone_eligible_syllables == 4
+    assert profile.tone_observed_syllables == 1
+    assert profile.observed_tone_unit_density == pytest.approx(0.25)
+    # A mean of per-example rates would give (0.5 + 0.0)/2 = 0.25 here by
+    # coincidence, so pin the letter channel where the two differ.
+    assert profile.letter_eligible_units == 12
+    assert profile.letter_observed_units == 1
+    assert profile.observed_letter_unit_density == pytest.approx(1 / 12)
+
+
+def test_example_level_counters_are_retained_alongside_unit_densities():
+    """Unit densities ADD to the profile; the example-level counters remain."""
+    profile, _ = profile_split("t", [("1", "Tôi học", 0)], _stub_classifier)
+    assert profile.with_observed_tone == 1
+    assert profile.with_observed_letter == 1
+
+
+def test_density_serialisation_is_json_safe_and_carries_its_semantics():
+    profile, _ = profile_split("t", [("1", "Tôi học", 0)], _stub_classifier)
+    payload = profile.to_dict()
+    for key in (
+        "tone_eligible_syllables",
+        "tone_observed_syllables",
+        "observed_tone_unit_density",
+        "letter_eligible_units",
+        "letter_observed_units",
+        "observed_letter_unit_density",
+        "eligibility_resolved",
+        "unit_density_semantics",
+    ):
+        assert key in payload, key
+    json.dumps(payload)  # no NaN, no enum, no dataclass
+
+
+def test_unresolved_density_serialises_as_null_not_zero():
+    profile, _ = profile_split("t", [("1", "Tôi học", 0)], None)
+    payload = json.loads(json.dumps(profile.to_dict()))
+    assert payload["observed_tone_unit_density"] is None
+
+
+def test_observation_serialisation_exposes_both_numerators_and_denominators():
+    payload = observe_orthography("Tôi học", _stub_classifier).to_dict()
+    assert payload["tone_eligible_syllables"] == 2
+    assert payload["letter_eligible_units"] == 6
+    json.dumps(payload)
+
+
+def test_unit_density_semantics_states_that_na_is_not_none():
+    """The distinction is scientific, not cosmetic: it changes the denominator."""
+    assert "NA is NOT folded into NONE" in UNIT_DENSITY_SEMANTICS
+
+
+def test_profiling_schema_version_was_bumped_for_the_new_fields():
+    source = (REPO / "unmark/evaluation/profiling.py").read_text(encoding="utf-8")
+    assert "preg1-profile-v2" in source
+
+
+# ---------------------------------------------------------------------------
+# Audit 022 Gap 2: UNK counts must be attributable to a pathway
+# ---------------------------------------------------------------------------
+def _load_profile_script():
+    """Import the profiler script as a module. It must not need transformers."""
+    spec = importlib.util.spec_from_file_location(
+        "preg1_dataset_profile", REPO / "scripts/preg1_dataset_profile.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _StubTokenizer:
+    """A whitespace tokenizer with a fixed vocabulary. No model, no download.
+
+    Its vocabulary deliberately knows the **marked** forms and not their base
+    forms, which is the asymmetry a two-pathway UNK count exists to detect.
+    """
+
+    unk_token_id = 3
+
+    def __init__(self, vocabulary):
+        self._vocabulary = {piece: index + 10 for index, piece in enumerate(vocabulary)}
+
+    def tokenize(self, text):
+        return text.split()
+
+    def convert_tokens_to_ids(self, pieces):
+        return [self._vocabulary.get(piece, self.unk_token_id) for piece in pieces]
+
+    def build_inputs_with_special_tokens(self, ids):
+        return [0, *ids, 2]
+
+
+def test_unk_counts_are_reported_per_pathway_not_summed():
+    """One accumulator across both pathways cannot answer the question asked."""
+    module = _load_profile_script()
+    # "học" is in the vocabulary; its base form "hoc" is not.
+    tokenizer = _StubTokenizer(["Tôi", "học", "Toi"])
+    measured = module.tokenize_lengths(tokenizer, ["Tôi học"])
+
+    assert measured["vanilla_unk_token_count"] == 0
+    assert measured["base_only_unk_token_count"] == 1  # "hoc" is unknown
+    assert measured["total_unk_token_count"] == 1
+
+
+def test_unk_attribution_survives_when_only_vanilla_is_unknown():
+    module = _load_profile_script()
+    # The reverse asymmetry: the marked form is unknown, the base form is known.
+    tokenizer = _StubTokenizer(["Toi", "hoc"])
+    measured = module.tokenize_lengths(tokenizer, ["Tôi học"])
+
+    assert measured["vanilla_unk_token_count"] == 2
+    assert measured["base_only_unk_token_count"] == 0
+    # A summed field alone would report 2 for both this case and its mirror.
+    assert measured["total_unk_token_count"] == 2
+
+
+def test_unk_total_is_the_sum_of_the_two_pathways():
+    module = _load_profile_script()
+    tokenizer = _StubTokenizer(["Tôi"])
+    measured = module.tokenize_lengths(tokenizer, ["Tôi học", "Tôi học"])
+    assert (
+        measured["total_unk_token_count"]
+        == measured["vanilla_unk_token_count"] + measured["base_only_unk_token_count"]
+    )
+
+
+def test_pathway_lengths_stay_separate_and_use_special_tokens():
+    module = _load_profile_script()
+    tokenizer = _StubTokenizer(["Tôi", "học"])
+    measured = module.tokenize_lengths(tokenizer, ["Tôi học"])
+    # 2 pieces + <s> + </s>: lengths follow the evaluator's convention.
+    assert measured["vanilla_lengths"] == [4]
+    assert measured["base_only_lengths"] == [4]
+
+
+def test_tokenize_lengths_does_not_alter_tokenization():
+    """Gap 2 was a REPORTING repair. The pieces fed to the tokenizer are unchanged."""
+    module = _load_profile_script()
+    seen = []
+
+    class _Recording(_StubTokenizer):
+        def tokenize(self, text):
+            seen.append(text)
+            return super().tokenize(text)
+
+    module.tokenize_lengths(_Recording(["Tôi"]), ["Tôi học"])
+    assert seen == ["Tôi học", "Toi hoc"]  # canonical, then base — nothing else
+
+
+def test_no_ambiguous_summed_unk_field_remains():
+    """The old single `unk_token_count` key must not survive anywhere."""
+    source = (REPO / "scripts/preg1_dataset_profile.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    keys = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "unk_token_count" not in keys
+    assert "vanilla_unk_token_count" in keys
+    assert "base_only_unk_token_count" in keys
+
+
+def test_profiler_script_passes_the_eligibility_classifier_to_profile_split():
+    """Without a classifier the tone denominator is silently unresolved."""
+    source = (REPO / "scripts/preg1_dataset_profile.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "profile_split"
+    ]
+    assert calls, "the script must profile its splits"
+    for call in calls:
+        assert len(call.args) + len(call.keywords) >= 3, ast.dump(call)
+
+
+def test_profiler_script_records_whether_eligibility_was_resolved():
+    source = (REPO / "scripts/preg1_dataset_profile.py").read_text(encoding="utf-8")
+    assert "eligibility_resolved" in source
+
+
+# ---------------------------------------------------------------------------
+# Audit 022: the conflicting canonical group, resolved against real data
+# ---------------------------------------------------------------------------
+def test_conflicting_group_policy_drops_the_whole_group():
+    """Keeping a member would require picking a gold label with no evidence."""
+    assert CONFLICTING_GROUP_POLICY == "EXCLUDE_ENTIRE_CONFLICTING_CANONICAL_GROUP"
+
+
+def test_derived_train_size_follows_from_the_observed_group():
+    from unmark.evaluation.preg1_protocol import PUBLISHED_SPLIT_SIZES
+
+    excluded = sum(len(ids) for ids in OBSERVED_CONFLICTING_GROUPS.values())
+    assert DERIVED_TRAIN_SIZE == PUBLISHED_SPLIT_SIZES["train"] - excluded
+
+
+def test_derived_label_counts_sum_to_the_derived_size():
+    assert sum(DERIVED_TRAIN_LABEL_COUNTS.values()) == DERIVED_TRAIN_SIZE
+
+
+def test_derived_label_counts_only_shrink_and_never_grow():
+    """An exclusion cannot add examples. Guards a transcription slip."""
+    from unmark.evaluation.preg1_protocol import PUBLISHED_LABEL_COUNTS
+
+    for label, count in DERIVED_TRAIN_LABEL_COUNTS.items():
+        assert count <= PUBLISHED_LABEL_COUNTS["train"][label], label
+
+
+def test_minority_class_is_untouched_by_the_exclusion():
+    """`neutral` is ~4% of train and drives the macro-F1 choice."""
+    from unmark.evaluation.preg1_protocol import PUBLISHED_LABEL_COUNTS
+
+    assert DERIVED_TRAIN_LABEL_COUNTS["neutral"] == PUBLISHED_LABEL_COUNTS["train"]["neutral"]
+
+
+def test_observed_conflicting_groups_record_hashes_and_ids_only():
+    """Committed evidence must not embed corpus text."""
+    for digest, ids in OBSERVED_CONFLICTING_GROUPS.items():
+        assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+        assert len(ids) >= 2
+        for sample_id in ids:
+            assert sample_id.startswith("train:")
+
+
+def test_no_raw_corpus_sentence_is_committed_with_the_group_record():
+    """A structural check: the protocol module holds no Vietnamese-marked text."""
+    source = (REPO / "unmark/evaluation/preg1_protocol.py").read_text(encoding="utf-8")
+    marked = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+    assert not (set(source.lower()) & marked)
+
+
+def test_exclusion_scope_does_not_touch_sealed_splits():
+    assert "validation" in CONFLICTING_GROUP_EXCLUSION_SCOPE
+    assert "test" in CONFLICTING_GROUP_EXCLUSION_SCOPE
+    assert "protocol-train" in CONFLICTING_GROUP_EXCLUSION_SCOPE
+
+
+def test_derived_train_csv_is_referenced_by_digest_not_committed():
+    assert len(DERIVED_TRAIN_CSV_SHA256) == 64
+    assert not (REPO / "data").exists() or not list(
+        (REPO / "data").rglob("*vsfc*")
+    ), "corpus files must not be committed"
+
+
+def test_exclusion_policy_reaches_the_run_manifest():
+    manifest = Preg1Protocol().to_dict()
+    flat = json.dumps(manifest)
+    assert CONFLICTING_GROUP_POLICY in flat
+    assert DERIVED_TRAIN_CSV_SHA256 in flat
+    assert str(DERIVED_TRAIN_SIZE) in flat
