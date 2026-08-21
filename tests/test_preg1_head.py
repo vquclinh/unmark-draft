@@ -685,14 +685,28 @@ def test_train_head_runs_every_epoch_on_correctly_bound_representations():
 
 
 @requires_torch
-def test_train_head_refuses_non_fp32_representations():
-    import torch
-    from unmark.evaluation.preg1_head import train_head
+def test_train_head_refuses_a_mutually_consistent_non_fp32_pair():
+    """The FP32 rule, isolated from the geometry-agreement rule.
 
-    key = sample_key(role=Preg1Role.PROTOCOL_TRAIN, count=10, hidden_size=4,
-                     dtype="torch.float64")
-    train = BoundRepresentations(torch.randn(10, 4, dtype=torch.float64), key)
-    dev = real_bound(4, 4, Preg1Role.PROTOCOL_DEV)
+    C24-1-R1 finding 1: the previous fixture made train float64 and dev
+    float32, which trips `require_same_geometry` first — so the test proved the
+    *agreement* rule, not the FP32 rule it claimed. Both sets are now float64
+    and mutually consistent, so geometry agreement passes and the failure can
+    only come from the pre-G1 contract's absolute FP32 requirement.
+    """
+    import torch
+    from unmark.evaluation.preg1_head import require_training_roles, train_head
+
+    train_key = sample_key(role=Preg1Role.PROTOCOL_TRAIN, count=10, hidden_size=4,
+                           dtype="torch.float64")
+    dev_key = sample_key(role=Preg1Role.PROTOCOL_DEV, count=4, hidden_size=4,
+                         dtype="torch.float64")
+    train = BoundRepresentations(torch.randn(10, 4, dtype=torch.float64), train_key)
+    dev = BoundRepresentations(torch.randn(4, 4, dtype=torch.float64), dev_key)
+
+    # The pair agrees on geometry — this must NOT raise, or the test is not isolated.
+    require_training_roles(train, dev)
+
     with pytest.raises(EvaluationContractViolation, match="FP32"):
         train_head(train, [0] * 10, dev, [0] * 4, learning_rate=1e-3, seed=1, epochs=1)
 
@@ -967,7 +981,15 @@ def test_unparseable_cache_metadata_fails(tmp_path):
 
 
 @requires_torch
-def test_cache_saves_and_reloads_under_matching_metadata(tmp_path):
+def test_cache_round_trip_preserves_values_and_stays_bound(tmp_path):
+    """Round-trip fidelity, through the **bound** API.
+
+    C24-1-R1 finding 2: this previously read
+    `torch.equal(cache.load(...), tensor)`, which encoded the pre-Revision-1
+    bare-Tensor return. `load` deliberately returns `BoundRepresentations` now,
+    so that assertion was stale, not a defect. Reverting the API would undo the
+    provenance binding, so the test moved instead.
+    """
     import torch
 
     cache = RepresentationCache(tmp_path / "c")
@@ -975,7 +997,18 @@ def test_cache_saves_and_reloads_under_matching_metadata(tmp_path):
     tensor = torch.randn(key.count, key.hidden_size)
     cache.save(key, tensor)
     assert cache.exists()
-    assert torch.equal(cache.load(sample_key()), tensor)
+
+    loaded = cache.load(sample_key())
+    assert not isinstance(loaded, torch.Tensor), "no bare tensor may leave the cache"
+    assert isinstance(loaded, BoundRepresentations)
+    assert loaded.key == key
+    assert loaded.pathway is key.pathway
+    assert loaded.key.source_identity == key.source_identity
+    assert loaded.key.ordered_id_digest == key.ordered_id_digest
+    assert torch.equal(loaded.values, tensor)
+
+    # A second load is equally bound -- the binding is not a one-shot wrapper.
+    assert torch.equal(cache.load(sample_key()).values, tensor)
 
 
 @requires_torch
@@ -1141,9 +1174,13 @@ def test_training_refuses_a_pathway_mismatch():
 @pytest.mark.parametrize(
     "override", [{"model_revision": "0" * 40}, {"max_length": 128},
                  {"pooling": "MEAN"}, {"tokenizer_id": "other/model"},
-                 {"padding": "longest"}, {"truncation": False}]
+                 {"padding": "longest"}, {"truncation": False},
+                 {"dtype": "torch.float64"}]
 )
 def test_training_refuses_representation_sets_from_different_geometry(override):
+    """Includes a train/dev **dtype** mismatch, which must fail closed as a
+    geometry disagreement — the property the old FP32 test was accidentally
+    proving. Both rules now have their own test."""
     with pytest.raises(EvaluationContractViolation, match="disagree on"):
         require_training_roles(
             bound(role=Preg1Role.PROTOCOL_TRAIN),
@@ -1274,3 +1311,29 @@ def test_score_measurement_refuses_protocol_dev_features():
     head = build_head(6, seed=1)
     with pytest.raises(SplitLeakage, match="primary paired measurement"):
         score_measurement(head, real_bound(9, 6, Preg1Role.PROTOCOL_DEV), [0] * 9)
+
+
+def test_cache_load_is_annotated_to_return_bound_representations():
+    """Structural guard against reverting the provenance binding.
+
+    C24-1-R1 finding 2 was a stale test, not a defect — but the tempting "fix"
+    was to make `load` return a bare tensor again, which would undo Revision 1.
+    This runs without torch, so the regression is caught in the local suite.
+    """
+    import ast
+
+    tree = ast.parse((REPO / "unmark/evaluation/preg1_head.py").read_text(encoding="utf-8"))
+    loads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "load"
+    ]
+    assert len(loads) == 1
+    assert ast.unparse(loads[0].returns) == "BoundRepresentations"
+    returns = [n for n in ast.walk(loads[0]) if isinstance(n, ast.Return)]
+    assert returns and all(
+        isinstance(r.value, ast.Call)
+        and isinstance(r.value.func, ast.Name)
+        and r.value.func.id == "BoundRepresentations"
+        for r in returns
+    )

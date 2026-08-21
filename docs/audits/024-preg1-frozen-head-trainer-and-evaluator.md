@@ -5,10 +5,12 @@
 | **Audit id** | 024 |
 | **Created (UTC)** | 2026-08-21 |
 | **Baseline HEAD** | `57f70e373d46e919b754e24dd875f6d39e01e35c` |
-| **Scope** | Implement the frozen-encoder linear-head trainer, evaluator, LR selector, paired measurement structure and representation cache. **Run none of it.** |
+| **Scope** | Implement the frozen-encoder linear-head trainer, evaluator, LR selector, paired measurement structure and representation cache. **Run no scientific diagnostic with it.** (Its *test suite* has since executed on GPU — §P.) |
 | **Predecessors** | [021](021-pre-g1-dataset-profile-and-protocol-precommit.md), [022](022-uit-vsfc-real-data-profile-integrity-closure.md), [023](023-pre-g1-internal-split-materializer-and-fail-closed-contract.md) |
 | **Phase** | pre-G1 |
 | **Type** | **Implementation + audit.** No real training, no LR sweep, no downstream score, no model download |
+| **Revision 2a** | **2026-08-21** — **temporal / evidence wording repair.** §A still said "Nothing was run" after C24-1-R1 had executed 134 tests on GPU; §I defined PENDING as "has not run anywhere" when **26 of the 28** torch-gated tests had executed and passed; §E called unexecuted tests "tested". All corrected. **No label was upgraded** — Q4 and Q5 remain PENDING, now for the accurate reason (a passing test inside a failing run is not *accepted* evidence) rather than the false one (never executed). **Documentation only.** |
+| **Revision 2** | **2026-08-21** — **first real Torch execution (C24-1-R1) and its two failures.** At HEAD `b43cca829ca163b9d6a818c980dfbf6fdaea651f` the targeted suite ran on GPU Colab: **132 passed, 2 failed, 0 skipped**. Both failures were in **tests**, not in the implementation — one a test-isolation defect, one a stale assertion left over from the Revision-1 API strengthening (§P). Both repaired; **no implementation line changed**. **C24-1 runtime closure remains PENDING** until a new committed revision executes all 136 tests successfully on Colab. |
 | **Revision 1b** | **2026-08-21** — **status-block consistency repair.** The final status block still asserted `PAIRED INITIALISATION: BIT-IDENTICAL…`, `ENCODER: FROZEN / EVAL / NO_GRAD / FP32`, `REPRESENTATION CACHE: FAIL-CLOSED…` and `EPOCHS: 30 / NO EARLY STOPPING` as unqualified facts, contradicting the evidence levels Revision 1a had just written into §§E, F, I and N. All four are now qualified; genuinely local-verified lines are marked `LOCAL-PASS`; §J's coverage list is tagged per group. **Documentation only — no code, test, constant or scientific value changed.** |
 | **Revision 1a** | **2026-08-21** — **status-consistency repair.** §I claimed "each answer was checked by running the code" when two of the seventeen (Q4 paired init, Q5 frozen encoder) rest **only** on torch-gated tests that have never executed; every answer now carries an explicit LOCAL / PARTIAL / PENDING / INSPECTION status. Self-audit rows whose only proof is among the 28 unexecuted tests are corrected to *implementation present; test authored; runtime verification PENDING*. §O replaced with the real five-step sequence. **No code, constant or scientific value changed.** |
 | **Revision 1** | **2026-08-21** — **fail-closed repair + honest test accounting.** (A) The local outcome was summarised as "87 passed" when 21 of those tests are torch-gated and did **not** execute; every such statement is corrected, and the torch-gated tests are now marked **PENDING** rather than passing. (B) Representations were passed as bare tensors beside a free `dev_role` argument, so the role was a *claim about* a tensor rather than a *property of* it — §M admitted this and the audit still answered Q1 with an unqualified "No". Repaired: `BoundRepresentations` carries the tensor with its `RepresentationKey`, the role comes from provenance, and **no role argument exists anywhere to contradict it**. |
@@ -26,29 +28,41 @@ unverified — the torch runtime, the real-model integration and the real-data
 boundary dry-run — and §O sets out the order they must happen in.
 
 The mechanism for the pre-G1 Vanilla-vs-Base-only burden diagnostic exists. Its
-contract logic is verified locally. **Nothing was run.** No learning rate was
-tuned, no head was trained on real data, no score exists, and official TEST was
-not loaded — it is not reachable from this code at all.
+contract logic is verified locally. **No scientific diagnostic execution was
+run.** Precisely: no real-data head training, no LR tuning, no downstream score,
+no real PhoBERT integration smoke, no real-data boundary dry-run, and no Stage-1
+training or HPO. Official TEST was not loaded — it is not reachable from this
+code at all.
+
+**Tests, however, have now run on GPU.** C24-1-R1 (§P) executed the targeted
+suite at HEAD `b43cca82…`: 132 passed, 2 failed, 0 skipped. Saying "nothing was
+run" stopped being true at that moment, and this audit does not say it.
 
 ### Test accounting, stated exactly
 
 | | |
 |---|---|
-| New tests **authored** | **134** |
-| New tests **executed locally** | **106 passed** |
+| New tests **authored** | **136** (134 + 2 added by Revision 2) |
+| New tests **executed locally** | **108 passed** |
 | New tests **skipped locally** (torch absent) | **28 — NOT passed, PENDING** |
-| Full local suite | **2305 passed, 84 skipped** |
+| Full local suite | **2307 passed, 84 skipped** |
 | Baseline at Audit 023 | 2199 passed, 56 skipped |
+| **First Colab Torch run (C24-1-R1)** | **132 passed, 2 FAILED, 0 skipped** — all 134 then-current tests executed; see §P |
 
-**The 28 torch-gated tests have not been executed anywhere.** They are not
-claimed as passing, and this audit stays **provisional with respect to them**.
-They cover head initialisation, the optimiser parameter groups, frozen-encoder
-extraction, the cache round-trip and the end-to-end training path — including
-the paired-initialisation guarantee, which is among the load-bearing claims
-here. Colab verification will revise this audit **in place**.
+**The 28 torch-gated tests are not claimed as passing at closure.** C24-1-R1
+executed all of them: **26 passed and 2 failed**, and those 2 are now repaired
+and have not re-run. The other 26 — head initialisation, the optimiser parameter
+groups, frozen-encoder extraction, most of the cache path and the end-to-end
+training path, **including the paired-initialisation guarantee** — passed on GPU
+and were not modified afterwards.
 
-This is not a failure of the milestone. It is where the ML-free local
-environment stops.
+**That is evidence, and it is not closure.** A test that passes inside a run that
+fails as a whole, at a HEAD whose test file has since changed, has not been
+accepted. Closure requires **136 passed / 0 failed / 0 skipped on a new committed
+revision**, and this audit stays provisional until then.
+
+This is not a failure of the milestone. It is where the ML-free local environment
+stops and the Colab gate begins.
 
 **No new scientific decision was created**, and §L explains why none is
 warranted — including for the Revision-1 repair, which makes the implementation
@@ -100,7 +114,7 @@ underscore-joined compounds a segmenter would produce.
 |---|---|
 | `unmark/evaluation/preg1_head.py` | the diagnostic: roles, membership guards, representation cache, frozen extraction, head, optimiser, trainer, checkpoint selector, LR selector, paired report |
 | `scripts/preg1_head_diagnostic.py` | Colab CLI — `tune` and `measure` subcommands |
-| `tests/test_preg1_head.py` | 134 tests (106 pass locally, 28 torch-gated and pending) |
+| `tests/test_preg1_head.py` | **136** tests (108 pass locally, 28 torch-gated and pending) |
 | `unmark/evaluation/pathways.py` | **one-line change**: `encode_split` gained an explicit `padding` parameter, default unchanged |
 
 ### Reuse rather than a parallel protocol
@@ -208,7 +222,9 @@ that.
 ## E. DETERMINISM — STATED PRECISELY
 
 **Intended, with evidence status per property** — the torch-dependent ones are
-implemented and tested, but those tests have **not executed**:
+implemented and **covered by authored tests, which have not been accepted at
+closure**: they executed inside C24-1-R1, which failed as a whole (§P), so no
+committed revision has yet passed 136/0/0:
 
 | Property | How | Evidence |
 |---|---|---|
@@ -222,8 +238,9 @@ implemented and tested, but those tests have **not executed**:
 | no dependence on mapping insertion order | both selectors sort on **content**; tested with reversed inputs | **LOCAL** |
 
 **The three head-initialisation rows are the ones that matter most and the ones
-still unproven.** They are pure torch, so no amount of duck-typing moves them
-into the local suite.
+not yet closed.** They are pure torch, so no amount of duck-typing moves them
+into the local suite. Their tests did execute and pass in C24-1-R1; what is
+missing is a clean run on a committed revision, not a first execution.
 
 **Not guaranteed, and not claimed:** bitwise identity of trained parameters or
 scores across different hardware, CUDA/cuBLAS versions or PyTorch builds.
@@ -309,7 +326,7 @@ interchangeable:
 |---|---|
 | **LOCAL** | proved by torch-free tests that **executed** in this environment |
 | **PARTIAL** | the guard logic executed locally; the torch runtime path around it is **authored but unexecuted** |
-| **PENDING** | the only executable proof is torch-gated and **has not run anywhere** |
+| **PENDING** | the only executable proof is torch-gated and has **not been accepted at closure**: either it has never executed, or it executed inside a run that failed as a whole (C24-1-R1) and so has not been confirmed on a committed revision that passes 136/0/0 |
 | **INSPECTION** | established by reading or grepping the code, with no executable proof |
 
 An earlier revision introduced this table with "each answer was checked by
@@ -321,8 +338,8 @@ distinction is exactly what an audit is for.
 | 1 | Can official validation influence LR selection in any code path? | **No, on the supported path — and now for a reason that holds.** *(Revision 1: the earlier "No" was not justified; see §D.)* The role is read from the representation's `RepresentationKey`; `train_head` has **no role parameter** to override it; `require_training_roles` demands `PROTOCOL_DEV`; `HeadRun.scored_on` records what was used; `LrCandidate` re-checks it; a contradictory key is rejected at construction. | **LOCAL** — the binding guards, the signature check and both selection layers are torch-free and executed |
 | 2 | Can official TEST influence anything? | **No**, precisely: (a) `Preg1Role` has no `OFFICIAL_TEST` member, so it is unnameable in any signature; (b) the CLI exposes no test flag; (c) representations carry a validated role and source identity, so a supported-path reinterpretation fails closed. **Not claimed:** protection against deliberate tampering outside the validated boundary — someone who fabricates a key *and* a matching tensor is beyond what any in-process check can detect. | **LOCAL** — enum membership and CLI-AST tests executed |
 | 3 | Can Base-only influence primary LR selection? | **No.** `LrCandidate` raises `SplitLeakage` on any non-VANILLA run; `FrozenLearningRate` refuses `selected_on != VANILLA`. | **LOCAL** |
-| 4 | Can the arms start from different parameters for the same paired seed? | **The implementation reseeds from the seed immediately before initialising, so it should not** — but this is **not yet verified at runtime**. `test_paired_seed_gives_identical_starts_for_both_pathways` (which advances the global RNG by 1000 draws between the arms) is **authored and torch-gated; it has not executed anywhere**. | **PENDING** — one of the 28 |
-| 5 | Can the encoder receive gradients or leave eval mode? | **The implementation checks every parameter and the mode before extraction, runs under `no_grad` and returns a detached FP32 tensor** — but this is **not yet verified at runtime**. The four frozen-encoder tests and the real-backward test are **authored and torch-gated; none has executed**. | **PENDING** — five of the 28 |
+| 4 | Can the arms start from different parameters for the same paired seed? | **The implementation reseeds from the seed immediately before initialising.** `test_paired_seed_gives_identical_starts_for_both_pathways` (which advances the global RNG by 1000 draws between the arms) **executed on GPU in C24-1-R1 and passed**, and it was not modified afterwards. **The label stays PENDING**, deliberately: C24-1-R1 failed as a whole, and closure requires 136/0/0 on a new committed revision. A passing test inside a failing run is real evidence, not accepted evidence. | **PENDING** — but no longer unexecuted; see §P |
+| 5 | Can the encoder receive gradients or leave eval mode? | **The implementation checks every parameter and the mode before extraction, runs under `no_grad` and returns a detached FP32 tensor.** The four frozen-encoder tests and the real-backward test **all executed on GPU in C24-1-R1 and passed**, and none was modified afterwards. **The label stays PENDING** for the same reason as Q4. | **PENDING** — but no longer unexecuted; see §P |
 | 6 | Can a Vanilla cache be reused as Base-only? | **No.** Pathway is a key field and comparison is exact. | **PARTIAL** — the key-level refusal executed locally; the cache **file** round-trip refusal is torch-gated and pending |
 | 7 | Can stale cache metadata silently pass? | **No.** Every field compared; missing keys, unknown enum values and unparseable JSON all raise. | **LOCAL** for the 14 field-mismatch cases and the malformed-metadata cases; **PENDING** for the on-disk load path |
 | 8 | Can checkpoint tie-breaking depend on iteration accidents? | **No.** `min()` over an explicit key. A scan with `>` keeps the first maximum and `>=` the last — the rule would be decided by iteration order. | **LOCAL** — tested with reversed input |
@@ -344,10 +361,14 @@ on inspection, and 2 are statements about what this task did.
 
 ## J. TESTS
 
-**134 tests** in `tests/test_preg1_head.py`: **106 pass locally**, **28 are
-torch-gated and did not execute** — they are pending Colab verification and are
-**not** counted as passing. No downloads, no network, no GPU, no real UIT-VSFC,
-no real split artifacts.
+**136 tests** in `tests/test_preg1_head.py`: **108 pass locally**, **28 are
+torch-gated and did not execute locally** — pending Colab verification and
+**not** counted as passing. C24-1-R1 (§P) executed the pre-repair versions on
+GPU: 132 passed, 2 failed. The two **repaired** tests have not re-run.
+
+**Locally**: no downloads, no network, no GPU, no real UIT-VSFC, no real split
+artifacts. (C24-1-R1 did use a GPU — on Colab, for the test suite only, with no
+real model and no real corpus.)
 
 Deliberately, **the contract logic is torch-free** — selection rules, membership
 guards, cache provenance, report shape and the boundary checks are pure Python,
@@ -460,13 +481,13 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
    but PhoBERT's actual output object, tokenizer behaviour and `<s>` position
    are exercised only on Colab. Audit 022 is the standing reminder that a real
    run finds things fixtures do not.
-3. **28 of 134 tests have not executed anywhere.** The head init, optimiser
-   groups, frozen-encoder checks, cache round-trip and the end-to-end path are
-   the torch-dependent ones — and they include the paired-initialisation
-   guarantee, among the most load-bearing claims here. They are **written, not
-   verified**. Revision 1 moved as much as possible out of this bucket by making
-   the binding contract duck-typed, but the tensor-level claims genuinely
-   require torch.
+3. **28 of 136 tests are torch-gated and none is accepted at closure.**
+   C24-1-R1 executed all 134 then-current tests: 26 of the 28 passed on GPU, 2
+   failed and are repaired (§P). The tensor-level claims are therefore no longer
+   *unexecuted* — they are *unaccepted*, pending a clean 136/0/0 run on a
+   committed revision. Revision 1 moved as much as possible out of this bucket by
+   making the binding contract duck-typed, but these claims genuinely require
+   torch.
 4. **The precommitted counts from Audit 023 are not re-verified by this module.**
    It trusts the membership files it is given, checking their internal
    consistency and optionally their digests. It does not re-derive the split.
@@ -496,6 +517,19 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
    reader skims first. Three consecutive revisions have now corrected the same
    underlying error in a different location: the fix was applied where I was
    looking, not everywhere the claim lived.
+10. **My tests had two defects that only a real runtime could surface**
+   (Revision 2). One asserted a property its own fixture prevented it from
+   reaching; the other encoded an API I had deliberately changed in the same
+   session. Both would have kept passing locally forever, because locally they
+   never ran. The 28-test gap was not merely an accounting inconvenience — it
+   was hiding two broken tests, which is exactly what a pending bucket is
+   dangerous for.
+11. **I described executed tests as never executed** (Revision 2a). Revision 2
+   recorded "132 passed, 2 failed, 0 skipped" and, in the same document, left §I
+   defining PENDING as "has not run anywhere" and §A saying "Nothing was run".
+   Zero skips means all 134 ran. The correction is not an upgrade — Q4 and Q5
+   stay PENDING — but the *reason* had to change from a falsehood to the truth:
+   a passing test inside a failing run is **unaccepted**, not **unexecuted**.
 
 ---
 
@@ -513,8 +547,8 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 8 | No model or dataset downloaded | **yes** — `.venv` verified ML-free |
 | 9 | Official validation cannot enter selection | **yes** — three layers |
 | 10 | Base-only cannot influence the primary LR | **yes** — two layers |
-| 11 | Paired seeds give identical starts | **implementation present; test authored; runtime verification PENDING** — torch-gated, not executed |
-| 12 | Encoder frozen, eval, `no_grad`, FP32, no gradient path | **implementation present; five tests authored; runtime verification PENDING** — torch-gated, not executed |
+| 11 | Paired seeds give identical starts | **implementation present; test EXECUTED and PASSED on GPU in C24-1-R1; closure still PENDING** — the run failed as a whole |
+| 12 | Encoder frozen, eval, `no_grad`, FP32, no gradient path | **implementation present; all five tests EXECUTED and PASSED on GPU in C24-1-R1; closure still PENDING** — same reason |
 | 13 | Cache fails closed on every provenance field | **yes for the 14 key-field cases** (executed locally); the on-disk load path is **PENDING** |
 | 14 | No raw corpus text in metadata, artifacts or errors | **yes** |
 | 15 | Sample SD, not population | **yes** |
@@ -529,7 +563,7 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 24 | Final Stage-2 pooling | **OPEN** |
 | 25 | Compiled PDF | **STALE** |
 | 26 | No new decision invented | **yes** — §L |
-| 27 | Tests | **2305 passed, 84 skipped** full suite; targeted file **106 passed, 28 skipped** — the skips are **not** counted as passes |
+| 27 | Tests | **2307 passed, 84 skipped** full suite; targeted file **108 passed, 28 skipped** — the skips are **not** counted as passes |
 | 28 | `git diff --check` clean | **yes** |
 | 29 | Everything unstaged | **yes** |
 | 30 | No prohibited git operation | **yes** |
@@ -547,7 +581,7 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 41 | Paired-initialisation contract unchanged | **yes** — `build_head` untouched by Revision 1; its runtime verification is **PENDING** (row 11) |
 | 42 | Official TEST role still absent | **yes** — none added |
 | 43 | Exact local pass/skip accounting stated, skips not reported as passes | **yes** — §A |
-| 44 | Torch runtime verification still **pending** | **yes** — 28 tests |
+| 44 | Torch runtime verification still **pending** | **yes** — closure needs 136/0/0 on a committed revision; C24-1-R1 returned 132/2/0 |
 | | **— Revision 1b —** | |
 | 45 | Status block matches the evidence levels in §§E, F, I, N | **yes** — four unqualified lines corrected, locally-verified lines marked `LOCAL-PASS` |
 | 46 | Q4 and Q5 remain runtime **PENDING** everywhere they appear | **yes** |
@@ -555,6 +589,25 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 48 | Real-model and real-data gates remain **PENDING** | **yes** — §O steps 2 and 3, status block |
 | 49 | No scientific claim upgraded without evidence | **yes** — this pass only ever weakened claims |
 | 50 | No code, test, constant or decision changed | **yes** — documentation only |
+| | **— Revision 2: C24-1-R1 —** | |
+| 51 | C24-1-R1 failure preserved in the audit history, not hidden | **yes** — §P, with HEAD, environment and both test names |
+| 52 | Finding 1 classified after inspecting the code, not from the hypothesis | **yes** — the independent FP32 guard was located in `train_head` before classifying |
+| 53 | Finding 1 **isolated** the FP32 contract rather than weakening the assertion | **yes** — both sets made mutually-consistent float64; the regex is unchanged; the test asserts `require_training_roles` does **not** raise first |
+| 54 | Validation order not reordered to satisfy an error-message match | **yes** — agreement-before-absolute is principled and was left alone |
+| 55 | Train/dev dtype mismatch still fails closed as a geometry mismatch | **yes** — `dtype` added to the parameterised geometry test; **executes locally** |
+| 56 | `cache.load` still returns provenance-bound representations | **yes** — not reverted |
+| 57 | No bare-Tensor cache regression introduced, and one is now caught locally | **yes** — torch-free AST test on `load`'s return annotation and every `return` |
+| 58 | Provenance binding intact; no free role override | **yes** — unchanged |
+| 59 | Zero implementation lines changed by Revision 2 | **yes** — `git diff` on `unmark/` and `scripts/` is empty |
+| 60 | Repaired torch tests **not** described as passing | **yes** — they have run nowhere |
+| 61 | C24-1 runtime closure remains **PENDING** | **yes** — needs 136/0/0 on a new committed revision |
+| | **— Revision 2a —** | |
+| 62 | No false "nothing was run" remains | **yes** — §A, scope row, §I definition and §J corrected |
+| 63 | Unexecuted tests not described as runtime-tested | **yes** — §E now reads "covered by authored tests … not accepted at closure" |
+| 64 | Tests that **did** execute not described as unexecuted | **yes** — 26 of the 28 passed on GPU and the audit says so |
+| 65 | No PENDING label upgraded | **yes** — Q4 and Q5 stay PENDING; only the *reason* changed to the true one |
+| 66 | C24-1-R1 result, classifications and counts unchanged | **yes** — 132/2/0, both classifications, 136/108/28 intact |
+| 67 | No code, test, script, constant or scientific value changed | **yes** — documentation only |
 
 ---
 
@@ -563,12 +616,15 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 **None of these was run in this task.** Steps 1–3 produce no classifier result
 and no score; only step 5 does, and it comes after a separate approval.
 
-### 1. Colab torch-runtime verification
+### 1. Colab torch-runtime verification — **first attempt FAILED (§P)**
 
-Execute **all** tests in `tests/test_preg1_head.py` with torch available, and
-record the **exact** pass/skip accounting. The 28 currently-unexecuted tests must
-actually run. Until they do, Q4 and Q5 stay **PENDING** and the paired-init and
-frozen-encoder guarantees are written, not verified.
+`C24-1-R1` ran at HEAD `b43cca82…` and returned **132 passed, 2 failed, 0
+skipped**. Both failures were test-side and are repaired; **no implementation
+line changed**.
+
+**Re-run is required on a new committed revision**, and must return **136 passed,
+0 failed, 0 skipped**. Until it does, Q4 and Q5 stay **PENDING** and the
+paired-init and frozen-encoder guarantees remain written, not verified.
 
 ### 2. Real PhoBERT-base integration smoke — **no optimizer, no training**
 
@@ -616,6 +672,116 @@ did.
 
 ---
 
+## P. C24-1-R1 — FIRST REAL TORCH EXECUTION, AND ITS TWO FAILURES
+
+**This attempt failed and is recorded, not hidden.** It is the first time any of
+the 28 torch-gated tests executed, and it earned its place in the evidence
+history by finding two real defects — both in the tests.
+
+| | |
+|---|---|
+| **Run id** | `C24-1-R1` |
+| **Execution HEAD** | `b43cca829ca163b9d6a818c980dfbf6fdaea651f` |
+| **Python / torch** | 3.12.13 / 2.11.0+cu128 |
+| **transformers / pytest** | 4.57.6 / 9.1.1 |
+| **CUDA** | available |
+| **GPU** | NVIDIA RTX PRO 6000 Blackwell Server Edition |
+| **Targeted outcome** | **132 passed, 2 failed, 0 skipped** |
+| **Status** | **FAILED — deliberately fail-fast; no closure** |
+
+**Evidence status.** Externally observed on Colab and supplied to this session.
+The run was not reproduced here; the local environment has no torch.
+
+Note what the zero skips mean: with torch present, all 134 tests executed, so
+**the torch-gated bucket is no longer hypothetical** — it runs, and 132 of it
+passed. That is genuinely more than was known before, and it is still not
+closure.
+
+### Failure 1 — `test_train_head_refuses_non_fp32_representations`
+
+**Observed.** Train representations `torch.float64`, dev `torch.float32`. The
+exception raised was
+
+> `representation sets disagree on dtype: 'torch.float64' vs 'torch.float32'`
+
+while the test matched on `"FP32"`.
+
+**Classification: TEST ISOLATION DEFECT.** Not an implementation defect —
+verified by reading `train_head`, which contains an independent and explicit
+FP32 guard *after* role and geometry validation:
+
+```
+require_training_roles(train, dev)          # includes dtype AGREEMENT
+...
+if train_features.dtype is not torch.float32 or dev_features.dtype is not torch.float32:
+    raise EvaluationContractViolation("features must be FP32 (no AMP)")
+```
+
+The fixture violated **two** rules at once — the sets must agree on dtype, and
+the dtype must be FP32 — and the first fired. The test therefore proved the
+agreement rule while claiming to prove the FP32 rule. It could have passed for
+the wrong reason on a different day.
+
+**Repair — the fixture, not the assertion.** Both sets are now **mutually
+consistent float64**, and the repaired test *first asserts that
+`require_training_roles` does **not** raise* before expecting the FP32 refusal.
+That positive assertion is what makes the isolation checkable rather than
+asserted: if a future change made the pair disagree again, the test fails at the
+isolation step instead of silently passing for the old reason.
+
+**The regex was not loosened.** Widening it to accept any dtype-related
+exception would have made the test pass while proving less. **The validation
+order was not changed either**: agreement between the two sets is a precondition
+for comparing either against an absolute contract, so checking it first is
+principled — reordering it to satisfy an error-message match would have been the
+tail wagging the dog.
+
+**Coverage added, not lost.** The property the broken test was accidentally
+proving now has its own home: `dtype` was added to the parameterised
+geometry-mismatch test, so a **train/dev dtype mismatch still fails closed** as a
+geometry disagreement. That test is torch-free and **executes locally**.
+
+### Failure 2 — `test_cache_saves_and_reloads_under_matching_metadata`
+
+**Observed.** The test asserted `torch.equal(cache.load(sample_key()), tensor)`;
+`load` returned a `BoundRepresentations`.
+
+**Classification: STALE TEST after intentional API strengthening.** Revision 1
+deliberately changed `RepresentationCache.load` to return the values *with* the
+`RepresentationKey` it validated — the whole point being that a caller must not
+carry values away from their provenance. The assertion predated that change.
+
+**Repair.** The test now verifies the current contract: the return is **not** a
+bare tensor, it is a `BoundRepresentations`, its key equals the validated key,
+pathway and source/ordered-id identity are preserved, the values round-trip
+bit-exactly, and a **second** load is equally bound — so the binding is not a
+one-shot wrapper.
+
+**`load` was not reverted to a bare tensor.** That would have been the easy fix
+and would have undone the Revision-1 repair. To make the temptation
+self-defeating, a **torch-free AST test** now asserts that `load`'s return
+annotation is `BoundRepresentations` and that every `return` in it constructs
+one — so a regression is caught in the **local** suite, not deferred to the next
+Colab run.
+
+### What C24-1-R1 changed, and what it did not
+
+| | |
+|---|---|
+| Implementation lines changed | **zero** — `git diff` on `unmark/` and `scripts/` is empty |
+| Test file | repaired; **136** tests now (134 + 2) |
+| Scientific values | **none touched** |
+| Verdict | **unchanged** — still not runtime-closed |
+
+**C24-1 runtime closure remains PENDING.** It requires a **new committed
+revision** on which all **136** tests execute successfully on Colab. The repaired
+tests have not run anywhere: they are written against a failure that was
+observed, which is better evidence than the original had, and still not
+execution.
+
+
+---
+
 ```
 AUDIT 024 CREATED:
 YES
@@ -629,7 +795,15 @@ SCIENTIFICALLY CLOSED:
 NO
 
 REVISION:
-1a
+2
+
+FIRST COLAB TORCH RUN (C24-1-R1):
+FAILED — 132 passed / 2 failed / 0 skipped at HEAD b43cca82
+ALL 134 THEN-CURRENT TESTS EXECUTED; 26 OF THE 28 TORCH-GATED PASSED
+BOTH FAILURES TEST-SIDE; ZERO IMPLEMENTATION LINES CHANGED
+
+SCIENTIFIC DIAGNOSTIC EXECUTION:
+NONE — NO REAL-DATA TRAINING, LR TUNING, SCORE, MODEL SMOKE OR STAGE-1 RUN
 
 REPRESENTATION BINDING:
 PROVENANCE-BOUND (BoundRepresentations = values + RepresentationKey)
@@ -656,10 +830,10 @@ CHECKPOINT / LR SELECTORS:
 TOTAL-ORDER, ORDER-INVARIANT — LOCAL-PASS
 
 PAIRED INITIALISATION:
-IMPLEMENTED / TEST AUTHORED / TORCH RUNTIME PENDING
+IMPLEMENTED / TEST PASSED ON GPU IN C24-1-R1 / CLOSURE PENDING
 
 ENCODER FREEZE / EVAL / NO_GRAD / FP32:
-IMPLEMENTED / TESTS AUTHORED / TORCH RUNTIME PENDING
+IMPLEMENTED / FIVE TESTS PASSED ON GPU IN C24-1-R1 / CLOSURE PENDING
 
 REPRESENTATION CACHE:
 PROVENANCE LOGIC LOCAL-PASS /
@@ -700,11 +874,12 @@ PDF:
 STALE
 
 LOCAL TESTS:
-full suite 2305 passed, 84 skipped
-targeted file: 134 authored / 106 passed locally / 28 torch-gated NOT EXECUTED
+full suite 2307 passed, 84 skipped
+targeted file: 136 authored / 108 passed locally / 28 torch-gated NOT EXECUTED
 
 TORCH RUNTIME VERIFICATION:
-PENDING (28 tests, never executed)
+PENDING — C24-1-R1 FAILED (132/2/0); REPAIRED TESTS HAVE RUN NOWHERE;
+REQUIRES 136 PASSED / 0 FAILED / 0 SKIPPED ON A NEW COMMITTED REVISION
 
 REAL-MODEL INTEGRATION:
 PENDING
