@@ -42,6 +42,7 @@ from unmark.evaluation.preg1_protocol import (  # noqa: E402
 )
 from unmark.evaluation.profiling import (  # noqa: E402
     FIXED_MAX_LENGTH,
+    PROFILE_SCHEMA_VERSION,
     DatasetAccess,
     DatasetProvenance,
     FileProvenance,
@@ -290,6 +291,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     summary: dict[str, Any] = {
+        # The profile contract must be readable from the TOP level. A consumer
+        # should not have to reach into nested provenance to learn which schema
+        # it is holding -- that is how config.json and provenance.json drifted
+        # apart in the first place.
+        "schema_version": PROFILE_SCHEMA_VERSION,
         "provenance": provenance.to_dict(),
         "splits": {name: p.to_dict() for name, p in profiles.items()},
         "duplicates": duplicates.to_dict(),
@@ -321,7 +327,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             PHOBERT_CHECKPOINT, revision=args.revision, use_fast=False
         )
         # TRAIN ONLY. The official test split is never tokenized for a protocol
-        # decision -- max_length is selected from train coverage alone.
+        # decision. Token lengths are CHARACTERISED on train; they do not select
+        # anything -- max_length is FIXED at 256 by D-PREG1-008b, decided before
+        # this profiling existed, and coverage evidence must not reopen it.
         texts = [text for _, text, _ in records["train"]]
         measured = tokenize_lengths(tokenizer, texts)
         vanilla = measured["vanilla_lengths"]
@@ -358,7 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = {
         "run_id": run_id,
         "dataset": args.dataset,
-        "schema_version": "preg1-profile-v1",
+        "schema_version": PROFILE_SCHEMA_VERSION,
         "data_only": args.data_only,
         "python": platform.python_version(),
         "protocol": Preg1Protocol().to_dict(),

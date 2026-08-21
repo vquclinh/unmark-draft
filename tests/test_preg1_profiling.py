@@ -84,6 +84,7 @@ from unmark.evaluation.preg1_protocol import (
 )
 from unmark.evaluation.profiling import (
     FIXED_MAX_LENGTH,
+    PROFILE_SCHEMA_VERSION,
     UNIT_DENSITY_SEMANTICS,
     LENGTH_REPORT_THRESHOLDS,
     LICENSE_NOT_ESTABLISHED,
@@ -1144,8 +1145,16 @@ def test_unit_density_semantics_states_that_na_is_not_none():
 
 
 def test_profiling_schema_version_was_bumped_for_the_new_fields():
-    source = (REPO / "unmark/evaluation/profiling.py").read_text(encoding="utf-8")
-    assert "preg1-profile-v2" in source
+    """The v2 fields exist, checked through the API rather than by grepping.
+
+    An earlier version of this test searched `profiling.py` for the literal
+    "preg1-profile-v2". It passed while the profiler script still stamped
+    `preg1-profile-v1` into `config.json` -- a string in the module says nothing
+    about what the executable writes. See the run-the-profiler tests below.
+    """
+    assert PROFILE_SCHEMA_VERSION == "preg1-profile-v2"
+    profile, _ = profile_split("t", [("1", "a", 0)], None)
+    assert "observed_tone_unit_density" in profile.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -1344,3 +1353,141 @@ def test_exclusion_policy_reaches_the_run_manifest():
     assert CONFLICTING_GROUP_POLICY in flat
     assert DERIVED_TRAIN_CSV_SHA256 in flat
     assert str(DERIVED_TRAIN_SIZE) in flat
+
+
+# ---------------------------------------------------------------------------
+# Audit 022 Revision 2: one authoritative profile schema, checked by RUNNING
+# the profiler rather than by searching its source
+# ---------------------------------------------------------------------------
+# The first patched Colab rerun emitted `config.json` at v1 and
+# `provenance.json` at v2, with no top-level version in `summary.json` at all.
+# Every test in the suite passed. These tests exist so that exact drift fails.
+def _run_profiler(tmp_path, rows=(("1", "Tôi học", "0"), ("2", "Toi hoc", "2"))):
+    """Run the real profiler end to end, data-only. No tokenizer, no network."""
+    csv_path = tmp_path / "train.csv"
+    csv_path.write_text(
+        "id,text,label\n" + "".join(f"{i},{t},{l}\n" for i, t, l in rows),
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    module = _load_profile_script()
+    code = module.main(
+        [
+            "--train", str(csv_path),
+            "--text-column", "text",
+            "--label-column", "label",
+            "--id-column", "id",
+            "--access", "OFFICIAL_PUBLIC_DISTRIBUTION",
+            "--source-name", "test fixture",
+            "--data-only",
+            "--output-root", str(out),
+            "--run-id", "TEST",
+        ]
+    )
+    assert code == 0
+    run_dir = out / "TEST"
+    return {
+        "config": json.loads((run_dir / "config.json").read_text(encoding="utf-8")),
+        "summary": json.loads((run_dir / "summary.json").read_text(encoding="utf-8")),
+        "provenance": json.loads((run_dir / "provenance.json").read_text(encoding="utf-8")),
+        "report": (run_dir / "report.md").read_text(encoding="utf-8"),
+    }
+
+
+def test_profile_schema_version_has_one_authoritative_value():
+    assert PROFILE_SCHEMA_VERSION == "preg1-profile-v2"
+
+
+def test_dataset_provenance_serialises_the_authoritative_schema():
+    provenance = DatasetProvenance(
+        dataset_name="d",
+        dataset_version="1",
+        task="t",
+        access=DatasetAccess.OFFICIAL_PUBLIC_DISTRIBUTION,
+        source_name="s",
+        label_mapping={"a": 0},
+        columns=("text", "label"),
+    )
+    assert provenance.to_dict()["schema_version"] == PROFILE_SCHEMA_VERSION
+
+
+def test_generated_config_uses_the_constant_not_a_stale_literal(tmp_path):
+    """The defect that shipped: `config.json` stamped v1 while the module said v2."""
+    artifacts = _run_profiler(tmp_path)
+    assert artifacts["config"]["schema_version"] == PROFILE_SCHEMA_VERSION
+
+
+def test_generated_summary_declares_schema_at_the_top_level(tmp_path):
+    """A consumer must not have to reach into nested provenance to learn this."""
+    artifacts = _run_profiler(tmp_path)
+    assert artifacts["summary"]["schema_version"] == PROFILE_SCHEMA_VERSION
+
+
+def test_all_generated_artifacts_agree_on_the_schema(tmp_path):
+    artifacts = _run_profiler(tmp_path)
+    declared = {
+        artifacts["config"]["schema_version"],
+        artifacts["summary"]["schema_version"],
+        artifacts["summary"]["provenance"]["schema_version"],
+        artifacts["provenance"]["schema_version"],
+        PROFILE_SCHEMA_VERSION,
+    }
+    assert declared == {"preg1-profile-v2"}, declared
+
+
+def test_report_heading_carries_the_same_schema(tmp_path):
+    artifacts = _run_profiler(tmp_path)
+    assert PROFILE_SCHEMA_VERSION in artifacts["report"]
+
+
+def test_no_module_hard_codes_a_second_profile_schema_literal():
+    """Structural: the version may appear as a value in exactly one assignment."""
+    source = (REPO / "unmark/evaluation/profiling.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "PROFILE_SCHEMA_VERSION"
+            for t in node.targets
+        )
+    ]
+    assert len(assignments) == 1
+
+    for path in ("scripts/preg1_dataset_profile.py", "unmark/evaluation/preg1_protocol.py"):
+        text = (REPO / path).read_text(encoding="utf-8")
+        assert "preg1-profile-v" not in text, f"{path} restates the schema literal"
+
+
+def test_profiler_script_imports_the_schema_constant():
+    tree = ast.parse((REPO / "scripts/preg1_dataset_profile.py").read_text(encoding="utf-8"))
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert "PROFILE_SCHEMA_VERSION" in imported
+
+
+def test_unresolved_eligibility_still_fails_visibly_in_a_real_run(tmp_path):
+    """Revision 2 must not have disturbed the fail-visible tone behaviour.
+
+    The first patched Colab run reported `eligibility_resolved = false` and a
+    null tone density because the B3A inventory was absent. That is correct, and
+    this pins it: a run without the inventory reports null, never zero.
+    """
+    module = _load_profile_script()
+    profile, _ = module.profile_split("train", [("1", "Tôi học", 0)], None)
+    payload = profile.to_dict()
+    assert payload["eligibility_resolved"] is False
+    assert payload["observed_tone_unit_density"] is None
+    assert payload["observed_letter_unit_density"] is not None
+
+
+def test_profiler_does_not_claim_max_length_is_selected_from_coverage():
+    """D-PREG1-008b fixed 256 BEFORE this profiling; coverage cannot reopen it."""
+    source = (REPO / "scripts/preg1_dataset_profile.py").read_text(encoding="utf-8")
+    assert "max_length is selected from train coverage" not in source
+    assert "FIXED at 256" in source or "fixed at 256" in source

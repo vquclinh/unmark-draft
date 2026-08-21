@@ -6,10 +6,11 @@
 | **Created (UTC)** | 2026-08-21 |
 | **Last revised (UTC)** | **2026-08-21** |
 | **Scope** | Record the first real UIT-VSFC profiling pass; resolve the one annotation conflict it exposed; repair two profiler-contract gaps |
-| **Repository state** | `HEAD = 7654ce1bba3eb93d55d7821fbcf10b1fb6741bf9`; this work uncommitted |
+| **Repository state** | Audit created against `HEAD = 7654ce1bba3eb93d55d7821fbcf10b1fb6741bf9`. That work is now committed as **`f828ef1e892d9777b5a6bf69ca254d94756ca4fb`** ("close UIT-VSFC profiler contract gaps"), which is the HEAD the first patched Colab attempt ran from. **Revision 2 is uncommitted.** |
 | **Predecessors** | [020](020-minimal-stage2-g1-evaluation-harness.md), [021](021-pre-g1-dataset-profile-and-protocol-precommit.md) |
 | **Phase** | pre-G1 |
 | **Type** | **Real-data integrity decision + profiler repair.** No training, no optimizer, no head, no downstream score |
+| **Revision 2** | **2026-08-21** — **schema-consistency repair after the first patched real rerun** (HEAD `f828ef1e892d9777b5a6bf69ca254d94756ca4fb`, run `uit-vsfc-v1.0-profile-v2-analysis-v1-f828ef1e`). That attempt **correctly failed closure**: the B3A inventory was absent, so tone eligibility was unresolved and the tone density reported `null`. It also exposed an artifact-schema inconsistency — `config.json` at **v1**, `provenance.json` at **v2**, `summary.json` with **no top-level version**. Repaired here to one authoritative constant. **The attempt is NON-FINAL and another rerun is still mandatory.** No metric, semantic or locked value changed. |
 | **Revision 1** | **2026-08-21** — **scientific wording repair, in place.** (a) The token-length prose conflated the **per-example** delta p99 (**+14**) with the shift between two **marginal** p99 quantiles (55 → 68, **+13**); both are now stated separately. (b) The exclusion rationale claimed a shared label error "does not cancel in `Delta_s`" — too categorical; it now says cancellation is **not guaranteed**. **No real metric, no locked value and no decision changed**; the exclusion policy is untouched. |
 
 ---
@@ -24,14 +25,47 @@ Three separate statuses, and they must not be collapsed into one:
 |---|---|---|
 | 1 | **Data integrity** | **PASS** — on the real evidence already observed. The one conflicting canonical group is resolved by explicit whole-group exclusion; the derived view has zero duplicates, zero conflicts, zero cross-split leakage. |
 | 2 | **Tokenizer / truncation feasibility** | **PASS** — the first real pinned-tokenizer profile shows **zero** train overflow at the fixed `max_length = 256`, on **both** pathways. |
-| 3 | **Final profile-contract closure** | **PENDING REAL COLAB RERUN** — two contract gaps were found *after* the run. The code is repaired and tested; the **real numbers the repair produces do not yet exist.** |
+| 3 | **Final profile-contract closure** | **PENDING REAL COLAB RERUN** — see below. The original two reporting gaps **and** the schema defect found afterwards are repaired and tested; the complete authoritative `preg1-profile-v2` run does not yet exist. |
 
-**2134 local tests pass, 56 skip** (was 2100/56 at Audit 021; +34 here).
+**Status 3, stated in full.** Three things happened in sequence, and collapsing
+them misrepresents the state:
+
+1. Two **profile-contract gaps** were found after the first real run — missing
+   unit-level tone/letter densities (gap 1) and unattributable UNK counts
+   (gap 2). Both were **repaired and tested**.
+2. The first patched Colab attempt then exposed a **separate artifact-schema
+   implementation defect** — `config.json` at v1, `provenance.json` at v2, no
+   top-level version in `summary.json`. **Repaired and tested in Revision 2.**
+3. That attempt remains **NON-FINAL**, for two independent reasons: **B3A
+   eligibility was unresolved** (the pinned inventory was absent, so the tone
+   density was correctly `null`), **and** its artifacts were
+   **schema-inconsistent**.
+
+**Some real repaired-code values do exist.** The attempt produced partial
+`preg1-profile-v2` fields, including real **letter** densities — that channel
+does not depend on the syllable inventory. It would be wrong to say the repair
+has produced no real output.
+
+**What does not exist** is the complete authoritative `preg1-profile-v2` rerun,
+which requires **all** of: the B3A inventory loaded; `eligibility_resolved =
+true`; real **tone** density; real **letter** density; pathway-separated UNK
+counts; `preg1-profile-v2` reported consistently across config, summary,
+provenance and report; the same derived-train SHA-256
+`a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301`; zero
+duplicate, conflicting and cross-split groups; and zero overflow at 256.
+
+**Current: 145 targeted pre-G1 profiling tests pass; 2144 full local tests pass,
+56 skipped.** (Historical baseline: 2100 passed / 56 skipped at Audit 021 —
+**+44** across this audit and its two revisions.)
+
+**The first patched real rerun has already happened and did NOT close status 3.**
+It is recorded in §M as a **non-final attempt**. Its partial outputs are not the
+authoritative profile, and this audit does not treat them as one.
 
 **This audit does not close the pre-G1 profile.** Statuses 1 and 2 rest on
 evidence observed before the repair; status 3 cannot be satisfied by any amount
-of local work, because the missing quantities are measurements of a corpus this
-environment will never hold.
+of local work, because the outstanding quantities are measurements of a corpus
+this environment will never hold.
 
 **No head was trained. No optimizer existed. No model weights were loaded. No
 downstream score exists.** The official test split was not consulted for any
@@ -46,8 +80,15 @@ session**. The Colab artifacts are **not present in this repository**. They were
 **not independently opened, hashed or recomputed here**, and this audit does not
 imply otherwise. The local environment is ML-free and holds no corpus.
 
-Nothing below was produced by the repaired code. The repair changes what the
-profiler *reports*; the pre-repair run could not have reported it.
+**Sections C–F intentionally retain the pre-repair real profile as the
+historical baseline.** The repair changes what the profiler *reports*, and the
+pre-repair run could not have reported it, so nothing in C–F was produced by the
+repaired code.
+
+Partial repaired-code real outputs **do** exist: they came from the first
+patched Colab attempt and are recorded separately in **§M**, where they are
+marked explicitly **NON-FINAL**. They are not promoted into C–F and are not
+authoritative evidence.
 
 Full evidence record:
 [`docs/experiments/preg1-uit-vsfc-real-profile-result.md`](../experiments/preg1-uit-vsfc-real-profile-result.md).
@@ -290,13 +331,26 @@ Recorded as
 | `unmark/evaluation/preg1_protocol.py` | `CONFLICTING_GROUP_POLICY`, `CONFLICTING_GROUP_EXCLUSION_SCOPE`, `OBSERVED_CONFLICTING_GROUPS`, `DERIVED_TRAIN_SIZE`, `DERIVED_TRAIN_LABEL_COUNTS`, `DERIVED_TRAIN_CSV_SHA256`; surfaced in the run manifest; version → `preg1-protocol-v4` |
 | `tests/test_preg1_profiling.py` | +34 ML-free tests |
 | `docs/spec/decisions.md` | D-PREG1-011, D-PREG1-012, D-PREG1-013 |
-| `docs/experiments/preg1-uit-vsfc-real-profile-result.md` | new, raw-text-free evidence record |
+| `docs/experiments/preg1-uit-vsfc-real-profile-result.md` | new, raw-text-free evidence record; Revision 2 adds the non-final attempt |
+
+**Revision 2 additions** (artifact metadata only — no metric, semantic or locked
+value touched):
+
+| File | Change |
+|---|---|
+| `scripts/preg1_dataset_profile.py` | imports `PROFILE_SCHEMA_VERSION` instead of restating `"preg1-profile-v1"`; `summary.json` gains a top-level `schema_version`; stale "`max_length` is selected from train coverage" comment corrected |
+| `tests/test_preg1_profiling.py` | the prose-matching schema test replaced by tests that **run the profiler** and read its artifacts; +10 tests |
+| `docs/spec/decisions.md` | D-PREG1-012 clarified — **no new decision id**, since this is an implementation defect, not a scientific choice |
 
 **No raw UIT-VSFC text was added anywhere.** A structural test asserts the
 protocol module contains no Vietnamese-marked characters at all.
 
-**New real values from the patched code are still PENDING.** Every number in
-sections C–F came from the pre-repair run.
+**Final authoritative replacement values are still PENDING.** Partial
+repaired-code real values exist in **§M** — including real letter-unit densities
+— but sections C–F **intentionally remain the pre-repair baseline** until the
+complete authoritative rerun succeeds. Every number in C–F came from the
+pre-repair run, and the partial §M values are deliberately **not** moved into
+them yet.
 
 ---
 
@@ -342,7 +396,7 @@ sections C–F came from the pre-repair run.
 | 20 | D-B3B0-002 | **OPEN** |
 | 21 | Compiled PDF | **STALE** |
 | 22 | Audit says final patched rerun is PENDING | **yes** — §A status 3 |
-| 23 | Tests pass | **2134 passed, 56 skipped** |
+| 23 | Tests pass | **2144 passed, 56 skipped** full suite; **145 passed** targeted pre-G1 profiling |
 | 24 | `git diff --check` | **clean** |
 | 25 | Everything unstaged | **yes** |
 | 26 | No prohibited git operation | **yes** |
@@ -352,6 +406,28 @@ sections C–F came from the pre-repair run.
 | 30 | **Revision 1:** rationale now says cancellation is **not guaranteed** | **yes**, and that exclusion removes the ambiguity **symmetrically** |
 | 31 | **Revision 1:** D-PREG1-011 still whole-group exclusion, no relabel | **yes** — unchanged |
 | 32 | **Revision 1:** unit-density and UNK repairs unchanged | **yes** — no behavioural code touched |
+| 33 | **Revision 2:** Audit 021 reread; Audit 022 revised **in place**; **no Audit 023** | **yes** |
+| 34 | **Revision 2:** `PROFILE_SCHEMA_VERSION` has **one** authoritative source | **yes** — single assignment, asserted by AST test |
+| 35 | **Revision 2:** config schema no longer hard-coded v1 | **yes** — imported |
+| 36 | **Revision 2:** `summary.json` has explicit top-level `schema_version` | **yes** |
+| 37 | **Revision 2:** config / provenance / summary / report agree on v2 | **yes** — verified on generated artifacts |
+| 38 | **Revision 2:** tests catch schema drift **executably** | **yes** — mutation check: 3 fail on the stale literal, 2 on the missing key |
+| 39 | **Revision 2:** stale `max_length`-selection comment repaired | **yes** — comment only |
+| 40 | **Revision 2:** no profiling metric or density semantic changed | **yes** |
+| 41 | **Revision 2:** inventory pin unchanged, nothing downloaded | **yes** — manifest read only |
+| 42 | **Revision 2:** unresolved-eligibility behaviour unchanged | **yes** — pinned by a new test |
+| 43 | **Revision 2:** failed Colab attempt recorded as **NON-FINAL** | **yes** — §M |
+| 44 | **Revision 2:** no raw dataset text committed | **yes** |
+| 45 | **Revision 2:** verdict **not** promoted to final pass | **yes** — still CONDITIONAL PASS |
+| 46 | **Bookkeeping:** current test counts consistent throughout | **yes** — 145 targeted / 2144 full everywhere; the 2100 baseline is labelled *historical* |
+| 47 | **Bookkeeping:** status 3 separates *partial non-final values produced* from *missing authoritative rerun* | **yes** — §A, enumerated |
+| 48 | **Bookkeeping:** no metric, no code, no locked value changed | **yes** — documentation only |
+| 49 | **Bookkeeping:** no inventory fetched, no real run, no split, no training | **yes** |
+| 50 | **Consistency:** §A and §B agree — C–F are the pre-repair baseline, §M holds partial repaired-code output | **yes** |
+| 51 | **Consistency:** §A and §I agree — *final authoritative* values pending, not *all* values | **yes** |
+| 52 | **Consistency:** weakness list no longer claims no unit density ran on real data | **yes** — weakness 3 rewritten |
+| 53 | **Consistency:** letter density described as **real but NON-FINAL**; resolved tone density still pending | **yes** |
+| 54 | **Consistency:** the attempt records **both** failure reasons everywhere | **yes** — §A, §M and the status block |
 
 ### Weaknesses I am recording against myself
 
@@ -364,9 +440,14 @@ sections C–F came from the pre-repair run.
    they tested what the code did rather than what the protocol promised. That is
    the same class of defect as the prose-matching tests found earlier in this
    project: a test that cannot fail for the reason it was written.
-3. **The unit densities have never run against real data.** They are tested
-   against fixtures with hand-computed expectations. A fixture cannot reveal a
-   denominator that is wrong in a way I have not imagined.
+3. **The complete unit-density contract has never closed on real data.**
+   Letter-unit densities *did* run in the non-final patched attempt — that
+   channel does not depend on the B3A inventory — but **resolved tone-unit
+   density has never run with the pinned inventory loaded**, so the paired set
+   of authoritative tone and letter densities is still pending. Both remain
+   otherwise tested only against fixtures with hand-computed expectations, and
+   a fixture cannot reveal a real-corpus denominator problem I have not
+   anticipated.
 4. **The derived-CSV digest is unverifiable here.** I recorded
    `a20c0f77…` as supplied. If the rerun produces a different digest, that is a
    finding, and this file should not be read as having confirmed it.
@@ -381,18 +462,155 @@ sections C–F came from the pre-repair run.
    cancellation either way. The decision was already correct; the justification
    was stronger than the evidence. Stating "not guaranteed" is both weaker and
    true, and it is still sufficient to justify the exclusion.
+7. **My schema test was prose-matching, and it shipped** (Revision 2). I wrote a
+   test that grepped a module for a version string, and it passed while the
+   executable emitted the *previous* version into `config.json`. I have flagged
+   this exact failure mode — a test asserting on source text rather than
+   behaviour — repeatedly in this project's audits, and then committed another
+   instance of it. The real Colab run caught what the suite could not.
+8. **I bumped a constant and did not trace its consumers** (Revision 2). The
+   version lived in two places; I changed one. The five-way agreement now
+   verified was never checked before the run.
+9. **I left a stale test count in the self-audit table** (bookkeeping revision).
+   I updated the count in §A and did not propagate it to §K, so the same
+   document asserted 2144 and 2134. A self-audit table that reports a number
+   from before the work it is auditing is worse than one that omits it.
+10. **I described status 3 as "the real numbers do not yet exist"**, which was
+   too absolute once the patched attempt had run. Real repaired-code values —
+   the letter densities — *do* exist; what is missing is the complete
+   authoritative run. Overstating absence is still a misstatement.
+11. **I corrected §A and left the rest of the audit contradicting it**
+   (consistency revision). §B still said "nothing below was produced by the
+   repaired code", §I still said "new real values are still PENDING", and a
+   weakness still said the unit densities had "never run against real data" —
+   three sentences asserting the opposite of the section I had just fixed. The
+   status block also named only one of the two reasons the attempt was
+   non-final. Fixing a claim in one place and not tracing its restatements is
+   the same failure that produced the schema defect, in prose instead of code.
 
 ---
 
 ## L. REQUIRED NEXT ACTION
 
-Rerun `scripts/preg1_dataset_profile.py` on Colab against the real corpus, from
-the repaired code, and record the results as the **authoritative** pre-G1
-profile. Until then status 3 stands at **PENDING**.
+**First**, restore the B3A inventory on Colab: run the existing
+`scripts/fetch_vietnamese_syllable_inventory.py`, then `--verify-only` against
+the unchanged pin. Without it the tone density is `null` by design and closure
+cannot succeed — as the `…-f828ef1e` attempt demonstrated.
+
+**Then** rerun `scripts/preg1_dataset_profile.py` against the real corpus, from
+the repaired code, **under a new run id**, and record the results as the
+**authoritative** pre-G1 profile. Until then status 3 stands at **PENDING**.
 
 The rerun must supply: tone and letter unit densities for all three splits with
-`eligibility_resolved = true`; pathway-separated UNK counts; and a derived-train
-digest to check against `a20c0f77…`.
+`eligibility_resolved = true`; pathway-separated UNK counts; a derived-train
+digest to check against `a20c0f77…`; and `preg1-profile-v2` reported
+consistently by `config.json`, `summary.json`, `summary.provenance` and
+`provenance.json`.
+
+---
+
+## M. FIRST PATCHED REAL RERUN — NON-FINAL ATTEMPT
+
+| | |
+|---|---|
+| **HEAD** | `f828ef1e892d9777b5a6bf69ca254d94756ca4fb` |
+| **Run id** | `uit-vsfc-v1.0-profile-v2-analysis-v1-f828ef1e` |
+| **Closure result** | **HOLD — two independent reasons: B3A inventory absent (eligibility unresolved) *and* schema metadata inconsistent** |
+| **Partial real output** | **yes** — real letter-unit densities. **NOT authoritative** |
+| **Status** | **NON-FINAL.** Not the authoritative profile |
+
+### The fail-visible behaviour worked, and that is the point
+
+All three splits reported `eligibility_resolved = false`,
+`tone_eligible_syllables = 0`, `tone_observed_syllables = 0` and
+`observed_tone_unit_density = null`. **This is correct and must not be
+changed.** The gap-1 repair was built so that a missing inventory reports
+`null` rather than a tone density of `0.0`, and the first real run it met
+exercised exactly that path. A profiler that had silently reported `0.0` would
+have produced a publishable-looking number from an unloaded resource.
+
+**Letter-unit densities were produced and are defined**, because that channel
+does not depend on the syllable inventory — the intended asymmetry. **They are
+still not authoritative**, because the run as a whole did not close.
+
+### The schema inconsistency it exposed
+
+The same run showed three different answers to "which profile schema is this?":
+
+| Artifact | Declared |
+|---|---|
+| `config.json` | **`preg1-profile-v1`** — a stale hard-coded literal |
+| `provenance.json` | `preg1-profile-v2` |
+| `summary.json` (top level) | **absent** |
+| `summary.provenance` | `preg1-profile-v2` |
+
+`PROFILE_SCHEMA_VERSION` in `profiling.py` was bumped to v2 and
+`DatasetProvenance` defaults to it, but `scripts/preg1_dataset_profile.py`
+restated the literal independently and was never updated. A consumer reading
+`config.json` would have mis-identified the contract.
+
+**This is an artifact-metadata defect, not a scientific one.** No metric,
+denominator, density semantic, tokenization, duplicate rule, exclusion, token
+length, UNK computation, `max_length` or pathway definition is affected, and
+none was touched.
+
+### The repair
+
+- `scripts/preg1_dataset_profile.py` **imports** `PROFILE_SCHEMA_VERSION`; the
+  literal exists in exactly **one** assignment, in `profiling.py`.
+- `summary.json` now declares `schema_version` at the **top level**, so the
+  contract is readable without descending into nested provenance.
+- `render_report()` was already reading `config["schema_version"]` and now
+  reports v2 automatically — **no second literal was introduced**.
+
+Verified by generating real artifacts: `config` = `summary` =
+`summary.provenance` = `provenance` = `PROFILE_SCHEMA_VERSION` =
+**`preg1-profile-v2`**, and the report heading carries the same value.
+
+### Why the old tests did not catch it
+
+`test_profiling_schema_version_was_bumped_for_the_new_fields` searched
+`profiling.py` for the string `"preg1-profile-v2"`. **It passed while the
+executable stamped v1.** A string in a module says nothing about what the
+program writes — the same prose-matching failure mode this project has hit
+repeatedly. It is replaced by tests that **run the profiler** and read its
+artifacts. Both defects were re-introduced deliberately as a mutation check:
+the stale literal fails 3 tests, the missing top-level key fails 2. The old
+suite failed neither.
+
+### Stale comment repaired
+
+The tokenizer block still claimed *"max_length is selected from train coverage
+alone"*, contradicting
+[D-PREG1-008b](../spec/decisions.md#d-preg1-008b--max_length-fixed-at-256-not-selected-from-data),
+which fixed 256 **before** this profiling existed. Comment wording only — token
+lengths are **characterised** on train and select nothing. **Runtime behaviour
+unchanged.**
+
+### B3A inventory — pin unchanged, not fetched here
+
+| | |
+|---|---|
+| Schema | `vn-syllables-v1` |
+| Source | `all-vietnamese-syllables.txt` (hieuthi) |
+| Revision | `135a4d9716e49a981624474156d6f247b9b46f6a` |
+| SHA-256 | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| Size | 116 290 bytes |
+| Expected | 17 974 raw / 17 954 unique canonical / 2 489 unique stripped |
+| License | `NO_EXPLICIT_LICENSE` |
+
+**The pin was not changed and nothing was downloaded for this task.** The
+committed manifest was read only, and it matches every value above. A
+git-ignored cache copy already existed locally from earlier B3A work and
+verifies against the pin; it is **not** committed and was **not** fetched here.
+The Colab environment lacked it, which is why that run held. The rerun will use
+the existing `scripts/fetch_vietnamese_syllable_inventory.py`, then
+`--verify-only`, before reprofiling.
+
+### Run-directory discipline
+
+**The `…-f828ef1e` run directory must not be overwritten.** It is the evidence
+that the fail-visible path works. The next attempt uses a **new run id**.
 
 ---
 
@@ -403,6 +621,18 @@ docs/audits/022-uit-vsfc-real-data-profile-integrity-closure.md
 VERDICT:
 CONDITIONAL PASS / COLAB RERUN REQUIRED
 
+REVISION:
+2
+
+FIRST PATCHED COLAB ATTEMPT:
+NON-FINAL — ELIGIBILITY UNRESOLVED + SCHEMA INCONSISTENT
+
+SCHEMA BUG:
+FIXED — preg1-profile-v2 EVERYWHERE
+
+B3A INVENTORY:
+PIN UNCHANGED / COLAB FETCH+VERIFY REQUIRED
+
 DATA INTEGRITY:
 PASS
 
@@ -410,7 +640,11 @@ TOKENIZER/TRUNCATION FEASIBILITY:
 PASS
 
 FINAL PROFILE-CONTRACT CLOSURE:
-PENDING REAL COLAB RERUN
+PENDING REAL COLAB RERUN — the original two reporting gaps and the
+subsequently discovered schema-consistency defect are repaired and tested.
+The first patched Colab attempt is non-final because B3A eligibility was
+unresolved and its schema metadata was inconsistent. A complete authoritative
+preg1-profile-v2 rerun with the pinned inventory loaded does not yet exist.
 
 CONFLICTING GROUP POLICY:
 EXCLUDE ENTIRE GROUP / NO RELABEL
@@ -441,6 +675,9 @@ NONE
 
 STAGE-1 TRAINING:
 NOT RUN
+
+LOCAL TESTS:
+2144 passed, 56 skipped (targeted pre-G1 profiling: 145 passed)
 
 D-B3B0-002:
 OPEN

@@ -3317,6 +3317,18 @@ density properties, a `classifier` parameter on `observe_orthography` and
 `profile_split`), `scripts/preg1_dataset_profile.py`,
 `tests/test_preg1_profiling.py`.
 
+**Schema-version clarification** (Audit 022 Revision 2, implementation only --
+no decision changed). The bump above was applied to `PROFILE_SCHEMA_VERSION` in
+`profiling.py`, but `scripts/preg1_dataset_profile.py` still hard-coded
+`"preg1-profile-v1"` into `config.json`, so the first patched real run emitted
+**v1 in `config.json`, v2 in `provenance.json`, and no top-level version in
+`summary.json` at all.** The literal is now imported from the single
+authoritative constant, and `summary.json` declares `schema_version` at the top
+level. **Every profile-v2 artifact reports `preg1-profile-v2`** -- config,
+summary, summary.provenance, provenance and the report heading -- verified by
+tests that run the profiler rather than search its source. **No metric,
+denominator or density semantic changed.**
+
 | | |
 |---|---|
 | **Proposal updated** | **NO** — §4.3 already fixes the granularity; the profiler was measuring at the wrong one. PDF stale: **YES** (unchanged) |

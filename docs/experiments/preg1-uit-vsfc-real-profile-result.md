@@ -24,7 +24,7 @@ only — the same rule the profiler applies to its own artifacts.
 | **torch visible in `.venv-colab`** | **false** |
 | **Model weights loaded** | **no** — tokenizer only |
 | **Head trained / optimizer / HPO / downstream score** | **none** |
-| **Superseded by** | the patched rerun (pending) |
+| **Superseded by** | the patched rerun (pending — see *Attempt 2* below) |
 
 ## Provenance
 
@@ -197,12 +197,73 @@ attribution: it is equally consistent with 4/0, 0/4 and every split between.
 That is gap 2. **The value is not reinterpreted here**; the repaired code
 reports the two pathways separately, and the rerun supplies them.
 
-## What this pass does not contain
+## Attempt 2 — patched profiler, NON-FINAL
 
-- unit-level tone and letter channel densities (gap 1);
+| | |
+|---|---|
+| **HEAD** | `f828ef1e892d9777b5a6bf69ca254d94756ca4fb` |
+| **Run id** | `uit-vsfc-v1.0-profile-v2-analysis-v1-f828ef1e` |
+| **Closure result** | **HOLD — for two independent reasons: B3A inventory absent (eligibility unresolved) *and* schema metadata inconsistent** |
+| **Schema bug discovered** | `config.json` **v1** / `provenance.json` **v2** / `summary.json` top level **absent** |
+| **Status** | **NON-FINAL. This is not the authoritative profile.** |
+
+**This attempt is not authoritative and nothing in it should be cited as the
+pre-G1 profile.** It is recorded because it produced two findings.
+
+### Finding 1 — the fail-visible tone path worked
+
+All three splits reported `eligibility_resolved = false`,
+`tone_eligible_syllables = 0`, `tone_observed_syllables = 0` and
+`observed_tone_unit_density = null`. **Correct behaviour, deliberately
+designed**: the tone denominator needs the B3A syllable inventory, and without
+it the profiler reports `null` rather than a tone density of `0.0`. A silent
+`0.0` would have looked like a corpus finding while actually reporting an
+unloaded resource.
+
+**Letter-unit densities were produced and are defined** — that channel does not
+depend on the inventory, which is the intended asymmetry. They are **still not
+authoritative**, because the run did not close.
+
+The inventory pin is **unchanged** (`vn-syllables-v1`, revision
+`135a4d97…`, SHA-256 `78eeb840…`, 116 290 bytes, 17 974 / 17 954 / 2 489,
+`NO_EXPLICIT_LICENSE`). Nothing was downloaded for this record; the committed
+manifest was read only. The rerun uses the existing
+`scripts/fetch_vietnamese_syllable_inventory.py` and then `--verify-only`.
+
+### Finding 2 — artifact schema disagreed with itself
+
+| Artifact | Declared |
+|---|---|
+| `config.json` | **`preg1-profile-v1`** (stale hard-coded literal) |
+| `provenance.json` | `preg1-profile-v2` |
+| `summary.json` (top level) | **absent** |
+| `summary.provenance` | `preg1-profile-v2` |
+
+Repaired: the profiler imports the single authoritative
+`PROFILE_SCHEMA_VERSION`, and `summary.json` declares it at the top level.
+**Artifact metadata only — no metric, denominator, density semantic,
+tokenization, duplicate rule, exclusion or `max_length` was affected.**
+
+**The `…-f828ef1e` run directory must not be overwritten.** The next attempt
+uses a new run id.
+
+## What Attempt 1 does not contain
+
+Scoped to the **first** pass above. Attempt 2 partially addresses the first two
+items — see that section — but is **NON-FINAL**.
+
+- unit-level tone and letter channel densities (gap 1) — Attempt 2 produced
+  **real letter densities**; **resolved tone density is still missing**;
 - pathway-attributed UNK counts (gap 2);
 - any materialised 80/20 protocol split;
 - any head, optimizer, checkpoint, LR selection or downstream score.
+
+**Still outstanding after both attempts:** a complete authoritative
+`preg1-profile-v2` run with the B3A inventory loaded,
+`eligibility_resolved = true`, real tone **and** letter densities in the same
+run, pathway-separated UNK counts, a consistent v2 schema across config,
+summary, provenance and report, the derived-train SHA-256 `a20c0f77…`, zero
+duplicate/conflicting/cross-split groups, and zero overflow at 256.
 
 [D-B3B0-002](../spec/decisions.md#d-b3b0-002--the-first-backbone-checkpoint-is-not-locked) remains **OPEN** — the tokenizer
 revision is a probe revision. The compiled proposal PDF is **stale**.
