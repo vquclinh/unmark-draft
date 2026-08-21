@@ -633,7 +633,12 @@ def test_splitter_rejects_bad_fractions():
 
 
 def test_splitter_status_and_duplicate_contract_recorded():
-    assert "NOT run on real data" in SPLITTER_STATUS
+    # The status must NOT hard-code whether the real split has been run: that
+    # would force a code edit every time Colab executes committed code. It
+    # records the mechanism's guarantees and defers run status to Audit 023.
+    assert "FAIL-CLOSED" in SPLITTER_STATUS
+    assert "Audit 023" in SPLITTER_STATUS
+    assert "NOT run on real data" not in SPLITTER_STATUS
     assert "group-aware by canonical text" in " ".join(SPLITTER_REQUIREMENTS)
     joined = " ".join(DUPLICATE_CONTRACT)
     assert "cannot cross" in joined

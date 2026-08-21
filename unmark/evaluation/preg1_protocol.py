@@ -336,10 +336,14 @@ SPLITTER_REQUIREMENTS: tuple[str, ...] = (
 )
 
 SPLITTER_STATUS = (
-    "The generic deterministic mechanism is implemented "
-    "(`profiling.stratified_group_split`) but is NOT run on real data in this "
-    "phase: conflicting-label canonical groups must be inspected first, and how to "
-    "handle them is a researcher decision."
+    "The deterministic splitter (`profiling.stratified_group_split`) is "
+    "implemented and FAIL-CLOSED against conflicting-label canonical groups, "
+    "duplicate sample ids and fraction-mapping insertion order. The "
+    "researcher-approved conflicting group has been excluded from the derived "
+    "pre-G1 pool (D-PREG1-011). Real-data split materialisation status is "
+    "recorded in Audit 023 and the experiment evidence record, NOT encoded as a "
+    "static constant here -- so executing the already-committed materialiser on "
+    "Colab does not require another code edit."
 )
 
 DUPLICATE_CONTRACT: tuple[str, ...] = (

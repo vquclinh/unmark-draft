@@ -17,6 +17,7 @@ indistinguishable at inference. Every field name here says what was *observed*.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -696,6 +697,107 @@ def length_coverage(
 # ---------------------------------------------------------------------------
 # Deterministic, group-aware, stratified splitter
 # ---------------------------------------------------------------------------
+SPLIT_ALLOCATION_ORDER_RULE = (
+    "Split names are allocated in a canonical order derived from the mapping's "
+    "CONTENT, never from its insertion order: descending fraction, then "
+    "ascending split name as tie-break. For the locked pre-G1 mapping this is "
+    "protocol-train (0.80) then protocol-dev (0.20) -- identical to the order "
+    "the locked mapping already had, so no membership changes. A logically "
+    "identical mapping written in a different order now yields the identical "
+    "split, which was not previously true."
+)
+
+SPLIT_GROUPING_RULE = (
+    "Records are grouped by text_digest(canon(text)). A canonical group is "
+    "atomic: every member lands in the same part, so a duplicate can never "
+    "straddle protocol-train and protocol-dev."
+)
+
+SPLIT_STRATIFICATION_RULE = (
+    "Groups are stratified by the group's single distinct label. Conflicting "
+    "labels within one canonical group are a fail-closed error, not a "
+    "tie-break, so by the time stratification runs every group has exactly one "
+    "label and no vote is taken."
+)
+
+
+def _canonical_split_order(fractions: dict[str, float]) -> list[str]:
+    """Allocation order from the mapping's content, not its insertion order.
+
+    `list(fractions)` returns insertion order, which meant two logically
+    identical mappings produced different memberships -- a dict literal's
+    keystroke order silently became a scientific variable. Ordering by
+    (-fraction, name) is a pure function of the mapping's content.
+    """
+    return sorted(fractions, key=lambda name: (-fractions[name], name))
+
+
+def _validate_fractions(fractions: dict[str, float]) -> None:
+    if not fractions:
+        raise EvaluationContractViolation("fractions must be a non-empty mapping")
+    for name, value in fractions.items():
+        if not isinstance(name, str) or not name:
+            raise EvaluationContractViolation(
+                f"split names must be non-empty strings, got {name!r}"
+            )
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise EvaluationContractViolation(
+                f"fraction for {name!r} must be a number, got {value!r}"
+            )
+        if not math.isfinite(value):
+            raise EvaluationContractViolation(
+                f"fraction for {name!r} must be finite, got {value!r}"
+            )
+        if value <= 0:
+            raise EvaluationContractViolation(
+                f"fraction for {name!r} must be strictly positive, got {value!r}"
+            )
+    total = math.fsum(fractions.values())
+    if abs(total - 1.0) > 1e-9:
+        raise EvaluationContractViolation(
+            f"fractions must sum to 1.0, got {total!r} from {sorted(fractions)}"
+        )
+
+
+def _require_unique_sample_ids(records: Sequence[tuple[str, str, Any]]) -> None:
+    """Globally unique ids, or fail.
+
+    A membership artifact is a list of ids. If two records share one, the
+    artifact cannot say which was assigned, and any downstream join silently
+    doubles or drops a row. The error names ids only -- never corpus text.
+    """
+    seen: Counter[str] = Counter(sample_id for sample_id, _, _ in records)
+    duplicates = sorted(sample_id for sample_id, count in seen.items() if count > 1)
+    if duplicates:
+        shown = ", ".join(duplicates[:10])
+        more = "" if len(duplicates) <= 10 else f" (+{len(duplicates) - 10} more)"
+        raise EvaluationContractViolation(
+            f"sample ids must be globally unique; {len(duplicates)} repeated: {shown}{more}"
+        )
+
+
+def _group_label(digest: str, entries: list[tuple[str, Any]]) -> str:
+    """The group's single label, or fail closed.
+
+    This deliberately does **not** vote. `DUPLICATE_CONTRACT` requires that a
+    conflicting-label canonical group STOP for researcher review; a majority or
+    tie-break here would silently manufacture a gold label that no annotator
+    assigned, and would do it precisely in the case a human was supposed to see.
+    The error reports the canonical digest, the labels and the sample ids --
+    enough to find the rows, and no corpus text.
+    """
+    labels = sorted({str(label) for _, label in entries})
+    if len(labels) != 1:
+        ids = ", ".join(sorted(sample_id for sample_id, _ in entries))
+        raise EvaluationContractViolation(
+            "conflicting-label canonical group must not be split: "
+            f"digest={digest} labels={labels} sample_ids=[{ids}]. "
+            "Resolve it as a researcher decision (see DUPLICATE_CONTRACT); "
+            "the splitter will not majority-vote or tie-break."
+        )
+    return labels[0]
+
+
 def stratified_group_split(
     records: Sequence[tuple[str, str, Any]],
     fractions: dict[str, float],
@@ -703,31 +805,30 @@ def stratified_group_split(
 ) -> dict[str, list[str]]:
     """Split `(sample_id, text, label)` into named parts. Returns sample ids.
 
-    Four properties, all load-bearing:
+    Five properties, all load-bearing:
 
     * **group-aware by canonical text** -- every canonical duplicate lands in one
       part, so a duplicate cannot straddle protocol-train and protocol-dev;
-    * **label-stratified** as closely as grouping allows, using each group's
-      majority label;
+    * **label-stratified** as closely as grouping allows, by each group's
+      **single distinct** label -- conflicts fail closed rather than being voted;
     * **deterministic** -- ordering comes from a keyed digest of the seed and the
       canonical digest, not from `random`, so it is stable across processes and
       reruns;
+    * **order-invariant** -- neither the input record order nor the fraction
+      mapping's insertion order can change the result;
     * **independent of any downstream score.**
 
-    The generic mechanism is implemented here; it is **not run on real data** in
-    this phase, because conflicting-label groups must be inspected first.
+    Raises `EvaluationContractViolation` on empty input, malformed fractions,
+    duplicate sample ids, or a conflicting-label canonical group.
     """
     if not records:
         raise EvaluationContractViolation("cannot split an empty record set")
-    if abs(sum(fractions.values()) - 1.0) > 1e-9:
-        raise EvaluationContractViolation(f"fractions must sum to 1.0, got {fractions}")
+    _validate_fractions(fractions)
+    _require_unique_sample_ids(records)
 
     groups: dict[str, list[tuple[str, Any]]] = {}
     for sample_id, text, label in records:
         groups.setdefault(text_digest(canon(text)), []).append((sample_id, label))
-
-    def group_label(entries: list[tuple[str, Any]]) -> str:
-        return Counter(str(label) for _, label in entries).most_common(1)[0][0]
 
     def order_key(digest: str) -> str:
         return hashlib.blake2b(
@@ -736,9 +837,9 @@ def stratified_group_split(
 
     by_label: dict[str, list[str]] = {}
     for digest, entries in groups.items():
-        by_label.setdefault(group_label(entries), []).append(digest)
+        by_label.setdefault(_group_label(digest, entries), []).append(digest)
 
-    names = list(fractions)
+    names = _canonical_split_order(fractions)
     assignment: dict[str, list[str]] = {name: [] for name in names}
     for label in sorted(by_label):
         ordered = sorted(by_label[label], key=order_key)

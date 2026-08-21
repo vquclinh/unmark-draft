@@ -3398,3 +3398,85 @@ decision itself is unchanged.
 | | |
 |---|---|
 | **Proposal updated** | **NO** — reporting defect. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-PREG1-014 — internal split materialisation is fail-closed and mapping-order-independent
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — implementation contract narrowed |
+| **Owner** | pre-G1 |
+| **Trigger** | synthetic probes (S3P05) against the committed splitter, run at HEAD `819d09f2df95ca57444a63c86363e614b44ce458` |
+| **Timing** | **before any real split membership was materialised or viewed** |
+
+**The prior assumption.** [D-PREG1-004b](#d-preg1-004b--split-roles-official-validation-is-measurement-train-splits-8020)
+and [D-PREG1-009](#d-preg1-009--the-final-pre-g1-probe-protocol) specify a
+deterministic, group-aware, label-stratified 80/20 division of the derived train
+pool under a precommitted seed. `DUPLICATE_CONTRACT` further requires that
+conflicting-label canonical groups **STOP for researcher review** and never be
+silently relabelled, dropped or assigned. The generic mechanism
+(`profiling.stratified_group_split`) was taken to implement that contract.
+
+**It did not.** Synthetic probes found three ways the implementation failed open.
+
+| Id | Defect | Why it is scientific, not cosmetic |
+|---|---|---|
+| **S23-F1** | `names = list(fractions)` allocated parts in **dict insertion order**, so `{"protocol-train": 0.8, "protocol-dev": 0.2}` and the logically identical `{"protocol-dev": 0.2, "protocol-train": 0.8}` produced **different memberships** | The order in which a dict literal was typed became a scientific variable. Two readers writing the same mapping get different splits, and nothing in the artifact records which order was used |
+| **S23-F2** | conflicting-label canonical groups were resolved by `Counter(...).most_common(1)`, a **majority/tie-break vote** | Directly contradicts `DUPLICATE_CONTRACT`. The vote manufactures a gold label no annotator assigned, and does it **precisely in the case a human was supposed to inspect**. A tie is decided by `Counter`'s internal ordering |
+| **S23-F3** | duplicate `sample_id`s were accepted and **emitted twice** | A membership artifact is a list of ids. If two rows share one, the artifact cannot say which was assigned, and any downstream join silently doubles or drops a row |
+
+**The decision.**
+
+1. **Allocation order comes from the mapping's content, never its insertion
+   order**: sort by descending fraction, then ascending name. For the locked
+   mapping this is `protocol-train` (0.80) then `protocol-dev` (0.20) — **the
+   order the locked mapping already had**, so **no membership changes**. Verified
+   against the pre-hardening implementation on a synthetic pool with the real
+   class totals: identical assignment, with and without canonical duplicates.
+2. **Conflicting-label canonical groups raise `EvaluationContractViolation`.**
+   No majority, no tie-break, no silent selection. The error reports the
+   canonical digest, the labels and the sample ids — **never corpus text**.
+3. **Duplicate sample ids raise.** Ids may appear in the error; text may not.
+4. **Fractions are validated**: non-empty mapping, non-empty string names,
+   finite, strictly positive, summing to 1.0 within the existing tolerance.
+5. **"Majority label" is removed from the stratification contract.** After the
+   fail-closed check every canonical group has exactly one distinct label, so
+   groups are stratified by **that** label and no vote is ever taken.
+
+**Why fail-closed rather than relying on the data.** The approved derived pool
+has **zero** conflicting groups (Audit 022), so none of this changes the
+imminent run. That is exactly why it had to be fixed now: a guarantee that holds
+only because today's corpus happens to be clean is not a guarantee. The next
+dataset, or a re-derivation, would silently take a majority vote.
+
+**Expected real split, precommitted.** The derived pool has zero canonical
+duplicate groups, so every group is a singleton and the per-class allocation is
+fully determined by the class totals and the rule — computable **before any
+membership is observed**:
+
+| Part | negative | neutral | positive | total |
+|---|---|---|---|---|
+| `protocol-train` | 4 259 | 366 | 4 514 | **9 139** |
+| `protocol-dev` | 1 065 | 92 | 1 128 | **2 285** |
+
+These are **derived from committed aggregates**, not from a run. The materialiser
+recomputes them and, when the input digest is the locked
+`a20c0f77…`, refuses to write unless the membership matches exactly.
+
+**No real membership influenced any of this.** No split has been materialised, no
+downstream score exists, and the defects were found by synthetic probes.
+
+**Affected.** `unmark/evaluation/profiling.py` (`stratified_group_split` and its
+new validators; `SPLIT_ALLOCATION_ORDER_RULE`, `SPLIT_GROUPING_RULE`,
+`SPLIT_STRATIFICATION_RULE`), `unmark/evaluation/preg1_split.py` (new),
+`scripts/materialize_preg1_split.py` (new), `unmark/evaluation/__init__.py`,
+`unmark/evaluation/preg1_protocol.py` (`SPLITTER_STATUS` no longer hard-codes
+run state), `tests/test_preg1_split.py` (new), `tests/test_preg1_profiling.py`.
+Cross-references [D-PREG1-011](#d-preg1-011--conflicting-canonical-groups-are-excluded-whole),
+which supplied the derived pool this splitter consumes; D-PREG1-011, -012 and
+-013 are otherwise unchanged.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — the proposal specifies a deterministic group-aware stratified split; this makes the implementation actually satisfy that, and removes a vote the proposal never authorised. PDF stale: **YES** (unchanged) |

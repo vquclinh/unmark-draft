@@ -67,6 +67,13 @@ from unmark.evaluation.profiling import (
     stratified_group_split,
     text_digest,
 )
+from unmark.evaluation.preg1_split import (
+    SPLIT_SCHEMA_VERSION,
+    expected_split_counts,
+    expected_split_totals,
+    load_derived_pool,
+    materialize_split,
+)
 from unmark.evaluation.metrics import (
     GRR_FORMULA,
     ClassScore,
@@ -135,5 +142,10 @@ __all__ = [
     "profile_split",
     "require_resolved",
     "stratified_group_split",
+    "SPLIT_SCHEMA_VERSION",
+    "expected_split_counts",
+    "expected_split_totals",
+    "load_derived_pool",
+    "materialize_split",
     "text_digest",
 ]
