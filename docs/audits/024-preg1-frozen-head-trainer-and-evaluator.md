@@ -9,6 +9,9 @@
 | **Predecessors** | [021](021-pre-g1-dataset-profile-and-protocol-precommit.md), [022](022-uit-vsfc-real-data-profile-integrity-closure.md), [023](023-pre-g1-internal-split-materializer-and-fail-closed-contract.md) |
 | **Phase** | pre-G1 |
 | **Type** | **Implementation + audit.** No real training, no LR sweep, no downstream score. **No model or dataset was downloaded during the local implementation/audit work** — the local `.venv` stayed ML-free. *(Separately: an accidental Colab probe execution occurred under a broken negative test; whether it downloaded or cache-loaded assets is **NOT ESTABLISHED** — §Q.4 Group C.)* |
+| **Revision 4b** | **2026-08-21** — **four residual current-state items.** §K said "no real representation was extracted", false after C24-4-R2 (which extracted real-PhoBERT representations from **synthetic** smoke inputs); §N rows 48 and 83 still read as current pending gates; and row 80's rationale preserved a wrong claim — I had written that `results/` is unignored, having checked the *directory* (re-included by `!results/**/`) rather than a file beneath it. **Verified here:** `.gitignore:15 `` results/** `` matches `results/b3b1/…/*`, so the accidental probe **is** gitignored. All four repaired as historical/superseded; no accepted evidence touched. **Documentation only.** |
+| **Revision 4a** | **2026-08-21** — **current-state consistency repair.** Four defects found by external review: §A still denied that the real PhoBERT smoke and real-data dry-run had run — **they had** (C24-4-R2, C24-5B-R1), as *verification*, not diagnostic execution; §J still said the Colab runs used "no real model and no real corpus at any point" and that the Revision-3 repository repairs were unexecuted; the current local count still read 2 310 / 89 instead of **2 312 / 89**; and the status block's `SCIENTIFIC DIAGNOSTIC EXECUTION: NONE … MODEL SMOKE` contradicted its own `REAL PHOBERT INTEGRATION: PASS / CLOSED`. All repaired; the same false claim in §K was repaired too. Historical §§P/Q/R untouched. **Documentation only.** |
+| **Revision 4 — FINALIZATION** | **2026-08-21** — **all four gates closed.** At `767fb8ee30fa9b5df344a3629b3295c1fd03c379` the **full repository Torch suite returned 2 401 passed / 0 failed / 0 errors** (C24-1-R3C), closing the repository-wide gate. C24-4-R2 then closed the **real PhoBERT integration** gate — `FIRST_TOKEN` extraction proved **exactly equal** to `last_hidden_state[:, 0, :]` on the real `RobertaModel`, with a real cache round-trip and a real cross-pathway refusal. C24-5B-R1 closed the **real approved-data / role boundary** gate — the derived TRAIN digest `a20c0f77…` reproduced from the official source, real Audit-023 membership bound row-for-row, and both role-substitution directions refused with `SplitLeakage`. **Official TEST never selected, downloaded, read or scored.** No head, optimizer, training, LR tuning or downstream score. **No production change; no new scientific decision.** |
 | **Revision 3b** | **2026-08-21** — **C24-1-R3B: repairs pass, a shared fixture did not.** At `f6ad4eef21cff9826f6ba58191a3dbcfcbed491a` the targeted suite reproduced **136/0/0** and the **exact eight R3 repairs passed 8/8**. The broader related/safety group then **failed 8/328**, so the full repository suite was **NOT REACHED**. Root cause (§R): Revision 3's accent-sensitive `StubTokenizer` emitted ids up to 4099 while `stub_encoder` declared a 64-token vocabulary — **my own fixture change broke an implicit agreement**, and eight unrelated tests died in `nn.Embedding` before reaching their named properties. **Test-fixture regression; no production defect.** Repaired with one single-sourced vocabulary contract plus two mutation-verified local guards. **No production line changed.** |
 | **Revision 3a** | **2026-08-21** — **evidence-consistency sweep after C24-1-R2.** §F still called the on-disk cache path "torch-gated and pending"; §I's rows still showed Q4/Q5 `PENDING` and Q6/Q7/Q11–Q13 `PARTIAL`/`PENDING` while its own summary already said otherwise; §A still listed "the torch runtime" among the unverified; and the no-download claim was unqualified beside the accidental-probe uncertainty. All corrected. **Every upgraded label was checked against an actual `@requires_torch` test in `tests/test_preg1_head.py` before relabelling** — 14 tests confirmed. **Documentation only.** |
 | **Revision 3** | **2026-08-21** — **C24-1-R2 targeted PASS + repository-wide regression repair.** At HEAD `52ebca0657dc39b8e8e25ebd71c90ae7a4687501` the targeted suite returned **136 passed / 0 failed / 0 skipped** — that gate is **closed**. The repository-wide suite then returned **2 383 passed / 8 failed** after the pinned inventory was recovered (a resource requirement, not a defect). All eight were inspected and classified: **none was an implementation defect** — six stale fixtures, one non-discriminative stub, one environment-sensitive test. Repaired in §Q. **One production change: an additive `ChannelContractViolation` grid-agreement guard (+26/−0), classified as implementation hardening**; the verified-position rule was **not** weakened and `VERIFIED_POSITION_PROFILES` still holds exactly one entry. **Repository-wide Torch regression remains PENDING REPAIR.** |
@@ -22,22 +25,37 @@
 
 ## A. VERDICT
 
-**IMPLEMENTATION PASS — AUDIT-024 TARGETED TORCH CONTRACT TESTS: PASS / CLOSED;
-REPOSITORY-WIDE TORCH REGRESSION: PENDING R3 RERUN;
-REAL-MODEL AND REAL-DATA BOUNDARY VERIFICATION: PENDING;
+**IMPLEMENTATION PASS — ALL FOUR VERIFICATION GATES CLOSED;
 NO DIAGNOSTIC RUN, NO DOWNSTREAM SCORE**
 
-**This implementation is not scientifically closed.** The **targeted**
-Audit-024 Torch gate is **CLOSED** (§Q.1). Three things remain unverified — the
-**repository-wide** Torch regression, the real-model integration and the
-real-data boundary dry-run — and §O sets out the order they must happen in.
+| Gate | State |
+|---|---|
+| Audit-024 targeted Torch contract | **PASS / CLOSED** — 136/136 |
+| Repository-wide Torch regression | **PASS / CLOSED** — **2 401 / 0 / 0** |
+| Real PhoBERT integration | **PASS / CLOSED** |
+| Real approved-data / role boundary | **PASS / CLOSED** |
+
+**Audit 024 is closed as an implementation / pre-diagnostic audit** (§S). Its
+implementation, runtime, integration and data-boundary verification is complete.
+
+**That is the whole of the claim.** It does **not** mean the Vanilla-vs-Base-only
+burden result exists, that pre-G1 is finished, that Stage-1 is approved for
+training, that Stage-2 pooling is locked, or that D-B3B0-002 is resolved — see
+§S.9.
 
 The mechanism for the pre-G1 Vanilla-vs-Base-only burden diagnostic exists. Its
-contract logic is verified locally. **No scientific diagnostic execution was
-run.** Precisely: no real-data head training, no LR tuning, no downstream score,
-no real PhoBERT integration smoke, no real-data boundary dry-run, and no Stage-1
-training or HPO. Official TEST was not loaded — it is not reachable from this
-code at all.
+**No scientific downstream diagnostic was executed.** Precisely — what did
+**not** happen: no real-data head training, no LR tuning, no downstream score,
+no Vanilla-vs-Base-only burden diagnostic, and no Stage-1 training or HPO.
+
+**What did happen, as verification only:** the real PhoBERT integration smoke
+(C24-4-R2, §S.5) and the real TRAIN/DEV integrity, reconstruction and
+role-boundary dry-run (C24-5B-R1, §S.8). **Neither is a downstream scientific
+result** — the first extracted representations and exercised the cache with no
+head and no optimizer; the second read source bytes and bound membership with
+dummy tensors and no model. Official TEST content was never selected,
+downloaded, read or scored, and the role is not reachable from this code at
+all.
 
 **Tests, however, have now run on GPU.** C24-1-R1 (§P) executed the targeted
 suite at HEAD `b43cca82…`: 132 passed, 2 failed, 0 skipped. Saying "nothing was
@@ -50,12 +68,13 @@ run" stopped being true at that moment, and this audit does not say it.
 | New tests **authored** | **136** (134 + 2 added by Revision 2) |
 | New tests **executed locally** | **108 passed** |
 | New tests **skipped locally** (torch absent) | **28 — all passed on GPU in C24-1-R2** |
-| Full local suite | **2 310 passed, 89 skipped** |
+| Full local suite | **2 312 passed, 89 skipped** |
 | Baseline at Audit 023 | 2199 passed, 56 skipped |
 | **First Colab Torch run (C24-1-R1)** | **132 passed, 2 FAILED, 0 skipped** — all 134 then-current tests executed; see §P |
 | **Targeted Colab rerun (C24-1-R2)** | **136 passed / 0 failed / 0 skipped** at `52ebca06…` — **PASS**; see §Q |
 | **Repository-wide Colab run (C24-1-R2B)** | **2 383 passed / 8 failed** — see §Q |
 | **Revision-3 verification (C24-1-R3B)** | targeted **136/0/0 PASS**; the eight R3 repairs **8/8 PASS**; broader group **8 failed / 328 passed**; full suite **NOT REACHED** — see §R |
+| **Final verification (C24-1-R3C)** | **full repository Torch suite 2 401 passed / 0 failed / 0 errors** at `767fb8ee…` — **CLOSED**; see §S.1 |
 
 **The Audit-024 targeted Torch gate is CLOSED.** C24-1-R2 reran the whole file
 at HEAD `52ebca06…`: **136 passed / 0 failed / 0 skipped**. All 28 torch-gated
@@ -65,13 +84,11 @@ parameter groups, the on-disk cache path and the end-to-end training loop.
 `tests/test_preg1_head.py` is **unmodified since that commit**, so the result
 applies to the file as it stands today.
 
-**That is not repository-wide health.** C24-1-R2B returned **2 383 passed / 8
-failed** — eight older regression tests, none in this file, none an
-implementation defect (§Q). C24-1-R3B then confirmed all eight repairs pass on
-Torch, but exposed a **new** fixture interaction that failed eight
-*evaluation-harness* tests and stopped the run before the full suite (§R). That
-is repaired here and **not yet rerun**. Two separate gates; only the first is
-closed.
+**Repository-wide health is now established too.** C24-1-R2B returned 2 383 / 8
+(§Q); C24-1-R3B confirmed those eight repairs pass but exposed a fixture
+interaction that failed eight evaluation-harness tests (§R); **C24-1-R3C then
+returned 2 401 passed / 0 failed / 0 errors** (§S.1). Both gates are closed, and
+the path there is preserved in §§Q, R and S rather than smoothed over.
 
 **No new scientific decision was created**, and §L explains why none is
 warranted — including for the Revision-1 repair, which makes the implementation
@@ -386,12 +403,20 @@ passed** (`52ebca06…`), so the torch-gated 28 are `TORCH-PASS`, not pending.
 *(Historically, C24-1-R1 ran the pre-repair file and returned 132/2/0 — §P.)*
 
 **Locally**: no downloads, no network, no GPU, no real UIT-VSFC, no real split
-artifacts. The Colab runs used a GPU for the test suite only — no real model and
-no real corpus at any point.
+artifacts.
 
-**Separate and still open:** the seven torch-gated repairs made in Revision 3
-for the repository-wide regressions (§Q) live in *other* files and have **not**
-run on Torch. They are not part of the 28.
+**What the Colab runs used, in order.** The C24-1 runs (R1, R2, R2B, R3B, R3C)
+were **test and runtime verification** — a GPU for the suite, no real model and
+no real corpus. **C24-4-R2 later used the real PhoBERT tokenizer and encoder**
+for integration verification (§S.5). **C24-5B-R1 later read the exact official
+TRAIN/DEV source bytes transiently** for integrity, reconstruction and
+role-boundary verification (§S.8). **Neither produced downstream training or a
+downstream score, and official TEST remained untouched.**
+
+**The Revision-3 repository repairs have since run.** The exact eight passed
+**8/8** in R3B; the complete evaluation harness passed **74/74** and the full
+repository **2 401 / 0 / 0** in R3C. *(They were unexecuted at Revision 3 — §§Q
+and R record that state at that time.)* They are not part of the 28.
 
 Deliberately, **the contract logic is torch-free** — selection rules, membership
 guards, cache provenance, report shape and the boundary checks are pure Python,
@@ -454,15 +479,22 @@ to check.
 ## K. WHAT HAS NOT HAPPENED
 
 - **No LR sweep.** The grid is implemented and not executed.
-- **No head trained on real data.** No real representation was extracted.
+- **No head trained on real UIT-VSFC**, and **no real UIT-VSFC representation
+  was extracted for downstream training or measurement.** *(C24-4-R2 did extract
+  real-PhoBERT representations — from three **synthetic** smoke inputs, for
+  integration verification only; §S.5.)*
 - **No downstream score.** No Vanilla-vs-Base-only number exists.
 - **No model or dataset downloaded by this task.** The local `.venv` remains
   ML-free — torch, transformers, datasets, numpy and sklearn are all absent, and
   nothing here fetched a model or a corpus. **Scope matters:** the Colab test
-  runs used a GPU for the test suite only, and the accidental probe execution
-  under the broken negative test (§Q.4 Group C) reached the model-loading path.
-  **Whether it downloaded assets or loaded them from cache is NOT ESTABLISHED**
-  from the available evidence, and this audit does not guess.
+  C24-1 runs used a GPU for the test suite only; **C24-4-R2 later loaded the
+  real PhoBERT model from the repo-local HF cache** for integration verification
+  (§S.5), and **C24-5B-R1 downloaded the four official TRAIN/DEV content files**
+  for the data-boundary verification (§S.8) — neither trained anything nor
+  produced a score, and both are verification, not diagnostic execution.
+  Separately, the accidental probe under the broken negative test (§Q.4 Group C)
+  reached the model-loading path: **whether it downloaded assets or loaded them
+  from cache is NOT ESTABLISHED**, and this audit does not guess.
 - **Official TEST never loaded**, and now unreachable by construction.
 - **No Stage-1 training or HPO.** Stage-1 is untouched.
 - **No prohibited git operation.** Nothing staged, committed, tagged or pushed.
@@ -505,19 +537,20 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
    outside the validated boundary, and no in-process check can detect that. The
    supported path — extract or load through the cache, then train — is bound;
    arbitrary construction is not, and is not claimed to be.
-2. **Nothing here has met a real encoder.** Every torch test uses a fake
-   embedding module. The extraction path is simple and its contract is checked,
-   but PhoBERT's actual output object, tokenizer behaviour and `<s>` position
-   are exercised only on Colab. Audit 022 is the standing reminder that a real
-   run finds things fixtures do not.
-3. **Targeted Torch coverage is clean; repository-wide Torch health is not.**
-   C24-1-R2 closed the Audit-024 targeted gate (136/0/0). C24-1-R2B exposed
-   eight older regression tests elsewhere (§Q); C24-1-R3B confirmed those eight
-   repairs pass on Torch — and exposed **eight more** failures from a fixture
-   interaction my own repair introduced (§R). The full repository suite has
-   still **never completed**. A green file is not a green repository, and each
-   round of repair has so far revealed the next thing the local environment
-   could not see.
+2. *(Discharged by C24-4-R2.)* This audit's tests use a fake embedding module,
+   so for most of its life nothing here had met a real encoder. **C24-4-R2
+   settled it**: on the real `RobertaModel`, `extract_bound_representations`
+   returns values **exactly equal** to `last_hidden_state[:, 0, :]` for both
+   pathways, with a real cache round-trip and a real cross-pathway refusal
+   (§S.5). **What remains true:** the local suite still cannot see this, so a
+   future change to extraction is only caught on Colab.
+3. *(Closed by C24-1-R3C — 2 401 / 0 / 0.)* It took **three** Colab rounds to
+   get there: R2 closed the targeted file, R2B exposed eight older regressions
+   elsewhere (§Q), R3B confirmed those repairs but exposed eight more from a
+   fixture interaction my own repair introduced (§R). **What remains true:** a
+   green file was never evidence of a green repository, and every round revealed
+   something the ML-free local environment could not see. That asymmetry has not
+   gone away — it has only been paid down for this commit.
 4. **The precommitted counts from Audit 023 are not re-verified by this module.**
    It trusts the membership files it is given, checking their internal
    consistency and optionally their digests. It does not re-derive the split.
@@ -599,7 +632,7 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 24 | Final Stage-2 pooling | **OPEN** |
 | 25 | Compiled PDF | **STALE** |
 | 26 | No new decision invented | **yes** — §L |
-| 27 | Tests | local **2 310 passed, 89 skipped**; targeted file **108 passed, 28 skipped locally** — and **136/0/0 on GPU** in C24-1-R2 |
+| 27 | Tests | local **2 312 passed, 89 skipped**; targeted file **108 passed, 28 skipped locally** — and **136/0/0 on GPU**, with the **full repository at 2 401 / 0 / 0** in C24-1-R3C |
 | 28 | `git diff --check` clean | **yes** |
 | 29 | Everything unstaged | **yes** |
 | 30 | No prohibited git operation | **yes** |
@@ -622,7 +655,7 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 45 | Status block matches the evidence levels in §§E, F, I, N | **yes** — four unqualified lines corrected, locally-verified lines marked `LOCAL-PASS` |
 | 46 | *(historical, Rev 1b)* Q4 and Q5 remain runtime PENDING everywhere | **correct then; SUPERSEDED by Revision 3** — both are **TORCH-PASS** after C24-1-R2 |
 | 47 | *(historical, Rev 1b)* Cache on-disk save/load path remains runtime PENDING | **correct then; SUPERSEDED by Revision 3** — **TORCH-PASS** after C24-1-R2 |
-| 48 | Real-model and real-data gates remain **PENDING** | **yes, still current** — §O steps 2 and 3, status block |
+| 48 | *(historical, Rev 1b)* Real-model and real-data gates remain PENDING | **correct then; SUPERSEDED by Revision 4** — real PhoBERT **CLOSED** by C24-4-R2 (§S.5); real-data boundary **CLOSED** by C24-5B-R1 (§S.8) |
 | 49 | No scientific claim upgraded without evidence | **yes** — this pass only ever weakened claims |
 | 50 | No code, test, constant or decision changed | **yes** — documentation only |
 | | **— Revision 2: C24-1-R1 —** | |
@@ -657,12 +690,12 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 77 | Stage-1 adapted-grid contract unchanged | **yes** — fixture repaired; the guard rejects only what already crashed |
 | 78 | Missing-transformers negative test is deterministic | **yes** — meta-path blocker, not PATH |
 | 79 | The negative test cannot enter the probe success path | **yes** — asserts no output dir and no load message |
-| 80 | Generated Colab probe artifacts not committed | **yes** — none present locally; `results/` is not ignored, so any would show untracked |
+| 80 | *(historical, Rev 3)* Generated Colab probe artifacts not committed | **yes, and still true** — but the Rev-3 **rationale was wrong**: I wrote that `results/` is not ignored, having checked the *directory* (re-included by `!results/**/`) rather than a file under it. H1 established that `.gitignore:15 `` results/** `` **does** match `results/b3b1/20260821T104151Z/*`, so the known accidental probe **is gitignored** (mtime 2026-08-21 10:41:51 UTC). The R3C and H1 worktrees were clean; its download-vs-cache status remains **NOT ESTABLISHED** |
 | 81 | One production change, additive, classified as hardening | **yes** — `+26/−0`, zero removed lines |
-| 82 | Local counts reported honestly | **yes** — 2 310 / 89; 1 of 8 repairs runs locally |
-| 83 | Real-model smoke and real-data dry-run still **pending** | **yes** |
+| 82 | *(historical, Rev 3)* Local counts reported honestly | **yes** — **2 310 / 89 at that revision**; 1 of 8 repairs ran locally. Current: 2 312 / 89 |
+| 83 | *(historical, Rev 3)* Real-model smoke and real-data dry-run still pending | **correct then; SUPERSEDED by Revision 4** — **CLOSED** by C24-4-R2 and C24-5B-R1 |
 | 84 | **Targeted** Audit-024 Torch gate | **PASS / CLOSED** — 136/0/0 at `52ebca06…`, file unmodified since |
-| 85 | **Repository-wide** Torch regression | **PENDING R3 RERUN** — R2B was 2383/8; seven repairs torch-gated, unexecuted |
+| 85 | **Repository-wide** Torch regression | *(historical, Rev 3)* PENDING then — **CLOSED by C24-1-R3C: 2 401 / 0 / 0** |
 | 86 | The two gates are never conflated | **yes** — §A, §I, §J, §O and the status block state them separately |
 | 87 | No claim upgraded beyond what C24-1-R2 executed | **yes** — every `TORCH-PASS` maps to a test in `tests/test_preg1_head.py`, verified unmodified since `52ebca06` |
 | | **— Revision 3a: evidence-consistency sweep —** | |
@@ -684,74 +717,79 @@ and Audit 023's fail-open splitter did — that will warrant an entry then.
 | 102 | Full R3 suite recorded as **NOT REACHED**, not failed | **yes** — §R step 4 |
 | 103 | The eight harness repairs **not** claimed to work | **yes** — torch-gated, unverified; only the fixture accident is excluded |
 | 104 | No new scientific decision | **yes** — a fixture repair is not a decision |
+| | **— Revision 4: FINALIZATION —** | |
+| 105 | C24-1-R3C **2 401 / 0 / 0** recorded; repository-wide gate **CLOSED** | **yes** — §S.1 |
+| 106 | The R3C `results/` stop classified as stale historical probe hygiene, **not** a test failure | **yes** — mtime 2026-08-21 10:41:51 UTC, gitignored, worktree clean |
+| 107 | Historical accidental probe download/cache status still **NOT ESTABLISHED** | **yes** — §S.1 and §Q.4 Group C |
+| 108 | C24-2 committed-API discovery recorded; `train_head` has no free role/pathway | **yes** — §S.2 |
+| 109 | C24-3 Drive membership verified **by locked SHA, not filename** | **yes** — five digests, 9139/2285/11424, assignment digest |
+| 110 | C24-4-R1 classified as **external smoke-harness metadata-discovery failure** | **yes** — §S.4; not a production defect |
+| 111 | C24-4-R2 real PhoBERT integration **PASS**; exact model/revision/tokenizer/class recorded | **yes** — §S.5 |
+| 112 | `FIRST_TOKEN` proved **exactly equal** to real `last_hidden_state[:, 0, :]`, both pathways | **yes** — §S.5 |
+| 113 | Real cache round-trip **and** cross-pathway refusal recorded | **yes** — §S.5 |
+| 114 | C24-5B attempt 1 classified as a **one-character external-harness SHA typo**, not a dataset mismatch | **yes** — §S.7; no repository code changed |
+| 115 | C24-5B-R1: four official TRAIN/DEV raw hashes recorded | **yes** — §S.8 |
+| 116 | Derived TRAIN SHA / rows / bytes / labels recorded; `load_derived_pool` gate passed | **yes** — `a20c0f77…`, 11 424, 1 067 331, 5 324/458/5 642 |
+| 117 | Derived official DEV SHA / rows / bytes recorded | **yes** — `9c475c89…`, 1 583, 139 001 |
+| 118 | Audit-023 membership 9 139 / 2 285 / 11 424 + assignment digest recorded | **yes** |
+| 119 | Membership → real-row exact binding recorded | **yes** — every id resolves to one row; none missing, none duplicated |
+| 120 | Official validation refused where protocol-dev is required | **yes** — `SplitLeakage`, on real membership |
+| 121 | Protocol-dev refused where official validation is required | **yes** — `SplitLeakage` |
+| 122 | Official TEST content never selected, downloaded, read or scored | **yes** |
+| 123 | No optimizer, head training, LR tuning or downstream score in any C24 run | **yes** |
+| 124 | Current verdict no longer says repository / model / data verification pending | **yes** — §A |
+| 125 | Historical failed attempts preserved in §§P, Q, R | **yes** — history not rewritten |
+| 126 | No new scientific decision invented by finalization | **yes** — §S.9 |
+| 127 | No production source or test changed in this pass | **yes** — documentation only |
+| | **— Revision 4a: current-state consistency —** | |
+| 128 | §A no longer denies C24-4 / C24-5 execution | **yes** — separates *did not happen* (head training, LR tuning, score, burden diagnostic, Stage-1) from *did happen as verification* (real PhoBERT smoke, real-data role-boundary dry-run) |
+| 129 | §J no longer says no real model or corpus was ever used | **yes** — chronology: C24-1 = test/runtime only; C24-4-R2 = real PhoBERT; C24-5B-R1 = transient official TRAIN/DEV bytes |
+| 130 | §J no longer says the Revision-3 repository repairs are unexecuted | **yes** — 8/8 in R3B, 74/74 and 2 401/0/0 in R3C |
+| 131 | The same false "no real model" claim repaired in §K | **yes** |
+| 132 | Current local count is **2 312 passed / 89 skipped** | **yes** — §A and §N row 27 |
+| 133 | Historical 2 310 / 89 retained only where labelled historical | **yes** — §N row 82 and §Q.6, both scoped to Revision 3 |
+| 134 | Status block separates downstream diagnostic from verification-only execution | **yes** — and the duplicate `STAGE-1` key was removed |
+| 135 | Neither C24-4 nor C24-5 is implied to have produced a downstream result | **yes** — stated explicitly in §A, §J and the status block |
+| 136 | Accepted Revision-4 evidence preserved unchanged | **yes** — 27-point gate: 2 401/0/0, 136/136, all hashes, membership, refusals, classifications, NOT ESTABLISHED |
+| 137 | No production or test source changed in this pass | **yes** — documentation only |
+| | **— Revision 4b: four residual items —** | |
+| 138 | §K no longer says no real representation was ever extracted | **yes** — C24-4-R2 extracted from three **synthetic** smoke inputs, verification only |
+| 139 | §K still correctly states no real-data head training occurred | **yes** — and no real UIT-VSFC representation for downstream training or measurement |
+| 140 | §N row 48 marked historical / SUPERSEDED, not "still current" | **yes** |
+| 141 | §N row 83 marked historical / SUPERSEDED | **yes** — same style as rows 82 and 85 |
+| 142 | §N row 80 no longer claims `results/` was unignored | **yes** — and the wrong rationale is recorded rather than deleted |
+| 143 | The gitignore correction was **verified**, not accepted on assertion | **yes** — `git check-ignore` on a file under a run directory returns `.gitignore:15 results/**` |
+| 144 | Historical accidental-probe facts preserved; download-vs-cache still **NOT ESTABLISHED** | **yes** |
+| 145 | All four verification gates remain **CLOSED**; local count remains **2 312 / 89** | **yes** |
+| 146 | No accepted Revision-4 evidence altered | **yes** — 20-point gate re-run |
 
 ---
 
-## O. REQUIRED NEXT ACTION — FIVE STEPS, IN ORDER
+## O. NEXT ACTION — THE PRE-G1 DIAGNOSTIC
 
-**None of these was run in this task.** Steps 1–3 produce no classifier result
-and no score; only step 5 does, and it comes after a separate approval.
+**All four verification gates are closed** (§S). Steps 1–3 of the earlier
+sequence — repository-wide Torch, real-model integration, real-data boundary —
+are discharged; their evidence is in §S.1, §S.5 and §S.8, and the failed
+attempts that preceded them are preserved in §§P, Q and R.
 
-### 1. Repository-wide Colab verification of the Revision-3 repairs
+**Nothing below was run in this task.**
 
-*(Historical: C24-1-R1 returned 132/2/0 — §P; C24-1-R2 then returned **136/0/0**
-and **closed the Audit-024 targeted gate** — §Q.1. What follows is the gate that
-is still open.)*
+### Only after researcher review and commit of this finalization
 
-On a **new committed revision**, with the pinned inventory present **only** via
-`scripts/fetch_vietnamese_syllable_inventory.py`:
+The locked pre-G1 Vanilla-vs-Base-only burden diagnostic:
 
-- `tests/test_preg1_head.py` → **136 / 0 / 0** again (regression check);
-- the **eight repaired repository tests** specifically rerun and passing;
-- the **full repository Torch suite** → **zero failures**;
-- no `results/…` artifact staged.
+| Phase | Runs |
+|---|---|
+| Vanilla LR tuning — 5 learning rates × 3 tuning seeds | **15** |
+| *(freeze the winning Vanilla LR)* | — |
+| Paired final measurement — 5 Vanilla + 5 Base-only | **10** |
+| **Total** | **25 frozen-representation linear-head training runs** |
 
-Seven of those eight repairs are torch-gated and have never executed. Until this
-run is clean, repository-wide Torch health is **PENDING**.
+**These train only the linear head. The pretrained encoder stays frozen.**
 
-### 2. Real PhoBERT-base integration smoke — **no optimizer, no training**
-
-Against the exact diagnostic checkpoint and revision, with the real tokenizer:
-
-- Vanilla and Base-only preprocessing through the **same** tokenizer contract;
-- `max_length = 256`, `padding = "max_length"`, `truncation = True`;
-- the real frozen encoder, in `eval`, under `no_grad`;
-- first-`<s>` pooling;
-- FP32 `BoundRepresentations`;
-- representation cache save **and** load, with the provenance/key checks firing;
-- **no downstream score**.
-
-This is where a fake embedding module stops being adequate: PhoBERT's actual
-output object, tokenizer behaviour and `<s>` position have never been exercised
-here. Audit 022 is the standing reminder that a real run finds what fixtures do
-not.
-
-### 3. Real approved-data / membership boundary dry-run — **still no training**
-
-- reconstruct or verify the approved derived TRAIN identity;
-- recover the safe Audit-023 membership artifacts;
-- verify the locked hashes and the assignment identity;
-- prove protocol-train / protocol-dev binding end to end;
-- verify official validation is measurement-only;
-- **do not touch official TEST**;
-- **produce no classifier result**.
-
-### 4. Revise Audit 024 **in place** with the step 1–3 Colab evidence
-
-No Audit 025. The runtime and integration evidence closes this audit's pending
-half; the verdict may then drop the pending clause.
-
-### 5. Only after that audit closes **and** the researcher approves the exact
-implementation, and it is committed
-
-- Vanilla-only LR tuning across the precommitted grid;
-- freeze the winning LR;
-- paired Vanilla-vs-Base-only measurement on official validation.
-
-That paired result will be the **first downstream number in this project**. It
+The paired result will be the **first downstream number in this project**. It
 measures a burden. It does not test UNMARK, and it must not be reported as if it
 did.
-
 
 ---
 
@@ -1076,7 +1114,7 @@ official-validation role and the TEST seal are all untouched.
 
 | | |
 |---|---|
-| Full local suite | **2 310 passed, 89 skipped** (2 307 / 84 before) |
+| Full local suite *(at Revision 3)* | **2 310 passed, 89 skipped** (2 307 / 84 before; **2 312 / 89** after Revision 3b) |
 | `tests/test_preg1_head.py` | **108 passed, 28 skipped** — unaffected |
 | Of the eight repaired tests | **1 runs locally and passes** (Group C); **7 remain torch-gated** |
 
@@ -1088,10 +1126,10 @@ guesswork, and they have not executed. Only Colab can settle them.
 
 | | |
 |---|---|
-| **Audit-024 targeted Torch contract tests** | **PASS / CLOSED** — 136/136 at `52ebca06…`; file unmodified since |
-| **Repository-wide Torch regression** | **PENDING R3 RERUN** — 2383/8 at R2B; 7 of 8 repairs torch-gated and unexecuted |
-| **Real PhoBERT integration smoke** | **PENDING** |
-| **Real-data boundary dry-run** | **PENDING** |
+| **Audit-024 targeted Torch contract tests** | **PASS / CLOSED** — 136/136 at `52ebca06…` |
+| **Repository-wide Torch regression** | *(PENDING at Revision 3)* — **CLOSED by C24-1-R3C**, 2 401 / 0 / 0 (§S.1) |
+| **Real PhoBERT integration smoke** | *(PENDING at Revision 3)* — **CLOSED by C24-4-R2** (§S.5) |
+| **Real-data boundary dry-run** | *(PENDING at Revision 3)* — **CLOSED by C24-5B-R1** (§S.8) |
 
 **"C24-1 fully passed" and "all Torch verification closed" are both false** and
 appear nowhere in this audit.
@@ -1239,11 +1277,261 @@ for the rerun to establish.
 |---|---|
 | Audit-024 targeted Torch | **PASS / CLOSED** — 136/136, reproduced at `f6ad4eef…` |
 | The exact eight R3 repairs | **PASS** — 8/8 on Torch |
-| Broader R3 related/safety group | **FAILED 8/328** — fixture interaction, repaired here, **rerun pending** |
-| Full repository R3 suite | **NOT REACHED** |
-| Real PhoBERT integration | **PENDING** |
-| Real-data boundary dry-run | **PENDING** |
-| Scientifically closed | **NO** |
+| Broader R3 related/safety group | **FAILED 8/328** at R3B — repaired; **C24-1-R3C then passed 74/74** |
+| Full repository R3 suite | **NOT REACHED** at R3B — **C24-1-R3C: 2 401 / 0 / 0** |
+| Real PhoBERT integration | *(PENDING then)* — **CLOSED by C24-4-R2** (§S.5) |
+| Real-data boundary dry-run | *(PENDING then)* — **CLOSED by C24-5B-R1** (§S.8) |
+| Scientifically closed as an implementation / pre-diagnostic audit | **YES** (§S.9) — the burden result still does not exist |
+
+
+---
+
+## S. FINALIZATION — ALL FOUR GATES CLOSED
+
+**Final verification commit:** `767fb8ee30fa9b5df344a3629b3295c1fd03c379`
+("test: align evaluation fixture vocabulary").
+
+Environment for every run below: Python 3.12.13, pytest 9.1.1,
+torch 2.11.0+cu128, transformers 4.57.6, CUDA available, NVIDIA RTX PRO 6000
+Blackwell Server Edition. Pinned syllable inventory
+`78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2`.
+
+**Evidence status.** Externally observed on Colab and supplied to this session;
+not reproduced here — the local environment has no torch and holds no corpus.
+
+### S.1 C24-1-R3C — repository-wide Torch closure
+
+| Step | Result |
+|---|---|
+| `tests/test_preg1_head.py` | **136 passed / 0 failed / 0 skipped** |
+| the eight evaluation-harness tests that failed in R3B | **8 passed** |
+| complete `tests/test_evaluation_harness.py` | **74 passed** |
+| **full repository Torch suite** | **2 401 passed / 0 failed / 0 errors** |
+
+**This closes the repository-wide Torch regression gate.** Every repair from
+Revisions 2, 3 and 3b now has runtime evidence.
+
+**The `results/` stop was not a test failure.** The first R3C shell halted after
+the suite on an over-broad `results/`-directory-existence guard. Classification
+established: the worktree is clean; tracked `results/**/.gitkeep` files are
+expected; `results/b3b1/20260821T104151Z/*` is ignored by `.gitignore`; its mtime
+is **2026-08-21 10:41:51 UTC** — it is the already-known historical accidental
+B3B1 probe from Revision 3 (§Q.4 Group C), **not an artifact R3C created**. The
+test result is **2401 / 2401 PASS**.
+
+**Unchanged:** whether that historical accidental probe downloaded assets or
+loaded them from cache remains **NOT ESTABLISHED**. Nothing in R3C bears on it.
+
+### S.2 C24-2 — committed API discovery (source only)
+
+**PASS.** No model, data, training or score.
+
+`Preg1Role` is exactly `PROTOCOL_TRAIN` / `PROTOCOL_DEV` /
+`OFFICIAL_VALIDATION` — **no `OFFICIAL_TEST`**. `RepresentationKey` carries
+dataset, dataset_version, task, role, pathway, source_identity,
+ordered_id_digest, tokenizer_id, model_revision, max_length, truncation,
+padding, pooling, dtype, hidden_size, count, schema_version.
+`BoundRepresentations` is `values` + `key`.
+
+Committed signatures confirmed:
+
+```
+extract_bound_representations(encoder, input_ids, attention_mask, key) -> BoundRepresentations
+train_head(train, train_labels, dev, dev_labels, *, learning_rate, seed,
+           epochs=30, batch_size=128, on_epoch=None) -> HeadRun
+score_measurement(head, measurement, labels) -> tuple[float, float]
+RepresentationCache.save(key, tensor) / .load(key) -> BoundRepresentations
+```
+
+**`train_head` has no free `role`, `dev_role`, `pathway` or `dev_pathway`** — the
+Revision-1 provenance binding is confirmed on the committed source, not just in
+this audit's prose.
+
+Locked values reconfirmed: `ENCODER_REVISION` `01daacda68afe13d83023d16ec647239e344a1e6`,
+`MAX_LENGTH` 256, `PADDING` `max_length`, `TRUNCATION` True, `PREG1_POOLING`
+`FIRST_TOKEN`, `EPOCHS` 30, `BATCH_SIZE` 128, LR grid and both seed sets
+unchanged.
+
+### S.3 C24-3 — Audit-023 Drive membership verification
+
+**PASS.** Directory
+`…/preg1-uit-vsfc-internal-split/preg1-split-v1-66f4522a-7bd5d189`.
+
+**Five files identified by locked SHA, not by filename** — the right way round,
+since a filename is an assertion and a digest is evidence:
+
+| File | SHA-256 |
+|---|---|
+| `protocol-train.ids.txt` | `275ae66d16582418093a1f4500904faefedd5936bb5cf383c52be302e151172e` |
+| `protocol-dev.ids.txt` | `d342950ae183e6c08bfeecaeacfb0e42aaf3751c12dec0baf0ca515922ca5e31` |
+| `split-manifest.json` | `225b109ea5fa58476e98bdf050a42ca89f12c6df02b37a882dc09cdc958b3685` |
+| `report.md` | `17a9a6f116b1277bc063ff53d0840e20cae1b034177d6d2ae014a6428ee20459` |
+| `runtime-environment.json` | `0ed15fc3f717e1d316194021969ec6fc8288073de99a051980d94f6b86bc2c6e` |
+
+protocol-train **9 139**, protocol-dev **2 285**, union **11 424**; no
+duplicates, no cross-split overlap; ids in the `train:NNNNN` namespace; the
+conflicting group `train:11293` / `train:11417` excluded. Assignment digest
+`7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84`, and the
+manifest parsed and contains that exact digest. **No CSV persisted** in the
+membership directory. No model, training or score.
+
+### S.4 C24-4-R1 — first PhoBERT smoke attempt
+
+**Classification: external smoke-harness metadata-discovery failure. Not a
+production defect, and not a model failure.**
+
+Before stopping it established: repository import from repo root;
+`vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6`; real
+`PhobertTokenizer` and `RobertaModel`; hidden size 768; `max_length` 256;
+padding `max_length`; position 0 = BOS/`<s>`; Vanilla and Base-only token grids
+differ; encoder frozen and in eval.
+
+It stopped because the **external harness** tried to infer the
+`RepresentationKey` dtype spelling and **refused to guess** — which is the
+harness behaving correctly, not the committed code failing.
+
+### S.5 C24-4-R2 — real PhoBERT integration **PASS**
+
+`vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6`, loaded from
+the repo-local HF cache. Schema `preg1-head-v1`. Real `PhobertTokenizer`, real
+`RobertaModel`, hidden size **768**.
+
+**RAW_BASE held on real text:** Vanilla and Base-only strings differ, no
+segmentation. Real tokenization gave both pathways shape **(3, 256)**, token
+position 0 = BOS/`<s>`, and **different token-id grids**.
+
+The **committed** validator selected the dtype convention `torch.float32` — the
+thing C24-4-R1's harness had declined to guess.
+
+Real bound representations, both pathways: shape **(3, 768)**, dtype
+`torch.float32`, `requires_grad` **False**.
+
+**FIRST_TOKEN verified against the real model.** For **both** pathways, the
+values returned by the committed `extract_bound_representations` path are
+**exactly equal** to `real_encoder(...).last_hidden_state[:, 0, :]`. This is the
+claim a fake embedding module could never settle — §M limitation 2 said so, and
+it is now discharged.
+
+Encoder invariants after extraction: **eval**, every parameter
+`requires_grad=False`, every parameter `grad` **None**.
+
+Real cache: **save PASS**, **load PASS**, exact key preserved, tensor preserved,
+and a **Vanilla cache loaded under a Base-only key is refused** with
+`EvaluationContractViolation` — the single most dangerous reuse, refused against
+real 768-dimensional tensors.
+
+No head, no optimizer, no training, no LR tuning, no downstream score, no real
+UIT-VSFC in this smoke, official TEST untouched. **This closes the real-model
+integration gate.**
+
+### S.6 C24-5A — real-data interface discovery
+
+**PASS**, discovery only. Confirmed derived TRAIN SHA
+`a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301`; the excluded
+conflict `train:11293` / `train:11417`; and the committed
+`load_derived_pool(path, text_column, label_column, id_column, *,
+expected_sha256=a20c0f77…, expected_rows=11424, expected_label_counts=…)` and
+`load_membership(...)`. No raw dataset present in the runtime before C24-5B. No
+model, training or score.
+
+### S.7 C24-5B attempt 1 — a one-character harness typo
+
+**Not a dataset mismatch.** The external harness omitted the final character `3`
+from the expected SHA of `dev/sentiments.txt`. The authoritative,
+repository-recorded value is
+`a9584a22c926a54c6042236380c9a65ab8c41467477f7a5d794fb2505c96a9c3`, and **the
+downloaded official file matched it**. The typo was fixed in the external Colab
+harness only; **no repository code changed**. No training, no score.
+
+Worth stating plainly: the digest gate did exactly its job. A wrong expectation
+produced a refusal rather than a silent acceptance.
+
+### S.8 C24-5B-R1 — real approved-data / role boundary **PASS**
+
+All locked SHAs passed a 64-hex-character preflight before use.
+
+Official public UIT-VSFC source folder `1xclbjHHK58zk2X6iqbvMPS2rcy9y9E0X`.
+**Only these four content files were selected and downloaded:**
+
+| File | SHA-256 |
+|---|---|
+| `train/sents.txt` | `5481dc1fa51f2fe72f22afd89b8aeb7f8945a126af7e66ac622e2ab0291130cb` |
+| `train/sentiments.txt` | `480480c3b9a6bc8bdf53339c721e93f8cc30472ac8f0bd21d4440ce1171aefac` |
+| `dev/sents.txt` | `fb7c3cc3173e1383edc03779883d91bb4d6110c8dd881612572a256878aa23b4` |
+| `dev/sentiments.txt` | `a9584a22c926a54c6042236380c9a65ab8c41467477f7a5d794fb2505c96a9c3` |
+
+**Official TEST content was not selected, not downloaded, not read and not
+scored.**
+
+Raw counts — TRAIN **11 426** (`0` 5 325, `1` 458, `2` 5 643); official DEV
+**1 583** (`0` 705, `1` 73, `2` 805).
+
+Adapter reconstruction used the official `sents.txt` + `sentiments.txt` with **no
+NFC normalisation, no whitespace normalisation, no label transformation**,
+`csv.DictWriter`, fields `id,text,label`, `newline=""`, LF, zero-based ids
+`split:NNNNN`. The entire conflicting canonical group (`train:11293`,
+`train:11417`) was excluded, **with no relabel**.
+
+| Derived | Rows | Bytes | SHA-256 |
+|---|---|---|---|
+| TRAIN | **11 424** | 1 067 331 | `a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301` |
+| official DEV | **1 583** | 139 001 | `9c475c8998871c0c7317ee200b3e7db827128cd2dfec9de5c689aca299acc8d0` |
+
+Derived TRAIN labels: `0` 5 324, `1` 458, `2` 5 642. **The committed
+`load_derived_pool()` accepted it and its locked SHA/count gate passed** — the
+Audit-022 digest reproduced from the official source a third time.
+
+Real Audit-023 membership loaded: protocol-train **9 139**, protocol-dev
+**2 285**, union **11 424**, assignment digest
+`7bd5d1892e23b96035c376936d2168f547661da07b8abc769f5656e9438f4f84`. Unique
+within each split, disjoint, union exactly equal to the real derived TRAIN ids,
+**every membership id resolves to exactly one real row**, none missing, none
+duplicated.
+
+**Role-boundary dry-run** — dummy tensors only, purely to exercise provenance:
+
+| Case | Result |
+|---|---|
+| real protocol-train membership → `PROTOCOL_TRAIN` | **PASS** |
+| real protocol-dev membership → `PROTOCOL_DEV` | **PASS** |
+| official validation → `OFFICIAL_VALIDATION` | **PASS** |
+| official validation supplied where protocol-dev is required | **REFUSED — `SplitLeakage`** |
+| protocol-dev supplied where `OFFICIAL_VALIDATION` is required | **REFUSED — `SplitLeakage`** |
+| official TEST role | **absent — PASS** |
+
+**Official validation is therefore measurement-only on the supported path, and
+protocol-dev cannot be reported as the measurement** — both directions refused
+against *real* membership rather than synthetic ids.
+
+Execution boundary: real TRAIN/DEV integrity read **yes**; real model **no**;
+representation extraction **no**; head **no**; optimizer **no**; training **no**;
+LR tuning **no**; downstream score **no**; official TEST content **untouched**.
+Raw and derived files existed only inside a `TemporaryDirectory` and were not
+persisted; the repository stayed clean. **This closes the real-data boundary
+gate.**
+
+### S.9 What "scientifically closed" means here — and what it does not
+
+Audit 024's **implementation, runtime, integration and data-boundary
+verification is complete**. That is the whole of the claim.
+
+**It does not mean** the Vanilla-vs-Base-only burden result exists, that pre-G1
+is finished, that Stage-1 is approved for training, that Stage-2 pooling is
+locked, or that D-B3B0-002 is resolved.
+
+| Still open | State |
+|---|---|
+| D-B3B0-002 | **OPEN** |
+| Final Stage-2 pooling | **OPEN** |
+| Compiled proposal PDF | **STALE** |
+| Official TEST | **SEALED** |
+| Real downstream head training | **NOT RUN** |
+| LR sweep | **NOT RUN** |
+| Downstream score | **NONE** |
+| Stage-1 training / HPO | **NOT RUN** |
+
+**No new scientific decision was created by this finalization.** Runtime
+verification of a precommitted implementation is not a decision.
 
 
 ---
@@ -1253,33 +1541,51 @@ AUDIT 024 CREATED:
 YES
 
 VERDICT:
-IMPLEMENTATION PASS — AUDIT-024 TARGETED TORCH CONTRACT TESTS: PASS / CLOSED;
-REPOSITORY-WIDE TORCH REGRESSION: PENDING R3 RERUN;
-REAL-MODEL AND REAL-DATA BOUNDARY VERIFICATION: PENDING;
+IMPLEMENTATION PASS — ALL FOUR VERIFICATION GATES CLOSED;
 NO DIAGNOSTIC RUN, NO DOWNSTREAM SCORE
 
-SCIENTIFICALLY CLOSED:
-NO
+SCIENTIFICALLY CLOSED AS AN IMPLEMENTATION / PRE-DIAGNOSTIC AUDIT:
+YES — implementation, runtime, integration and data-boundary verification complete
+NOT A CLAIM THAT: the burden result exists, pre-G1 is finished,
+Stage-1 is approved for training, Stage-2 pooling is locked,
+or D-B3B0-002 is resolved
 
 REVISION:
-3
+4 (FINALIZATION)
+
+FINAL VERIFICATION COMMIT:
+767fb8ee30fa9b5df344a3629b3295c1fd03c379
 
 AUDIT-024 TARGETED TORCH CONTRACT TESTS:
 PASS / CLOSED — 136 passed / 0 failed / 0 skipped at HEAD 52ebca06
 FILE UNMODIFIED SINCE THAT COMMIT
 
 REPOSITORY-WIDE TORCH REGRESSION:
-PENDING RERUN — NEVER COMPLETED
-C24-1-R2B: 2383 passed / 8 failed (all eight classified, none an implementation defect)
-C24-1-R3B: THOSE EIGHT REPAIRS PASSED 8/8 ON TORCH;
-  BROADER GROUP THEN FAILED 8/328 ON A SHARED-FIXTURE INTERACTION (§R);
-  FULL SUITE **NOT REACHED**
+PASS / CLOSED — C24-1-R3C AT 767fb8ee: 2401 passed / 0 failed / 0 errors
+THE R3C `results/` STOP WAS A STALE HISTORICAL PROBE-HYGIENE GUARD,
+NOT A TEST FAILURE (gitignored; mtime 2026-08-21 10:41:51 UTC)
+HISTORY: R2B 2383/8; R3B eight repairs 8/8 PASS, broader group 8/328,
+full suite NOT REACHED — root cause a test-fixture regression
+(stub vocab 64 vs ids to 4099), repaired via one shared STUB_VOCAB_SIZE
 
-C24-1-R3B (HEAD f6ad4eef):
-TARGETED 136/0/0 PASS; EIGHT R3 REPAIRS 8/8 PASS;
-BROADER GROUP 8 FAILED / 328 PASSED; FULL SUITE NOT REACHED
-ROOT CAUSE: TEST-FIXTURE REGRESSION (STUB VOCAB 64 vs IDS TO 4099)
-REPAIRED VIA ONE SHARED STUB_VOCAB_SIZE CONTRACT; NO PRODUCTION CHANGE
+REAL PHOBERT INTEGRATION:
+PASS / CLOSED — C24-4-R2
+vinai/phobert-base @ 01daacda68afe13d83023d16ec647239e344a1e6
+PhobertTokenizer / RobertaModel / hidden 768 / (3,256) / FP32 (3,768)
+FIRST_TOKEN EXACTLY EQUALS last_hidden_state[:, 0, :] FOR BOTH PATHWAYS
+REAL CACHE SAVE+LOAD PASS; VANILLA-AS-BASE-ONLY REFUSED
+(C24-4-R1 WAS AN EXTERNAL SMOKE-HARNESS METADATA-DISCOVERY FAILURE)
+
+REAL APPROVED-DATA / ROLE BOUNDARY:
+PASS / CLOSED — C24-5B-R1
+DERIVED TRAIN a20c0f77... 11424 rows / 1067331 bytes / 5324-458-5642
+DERIVED DEV 9c475c89... 1583 rows / 139001 bytes
+MEMBERSHIP 9139 / 2285 / 11424; DIGEST 7bd5d189...
+EVERY MEMBERSHIP ID RESOLVES TO EXACTLY ONE REAL ROW
+OFFICIAL VALIDATION -> SELECTION: REFUSED (SplitLeakage)
+PROTOCOL-DEV -> MEASUREMENT: REFUSED (SplitLeakage)
+OFFICIAL TEST CONTENT: NOT SELECTED / NOT DOWNLOADED / NOT READ / NOT SCORED
+(C24-5B ATTEMPT 1 WAS A ONE-CHARACTER EXTERNAL-HARNESS SHA TYPO)
 
 PINNED INVENTORY:
 RECOVERED VIA REPOSITORY FETCHER — RESOURCE REQUIREMENT, NOT A DEFECT
@@ -1297,8 +1603,13 @@ FAILED — 132 passed / 2 failed / 0 skipped at HEAD b43cca82
 ALL 134 THEN-CURRENT TESTS EXECUTED; 26 OF THE 28 TORCH-GATED PASSED
 BOTH FAILURES TEST-SIDE; ZERO IMPLEMENTATION LINES CHANGED
 
-SCIENTIFIC DIAGNOSTIC EXECUTION:
-NONE — NO REAL-DATA TRAINING, LR TUNING, SCORE, MODEL SMOKE OR STAGE-1 RUN
+SCIENTIFIC DOWNSTREAM DIAGNOSTIC EXECUTION:
+NONE — NO REAL-DATA HEAD TRAINING / LR TUNING / VANILLA-vs-BASE SCORE
+
+VERIFICATION-ONLY EXECUTION:
+REAL PHOBERT SMOKE = PASS (C24-4-R2)
+REAL APPROVED-DATA / ROLE BOUNDARY = PASS (C24-5B-R1)
+NEITHER PRODUCED A DOWNSTREAM RESULT
 
 MODEL / DATASET DOWNLOAD:
 NONE BY THE LOCAL IMPLEMENTATION/AUDIT WORK (.venv ML-FREE)
@@ -1376,14 +1687,15 @@ targeted file: 136 authored / 108 passed locally / 28 torch-gated
 OF THE 8 REPAIRED TESTS: 1 RUNS AND PASSES LOCALLY, 7 REMAIN TORCH-GATED
 
 TORCH RUNTIME VERIFICATION:
-TARGETED AUDIT-024 = PASS (136/0/0, C24-1-R2)
-REPOSITORY-WIDE = PENDING R3 RERUN (ZERO FAILURES REQUIRED)
+TARGETED AUDIT-024 = PASS (136/0/0)
+REPOSITORY-WIDE = PASS (2401/0/0, C24-1-R3C)
 
-REAL-MODEL INTEGRATION:
-PENDING
+ACCIDENTAL HISTORICAL B3B1 PROBE:
+DOWNLOAD-vs-CACHE STATUS STILL NOT ESTABLISHED
 
-REAL-DATA BOUNDARY DRY-RUN:
-PENDING
+NEXT SCIENTIFIC STEP (NOT RUN):
+PRE-G1 VANILLA-VS-BASE DIAGNOSTIC — 15 TUNING + 10 PAIRED = 25 LINEAR-HEAD RUNS
+ENCODER REMAINS FROZEN
 
 COMMIT CREATED:
 NO
