@@ -29,12 +29,15 @@ apart at a glance:
 | **RESOLVED DECISION** | D-001 (canonical tone placement) |
 | **RESOLVED DECISION** (cont.) | D-B3A-001 (Vietnamese eligibility, closes GAP-2) |
 | **KNOWN DEFERRED GAP** | D-B2-005 (`VARIANT`) |
-| **OPEN — EMPIRICAL PROBE REQUIRED** | D-B3B0-002 (backbone checkpoint not locked) |
+| **RESOLVED DECISION** (cont.) | D-B3B0-002 — **CLOSED** by D-B3B0-007 (backbone locked to `vinai/phobert-base` @ `01daacda…`) |
 | **RESOLVED DECISION** (cont.) | D-B3B1C-001 (manual alignment validated; tone ownership by candidate count) |
 | **RESOLVED DECISION** (cont.) | D-B3B2-001 (deterministic B3B COMPLETE), D-B4A-001, D-B4A-007 |
 | **RESOLVED DECISION** (cont.) | D-B4A-002 … D-B4A-007 — all six B4A items, resolved by researcher decision; **B4B unblocked** |
 | **RESOLVED DECISION** (cont.) | D-S1A-001 … D-S1A-004 (Stage-1 data path and objective) |
-| **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter |
+| **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter. **Concrete values are now PROPOSED** in [Audit 028](../audits/028-stage1-scientific-config-review.md); the register stays OPEN until the researcher approves them |
+| **RESOLVED DECISION** (cont.) | D-PREG1-015 (pre-G1 CLOSED — primary and secondary), D-S1B-001 (UIT-VSFC excluded from Stage-1 selection), D-B3B0-007 (main backbone locked) |
+| **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock) |
+| **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
 | **OPEN — RESEARCHER DECISION REQUIRED** (cont.) | D-G1-004 — every classification-head concrete value for the **full §6 grid**; §5 names these as blocking **G1** |
@@ -375,7 +378,7 @@ the five constraints above, record the choice here, and only then amend §4.4.
 
 | | |
 |---|---|
-| **Status** | **OPEN — SPEC LOCK ITEM** |
+| **Status** | **CLOSED** by [D-B3B0-007](#d-b3b0-007--the-main-backbone-is-locked). *Was:* OPEN — SPEC LOCK ITEM. |
 | **Owner** | B3B / spec lock |
 
 **Original proposal wording.** §6.1: "At least two […] **PhoBERT-base**
@@ -3527,3 +3530,418 @@ a decision; no new decision id was created. See
 | | |
 |---|---|
 | **Proposal updated** | **NO** — the proposal specifies a deterministic group-aware stratified split; this makes the implementation actually satisfy that, and removes a vote the proposal never authorised. PDF stale: **YES** (unchanged) |
+
+
+---
+
+### D-PREG1-015 — the pre-G1 burden diagnostic is closed
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | pre-G1 |
+
+**What ran.** The primary shared-LR paired measurement (HEAD `929f80e`) and the
+precommitted **secondary own-LR sensitivity** (HEAD `3bb0edb`).
+
+| | Macro-F1 | Accuracy |
+|---|---|---|
+| Vanilla (shared LR 0.01) | 0.745 601 988 142 145 4 | 0.901 326 595 072 646 9 |
+| Base-only (shared LR 0.01) | 0.663 044 566 342 825 5 | 0.822 867 972 204 674 8 |
+| **Burden (Vanilla − Base-only)** | **0.082 557 421 799 319 88** | **0.078 458 622 867 972 2** |
+
+**The secondary result.** Base-only, tuning independently on the same
+precommitted grid with the same three tuning seeds and the same protocol-dev,
+**selected LR = 0.01** — the same value the shared protocol had frozen. The
+secondary own-LR burden is therefore **numerically identical** to the primary
+shared-LR burden.
+
+**What this establishes.** One alternative explanation is removed: the gap is not
+an artefact of Base-only being denied its own tuning budget.
+
+**What it does NOT establish.** It is **not** a significance result, **not** an
+upper or lower bound, and **not** a claim that the gap survives any other
+protocol change. No p-value, threshold or hypothesis test was computed at any
+point, by design ([D-PREG1-010](#d-preg1-010--paired-initialisation-and-optimiser-detail)).
+
+**Consequences.** pre-G1 is **not rerun**, its LR grid is **not widened**, and
+its numbers are inputs from here on. Official UIT-VSFC TEST remains **sealed**
+and structurally unreachable (`Preg1Role` has no `OFFICIAL_TEST` member).
+
+Cross-references [Audit 026](../audits/026-preg1-paired-measurement-runner.md),
+[Audit 027](../audits/027-preg1-base-only-own-lr-sensitivity.md).
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+
+### D-S1B-001 — UIT-VSFC may not select any Stage-1 value
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | Stage-1B |
+
+**The rule.** UIT-VSFC downstream scores **must not** be used to choose any
+Stage-1 quantity. Named explicitly, and not limited to these: `lambda_align`,
+`lambda_clean`, optimizer, learning rate, batch size, epoch/update budget,
+warmup, gradient accumulation, gradient clipping, weight decay, seeds,
+checkpoint selection, adapter capacity, corruption policy, corruption rate
+sampling, redraw schedule, `pi_strip`, `max_length`, truncation behaviour, and
+the Stage-1 corpus.
+
+**Why.**
+
+1. **Selection leakage into the headline number.** Official validation is the set
+   the Stage-2 result is reported from. Selecting on it would make the reported
+   number a report of the selection — the same failure
+   [D-PREG1-009](#d-preg1-009--the-final-pre-g1-probe-protocol) prevents
+   one level down.
+2. **It would invert the scientific claim.** UNMARK claims that *self-supervised*
+   Stage-1 alignment produces diacritic robustness. Tuning Stage-1 on a labelled
+   downstream task would make Stage-1 a supervised search over that task, and the
+   claim circular.
+
+**What the pre-G1 diagnostic did establish** is downstream *burden*
+([D-PREG1-015](#d-preg1-015--the-pre-g1-burden-diagnostic-is-closed)) — the cost
+of losing diacritics under a frozen encoder. That is a motivating measurement,
+not a selection signal.
+
+**What replaces it.** Stage-1 model and configuration selection uses **Stage-1
+held-out unlabeled signals only**: cosine distance between adapted and reference
+pooled representations, measured at a fixed grid of corruption conditions on a
+document-level held-out split. Procedure proposed in
+[Audit 028 §G.4](../audits/028-stage1-scientific-config-review.md).
+
+Official UIT-VSFC TEST remains **sealed**. Corpus-contamination screening does
+**not** open it; see the contract in
+[D-S1B-002](#d-s1b-002--stage-1-corpus-and-the-contamination-contract).
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — the proposal already forbids adjusting the protocol while reading results (§5); this names the specific channel. PDF stale: **YES** (unchanged) |
+
+
+### D-B3B0-007 — the main backbone is locked
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — closes [D-B3B0-002](#d-b3b0-002--the-first-backbone-checkpoint-is-not-locked) |
+| **Owner** | B3B / spec lock |
+
+**Locked.**
+
+```
+checkpoint : vinai/phobert-base
+revision   : 01daacda68afe13d83023d16ec647239e344a1e6
+hidden_size: 768
+frozen     : true (proposal §5.1)
+```
+
+**Why now.** D-B3B0-002 was OPEN — EMPIRICAL PROBE REQUIRED. Every probe that
+could have rejected this revision has now run **on this revision** and passed:
+
+| Evidence | Audit |
+|---|---|
+| Input and tokenizer contract; tokenizer revision verified | 006, 010 |
+| Manual alignment validation and channel projection | 013 |
+| Adapter on the real model; position-id semantics repaired and verified | 016, 017 |
+| Stage-1 three-branch graph, 31/31 checks; adapter `3,551,232` params, encoder `0` | 019 |
+| Pre-G1 burden diagnostic, 30 real head runs across both pathways | 024–027 |
+
+Leaving it open would leave the entire validated stack resting on a revision the
+specification still calls provisional — the state D-B3B0-002 itself called "the
+worst of the two states".
+
+**A second backbone is not adopted.** §6.1 mentions ViSoBERT. That is a
+**generalisation ablation** to run *after* the main result, with its own recorded
+position-id evidence: `VERIFIED_POSITION_PROFILES` contains exactly one entry and
+`resolve_position_profile` fails closed for anything else, so a second backbone
+cannot be used silently. Adopting one now because GPU memory is available would
+be selecting an experiment by resource availability rather than by question.
+
+**Scope.** This locks the **main** Stage-1/Stage-2 backbone. It does not license
+changing `d`, unfreezing the encoder, or altering the adapter architecture.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §6.1 names PhoBERT-base but pins no revision; the researcher should add the revision to §5.1 or to the §5 open-items table. PDF stale: **YES** (unchanged) |
+
+
+### D-S1B-002 — Stage-1 corpus, and the contamination contract
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (corpus choice + contract); **OPEN** for the revision pin |
+| **Owner** | Stage-1B |
+
+**Corpus.** The main Stage-1 corpus is **`undertheseanlp/UVW-2026`** (Vietnamese
+Wikipedia). Researcher decision, 2026-08-22.
+
+**Rationale.** Clean Vietnamese text is appropriate for learning orthographic
+equivalence; document/article identity is available, which both the
+document-level split and the corruption key (`sample_id`) require;
+reproducibility is far simpler than a massive web mixture; and main Stage-1 is
+self-supervised, so it does **not** need labelled downstream-domain matching —
+domain-matching to a labelled task is the coupling
+[D-S1B-001](#d-s1b-001--uit-vsfc-may-not-select-any-stage-1-value) forbids.
+
+**Source shards — all three, and they are not a split.** Use the three root
+Hugging Face parquet shards `train.parquet`, `validation.parquet`,
+`test.parquet`. **The upstream UVW train/validation/test labels carry no
+scientific split meaning for UNMARK**: they are source shards of one unlabeled
+Wikipedia corpus. The shard named `test.parquet` is unrelated to UIT-VSFC's
+sealed TEST, and honouring the upstream labels would import a partition never
+designed for this study.
+
+**Pipeline order, at the pinned revision — load, screen, split, then chunk:**
+
+| # | Step |
+|---|---|
+| 1 | Load and **concatenate the three shards in the fixed order** `train → validation → test` |
+| 2 | **Preserve article/document ids** through the concatenation |
+| 3 | **Contamination screening** (below): exact/canonical duplicates against only legitimately opened UIT-VSFC material |
+| 4 | Construct **UNMARK's own document-level train/dev partition** |
+| 5 | **Only then**, deterministic chunking |
+| 6 | **Every chunk inherits its parent document's partition** |
+
+The **load order is part of the pin**: concatenation order determines document
+enumeration, and `sample_id` keys the corruption draw, so a different order is a
+different corruption stream at an identical revision.
+
+**Required structural property.** It must be **structurally impossible** for
+chunks of one Wikipedia article to appear in both Stage-1 train and Stage-1 dev.
+Steps 4→5→6 give this by construction. Chunking before splitting would let two
+chunks of one article land on opposite sides — near-duplicate leakage into the
+very held-out signal that selects `r` and the learning rate.
+
+**Still OPEN and blocking execution.** The exact Hugging Face **dataset
+revision** and the **sha256 of all three parquet files** must be pinned before
+any Stage-1 run, and verified at load. An unpinned corpus is as unreproducible as
+an unpinned backbone. Public `main` was **observed** at review time as
+`a0a79294e4568137e25828bb3f2a4cde8546e1fb`; this is recorded as an
+**unverified observation only** — nothing was downloaded, `main` moves, and
+execution must name an explicit full revision.
+
+**Later ablation.** Broader corpora (for example CulturaX-vi) **may** be explored
+as a corpus/domain ablation. Such an ablation **must not retroactively replace
+the main result** — the same rule that governs a second backbone
+([D-B3B0-007](#d-b3b0-007--the-main-backbone-is-locked)).
+
+#### Contamination contract
+
+An earlier draft of Audit 028 required zero overlap between the Stage-1 corpus
+and UIT-VSFC validation **or test**, while also requiring TEST to stay sealed.
+**Those requirements contradict each other**: verifying non-overlap with TEST
+means reading TEST. Replaced by:
+
+| # | Rule |
+|---|---|
+| 1 | Official UIT-VSFC **TEST remains SEALED** — not opened for contamination screening or anything else before final evaluation |
+| 2 | Screening may compare **only** against UIT-VSFC material the pre-G1 protocol already legitimately opened: the derived TRAIN pool and official VALIDATION |
+| 3 | That screen is an **exact/canonical duplicate** check — equality of `canon(x)` and its sha256 |
+| 4 | Any **fuzzy/semantic** near-duplicate analysis is reported **separately**, never conflated with the exact check; it has a threshold, and thresholds are choices |
+| 5 | **No claim of "zero TEST overlap" may be made before TEST is opened.** The honest statement is *"no exact overlap against the material legitimately available"* |
+| 6 | **After** the full UNMARK configuration and model are frozen and TEST is unsealed for final evaluation, a contamination audit runs against TEST |
+| 7 | That audit is **REPORT-ONLY**: it must not trigger retroactive corpus removal, retraining, model re-selection, configuration change, or any change to the reported result |
+
+**Why rule 7.** Acting on a contamination finding after seeing TEST would make
+TEST a selection signal — the failure the seal exists to prevent, arriving
+through the back door. The honest response to post-hoc contamination is to
+**report it as a measured limitation**, not to retrain until the number improves.
+
+#### Chunking contract
+
+Documents are **deterministically pre-chunked** before Stage-1 preparation.
+Silent `SKIP` of long documents is **not** the policy: it biases the corpus
+toward short examples invisibly. The contract: preserve text order; no
+normalization beyond the already-specified `canon` pipeline; stable chunk ids
+`"{document_id}#{chunk_index}"`; fit `max_length = 256` on **both** the reference
+and base tokenizer paths; never split a syllable span; **run only after the
+document-level partition exists**; and **inherit the parent document's
+partition** rather than being assigned one. Runtime `on_overflow = FAIL` is then
+a **guard** — any overflow means the chunking contract is wrong and the run
+stops.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §5's open-items table lists "Stage-1 corpus"; the researcher should record the pinned revision there. PDF stale: **YES** (unchanged) |
+
+
+### D-S1B-003 — Stage-1 corruption covers STRIP-ALL
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (mechanism + value); **NOT YET IMPLEMENTED** |
+| **Owner** | Stage-1B |
+
+**The defect.** [Audit 028 §F](../audits/028-stage1-scientific-config-review.md)
+established, from the data path rather than from prose, that Stage-1's corrupt
+branch used a **single** `CorruptionScope` for a whole run, defaulting to
+`"TONE"`. Under that default the corrupted branch's **letter channel is
+bit-identical to the clean branch's** — measured at **0 / 18** differing prepared
+examples. `STRIP-ALL`, which proposal §6.3 says "should be reported as the
+headline number", therefore had **exactly zero training support**.
+
+**The mechanism.** The corruption **scope is drawn per example**, not fixed per
+run:
+
+```
+with probability pi_strip      : scope = TONE_AND_LETTER,  p ~ U(0,1)
+with probability 1 - pi_strip  : scope = TONE,             p ~ U(0,1)
+```
+
+The `TONE` component covers FULL→P100; the `TONE_AND_LETTER` component covers
+FULL→STRIP-ALL. This is the *"optional second rate"* proposal §4.6 already
+anticipates. **The corruption engine is unchanged** — both scopes are already
+implemented and audited (Audits 003/004); only `CorruptionRatePolicy` gains a
+`scope_for(sample_id, visit)`.
+
+**The value. `pi_strip = 0.25`** — an **a-priori researcher decision**
+(2026-08-22), fixed before any Stage-1 result exists. It is **never tuned**:
+not on UIT-VSFC, not on any downstream score, and not on the Stage-1 held-out
+signal either.
+
+**Required independence property.** `rate_for` and `scope_for` must use
+deterministic but **domain-separated** streams — both may derive from
+`(seed, sample_id, visit)`, but under distinct namespace tags `"stage1-rate"` and
+`"stage1-scope"`. It is **forbidden** to reuse one scalar draw for both, to
+derive one from the other, or to make `scope` conditional on the sampled `p`.
+
+```
+P(p | scope = TONE)            = Uniform(0, 1)
+P(p | scope = TONE_AND_LETTER) = Uniform(0, 1)
+```
+
+up to the deterministic finite sample. **Why:** conditioning scope on `p` would
+confine the letter-degraded regime to part of the rate range, confounding
+"letters missing" with corruption severity — any measured STRIP-ALL behaviour
+could then not be attributed to letter information alone.
+
+**Rejected alternative.** An independent per-syllable letter-dropout rate `q` —
+the most literal reading of "second rate" — would require modifying the audited
+`_apply()` and would create the state *"letter diacritic removed, tone kept"*,
+which is in **no** evaluation condition and matches no real typing behaviour.
+More machinery, less relevant support.
+
+**Blocking.** `scope_for` **does not exist yet**. Until it is implemented, with
+ML-free tests proving STRIP-ALL support exists, P100 support survives, the
+streams are independent and `p` is uniform within each scope, **STRIP-ALL support
+is still zero and Stage-1 training must not begin.**
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — §4.6 already anticipates the optional second rate; this fixes its form and value. PDF stale: **YES** (unchanged) |
+
+
+### D-S1B-004 — Stage-1 optimizer and training configuration
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** for the locked rows; **OPEN** for the two pilot values |
+| **Owner** | Stage-1B |
+
+Recorded so that engineering convenience is never later mistaken for evidence.
+Full table and rationale in
+[Audit 028 §H](../audits/028-stage1-scientific-config-review.md).
+
+**LOCKED — researcher-approved.**
+
+| Item | Value |
+|---|---|
+| Optimizer | AdamW, betas `(0.9, 0.999)`, eps `1e-8`, amsgrad `False` |
+| LR schedule | constant; **no warmup** |
+| Gradient accumulation | `1` |
+| Gradient clipping | **none initially**; grad norm monitored. Revisit only on a non-finite loss or a grad norm >100× its running median — **never** on a downstream score |
+| `max_length` | `256`; truncation not offered; `on_overflow = FAIL` |
+| Corruption rate | `p ~ U(0,1)` per example (already locked by §4.6/§5.1) |
+| Redraw schedule | **per visit** (`visit` = pass index) |
+| Objective scale | `lambda_align + lambda_clean = 2`, so only `r = lambda_clean/lambda_align` varies |
+| Selection data | Stage-1 held-out **unlabeled** only |
+| Validation grid | fixed: `FULL, P50, P100, STRIP_ALL` |
+| Checkpoint rule | lowest held-out worst-case condition distance → lower `d_clean` → **earliest** update |
+
+**EMPIRICALLY SELECTED LATER — winners are not known and are not guessed.**
+
+| Item | Precommitted grid | Protocol |
+|---|---|---|
+| Learning rate | `{1e-4, 3e-4, 1e-3}` | 3-run pilot at `r = 1`, scored by the checkpoint rule |
+| `r` | `{0.25, 0.5, 1, 2, 4}` | **Phase 1**: one precommitted selection seed, 5 candidates; primary = lowest worst-case condition distance; tie-break = lower `d_clean`, then smaller `r`. **Phase 2**: rerun **only** the winner on the 3 precommitted Stage-1 seeds, report mean and sample SD **descriptively**. Phase 2 **may not reopen** LR or `r` selection |
+
+A one-seed sweep has no sample SD, so no seed-variance term appears in the
+Phase-1 tie-break.
+
+**The complete main sequence — exactly 11 runs, and nothing follows them.**
+
+| Stage | Runs | LR | `r` | Seed |
+|---|---|---|---|---|
+| LR pilot | **3** | swept `{1e-4, 3e-4, 1e-3}` | fixed `r = 1` | `selection` |
+| `r` Phase 1 | **5** | frozen pilot winner | swept `{0.25, 0.5, 1, 2, 4}` | `selection` |
+| **FINAL MAIN Stage-1** | **3** | selected | selected | `train\|0,1,2` |
+| | **TOTAL 11** | | | |
+
+The final three runs are **simultaneously** the Phase-2 descriptive
+characterisation **and the FINAL MAIN Stage-1 trained adapters for the study**.
+**There is no additional main Stage-1 training round after them.**
+
+#### Update-budget rule — precommitted
+
+| # | Rule |
+|---|---|
+| 1 | Train to update **20 000** |
+| 2 | If the checkpoint chosen by the locked validation rule is **at update 20 000**, **continue the SAME run** from its last checkpoint/state to **40 000** |
+| 3 | Preserve adapter state, optimizer state, corruption `visit`/pass state and every deterministic stream. **Do not restart from scratch** |
+| 4 | Checkpoint selection then considers the **complete trajectory** (0 → 40 000) |
+| 5 | If the selected checkpoint is **again the final update**, **STOP** and mark the run/config **BUDGET-LIMITED** |
+| 6 | **No further extension** (60 k, 80 k, …) may be added after inspecting results |
+
+This is a **precommitted stopping rule, not a downstream decision**: the trigger
+reads only the Stage-1 held-out selection ("the best checkpoint is the last one
+computed"), the ceiling is fixed before any run, and the outcome of hitting it is
+a **reported limitation**, not a longer run. Rule 3 is load-bearing for
+reproducibility: the corruption draw is keyed on `(seed, sample_id, visit)`, so a
+continuation that reset `visit` would silently re-serve the same corruptions.
+
+#### Seeds — derived, domain-separated, recorded before first use
+
+Root tag **`UNMARK-STAGE1-v1`**, derived with the repository's established
+`derive_seeds(tag, count)` convention (`sha256(tag)`, consecutive 2-byte
+big-endian integers). Verified: `derive_seeds("UNMARK-PREG1-TUNE-v1", 3)`
+reproduces the committed `TUNING_SEEDS = (5509, 19422, 11800)`.
+
+| Role | Namespace tag | Seed |
+|---|---|---|
+| Pilot / Phase-1 selection | `UNMARK-STAGE1-v1\|selection` | **21230** |
+| Final main Stage-1, run 0 | `UNMARK-STAGE1-v1\|train\|0` | **36930** |
+| Final main Stage-1, run 1 | `UNMARK-STAGE1-v1\|train\|1` | **7309** |
+| Final main Stage-1, run 2 | `UNMARK-STAGE1-v1\|train\|2` | **5993** |
+| Corruption stream | `UNMARK-STAGE1-v1\|corruption` | **35422** |
+
+All five are **distinct** (verified). Every integer is recomputable from its tag
+string alone, so none can have been chosen to flatter a result. Domain separation
+makes it structurally impossible for training, selection and corruption to share
+an integer. This is **additional to** the `rate_for`/`scope_for` stream
+separation of [D-S1B-003](#d-s1b-003--stage-1-corruption-covers-strip-all), which
+separates two draws *within* the corruption seed.
+
+**LOCKED — A-PRIORI ENGINEERING.** Researcher-approved, and deliberately kept in
+its own tier so it can never later be re-read as something Stage-1 discovered:
+batch size `128`; `initial_max_updates = 20 000` under the budget rule above;
+eval cadence every `500` updates; dev split `5 000` documents; weight decay
+`0.01` on the fusion/gate weight matrices and `0.0` on biases, LayerNorm, **tone
+embeddings and letter embeddings**; best + last checkpoint persistence; optimizer
+and corruption `visit` state persistence; the monitoring suite; and no gradient
+clipping initially under the stated diagnostic trigger.
+
+**No Stage-1 evidence supports any of these values** — they are engineering
+choices fixed before any Stage-1 result existed. One exception worth naming: the
+**embedding exclusion** from weight decay carries a genuine scientific argument,
+since decaying the tone/letter tables shrinks channel information toward zero,
+the opposite of Stage-1's purpose.
+
+**No pilot value is locked by this entry.**
+
+| | |
+|---|---|
+| **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
