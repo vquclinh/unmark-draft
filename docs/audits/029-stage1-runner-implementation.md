@@ -9,6 +9,7 @@
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Revision 2** | **2026-08-23** — **second post-commit real-corpus defect**: the stage-4 contamination screen applied full `canon()` to all 1 118 224 documents and ran >7 h. Repaired with two proven necessary-condition prefilters; the criterion is unchanged. See §Q. |
 | **Revision 1a** | **2026-08-22** — evidence-accuracy cleanup. Audit-only: §L/§M labelled historical, three overstated §P claims corrected, and the uncaptured original exception recorded. No code, test or decision changed. See §P.11. |
 | **Revision 1** | **2026-08-22** — **post-commit real-corpus defect and repair**, revised in place. The chunker could not prepare the locked corpus: "never split a syllable" had been implemented as "cut only at whitespace", and real UVW-2026 contains oversized **non-whitespace** units. See §P. |
 
@@ -806,6 +807,275 @@ containing 7 orthographic spans is by itself sufficient to show that the
 whitespace-only rule was wrong.
 
 ---
+
+## Q. REVISION 2 — POST-COMMIT CONTAMINATION-SCREEN PERFORMANCE DEFECT
+
+**Date:** 2026-08-23 **Baseline commit:** `3a399dcfb4e95fb7a605f9e9623ffed7650fea58`
+
+### Q.1 What the real run showed
+
+With the chunker repair (Revision 1) committed, real `prepare-corpus` was rerun
+against the pinned corpus. It ran **CPU-bound for more than 7 hours** and was
+interrupted. A 45-second `faulthandler` probe reached:
+
+```
+[1/6] verifying the corpus pin                 PASS
+[2/6] reading and concatenating three shards   PASS
+        train 894 579 | validation 111 822 | test 111 823
+[3/6] schema + duplicate-id check              PASS
+        1 118 224 documents, ids unique
+[4/6] contamination screen                     <- stuck here
+```
+
+Stack at 45 s, terminated deliberately at 60 s:
+
+```
+File unmark/orthography/canonical.py, line 106, in canon
+File unmark/stage1/corpus.py,         line 262, in canonical_digest
+File unmark/stage1/corpus.py,         line 322, in screen_contamination
+File scripts/stage1_runner.py,        line 137, in run_prepare_corpus
+```
+
+**This is not a deadlock** — it is stage 4 doing real work, far too much of it.
+
+**Two facts this establishes, and one it does not.** Stages 1-3 pass against the
+real corpus, and the shard row counts are now observed
+(894 579 + 111 822 + 111 823 = 1 118 224). **Chunking was never reached**, so
+this run neither validates nor refutes the Revision 1 chunker repair — that
+remains unverified against real data.
+
+### Q.2 Root cause, after reading the code
+
+The stack alone does not prove the algorithm, so the implementation was read.
+
+| # | Question | Finding |
+|---|---|---|
+| 1 | What does `canonical_digest` do? | `sha256(canon(text))` — one full canonicalisation per call |
+| 2 | How many `canon` calls? | **one per UVW document — 1 118 224** — plus one per reference text |
+| 3 | Are opened UIT digests cached? | **Yes.** The reference set is built once into a `set` |
+| 4 | Is UVW canonicalisation eager for every document? | **Yes. This is the defect.** |
+| 5 | Any accidental `O(N*M)`? | **No.** Membership is a set lookup; the loop is `O(N)` calls |
+
+So there is no quadratic blunder. The cost is exactly `O(total corpus
+characters)` of **`canon`**, which is Python-level (`split_units`, per-character
+`CharacterUnit` construction, nucleus placement). Measured on this machine:
+**~0.95-1.2 M chars/s**. The reference side is ~13 k *short* UIT-VSFC sentences;
+the corpus side is 1.1 M *long* Wikipedia articles. Essentially all of the seven
+hours was spent canonicalising documents that could not possibly match.
+
+### Q.3 The optimisation — two necessary-condition prefilters
+
+**The criterion is unchanged.** A document is excluded **iff**
+`canonical_digest(doc) ∈ {canonical_digest(ref)}`. The prefilters decide only
+*which documents are worth canonicalising*; they may skip a document only after
+**proving** it cannot match.
+
+| Tier | Test | Measured throughput |
+|---|---|---|
+| 1 | length guard — five C-level substring counts, no normalisation | **~846 M chars/s** |
+| 2 | placement-insensitive digest — one NFD pass + one sha256 | **~29 M chars/s** |
+| 3 | **`canonical_digest` — the actual decision** | **~1 M chars/s** |
+
+**Tier 2 proof.** Write `f(x) = NFD(x)` with **only** the five tone marks
+`U+0300 U+0301 U+0303 U+0309 U+0323` removed. `canon` is NFC plus UNMARK's fixed
+nucleus-based tone placement, and by its own contract it never alters letters,
+case, punctuation, whitespace, digits or letter-forming diacritics — *only the
+position of a tone mark within its syllable may change*. Hence
+
+```
+f(canon(x)) == f(x)        for every x
+```
+
+because `NFD ∘ NFC == NFD` absorbs the normalisation step, and removing every
+tone mark erases the only other thing `canon` may do. Therefore
+
+```
+canon(a) == canon(b)   =>   f(a) == f(b)
+```
+
+so a **difference** in `f` is a proof that the canonical digests differ. The
+converse is false and is not needed: texts differing only in tone marks collide,
+become candidates, and tier 3 decides.
+
+**Tier 1 proof.** With `s` = standalone tone-mark characters in `x` and `k` =
+characters whose NFD decomposition releases a tone mark:
+
+```
+len(NFD(x)) >= len(x) + k          (each such character expands by >= 1)
+len(f(x))    = len(NFD(x)) - s - k  >=  len(x) - s
+```
+
+So if `len(x) - s` already exceeds the longest reference `f`-length, `len(f(x))`
+does too, the `f`-digests differ, and by the tier-2 lemma the canonical digests
+differ. Five `str.count` calls, no normalisation.
+
+**Single-process, deliberately.** No multiprocessing was added. Serialising
+1.1 M long strings between processes is itself expensive, it complicates
+deterministic error provenance, and worker counts are an environment-dependent
+knob. Parallelism should only be revisited if the *cheap* pass is ever measured
+to be the blocker.
+
+### Q.4 Evidence
+
+Both lemmas were tested before the implementation was written:
+
+| Lemma | Population | Counterexamples |
+|---|---|---|
+| `f(canon(x)) == f(x)` | 160 076 strings — systematic syllables over every tone and both mark positions, documented placement pairs, NFC/NFD, case, `đ/Đ`, punctuation, URLs, e-mail, mixed scripts, malformed multi-tone, 40 000 random combining-mark sequences | **0** |
+| `len(f(x)) >= len(x) - s` | 200 008 strings | **0** |
+
+**Full-report equivalence.** The pre-optimisation screen is retained **as a test
+oracle only** (`reference_screen`), not as a second production pathway. On a
+deterministic corpus containing true canonical duplicates, placement-only
+duplicates, NFC/NFD duplicates, near-but-not-equal texts, deliberate prefilter
+collisions and ordinary nonmatches — plus 25 randomised corpora — the optimised
+screen reproduces the **complete report**: excluded ids, excluded digests, kept
+order and reference digest count, not merely the match count.
+
+**Algorithmic counters** (Task D), asserted rather than timed:
+
+| Counter | Meaning |
+|---|---|
+| `corpus_documents_seen` | documents examined |
+| `length_guard_skips` | skipped by tier 1 |
+| `cheap_prefilter_checks` | reached tier 2 |
+| `prefilter_candidates` | reached tier 3 |
+| `full_canon_calls_for_corpus_candidates` | **expensive calls on corpus documents** |
+| `opened_reference_examples` / `full_canon_calls_for_reference_set` | reference side |
+
+On 5 001 documents with one genuine match, `full_canon_calls_for_corpus_candidates`
+is **≤ 5**, i.e. `O(candidates)`, not `O(corpus)`. On 500 long documents against
+a short reference, tier 1 skips **all 500** and the NFD path is never entered.
+**No wall-clock threshold is asserted in any test.**
+
+### Q.5 Sample benchmark — indicative only
+
+On 60 synthetic Vietnamese documents (~1 M chars) on this machine:
+
+| Stage | Throughput | Relative |
+|---|---|---|
+| full `canon` digest | 0.95 M chars/s | 1x |
+| placement-insensitive digest | 28.7 M chars/s | **30x** |
+| length guard | 845 M chars/s | **890x** |
+
+**This is a machine-dependent sample on synthetic text, not a corpus
+measurement.** The real corpus's total character count is unknown here; back-of-
+envelope, seven hours at ~1 M chars/s implies order 10^10 characters, which the
+prefilters would reduce to minutes — but that is an *extrapolation*, not a
+result.
+
+### Q.6 Progress visibility (Task E)
+
+Stage 4 printed only its start line, so a seven-hour scan looked identical to a
+hang. `screen_contamination` now takes an optional `on_progress(seen,
+candidates, matches)` callback; the runner prints roughly every 1 %:
+
+```
+contamination: 100000/1118224 docs (8.9%), candidates=0, matches=0
+```
+
+and, on completion, the tier counters. **Counts only — no corpus text, no
+UIT-VSFC text.** Document ids appear only where an actual match requires
+provenance, exactly as before.
+
+### Q.7 Files changed in Revision 2
+
+| File | Change |
+|---|---|
+| `unmark/stage1/corpus.py` | `placement_insensitive_digest`, `_length_guard_excludes`, `ScreenCounters`; `screen_contamination` rewired to three tiers with an `on_progress` hook |
+| `scripts/stage1_runner.py` | Stage-4 progress every ~1 %; tier counters printed on completion |
+| `tests/test_stage1_contamination_prefilter.py` | **new** — 287 tests: lemmas, equivalence oracle, counters, boundaries |
+| `docs/audits/029-…md` | This section |
+
+**`docs/spec/decisions.md`: NOT changed, and no change is required.** D-S1B-002
+rule 3 states the *criterion* — "equality of `canon(x)` and its sha256" — not an
+implementation strategy, and that criterion is untouched. No new decision entry
+is warranted for an optimisation that provably changes no exclusion.
+
+**Untouched:** the chunker repaired in `3a399dc`, `canon()` itself, the corpus
+pin and shard order, the split algorithm and `dev = 5 000`, `max_length = 256`,
+corruption policy and `pi_strip`, the objective, architecture, batch size, LR/`r`
+grids, optimizer, validation metric, seeds, and the official-TEST policy.
+
+### Q.8 Test results
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_contamination_prefilter.py` | **287 passed** |
+| `tests/test_stage1_corpus.py` | 24 passed (unchanged) |
+| `tests/test_stage1_chunking.py` | 35 passed (unchanged) |
+| Full repository | **2 822 passed, 97 skipped** (was 2 535 / 97) |
+
+**Mutation-verified** — each injected violation caught:
+
+| Injected violation | Caught by |
+|---|---|
+| Prefilter *decides* exclusion (canonical check skipped) | `test_equivalence_on_randomised_corpora` |
+| Length guard drops the tone-mark term | `test_the_length_guard_never_skips_a_possible_match` |
+| Prefilter uses NFC instead of NFD | `test_placement_variants_survive_the_prefilter` |
+
+A fourth mutation — stripping letter-forming diacritics as well — was **not**
+caught, and correctly so: over-stripping remains a valid necessary condition, so
+it is *safe but slower* and no equivalence test can detect it. A selectivity test
+now pins the tone-mark set so a silent widening surfaces as an intentional change
+rather than as unexplained candidate growth. Under-stripping and
+non-canon-invariant transforms — the unsafe directions — **are** caught.
+
+### Q.9 Limitations
+
+1. **The full real corpus has NOT been re-prepared.** The 766 MB of pinned bytes
+   are not available here and were not downloaded. No performance claim against
+   the real corpus is made.
+2. **The 7-hour figure is not reproduced here**; it is the researcher's
+   observation. The benchmark in §Q.5 is synthetic and machine-dependent.
+3. **Chunking is still unverified against real data.** The failing run never
+   reached stage 5, so Revision 1 remains untested on the real corpus.
+4. **Stage 4 is still `O(total corpus characters)`** in the cheap pass — the
+   prefilters remove the expensive constant, not the linear scan. If that pass
+   is itself measured to be a blocker, parallelism can be reconsidered.
+5. **Real contamination counts are unknown.** Whether any UVW document actually
+   matches an opened UIT-VSFC example has never been measured.
+6. The equivalence oracle is exercised on synthetic corpora; it is a strong
+   check of the *criterion*, not evidence about the real corpus.
+
+### Q.10 Self-audit for Revision 2
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Audit 029 revised **in place**; no Audit 030 | **yes** |
+| 2 | `canon()` semantics unchanged | **yes** — `canonical.py` not modified |
+| 3 | Contamination criterion unchanged | **yes** — still `sha256(canon(x))`, decided only at tier 3 |
+| 4 | Screening not skipped or weakened | **yes** — every document passes a proven-necessary test |
+| 5 | No fuzzy / approximate / semantic / substring matching | **yes** |
+| 6 | Prefilter proven a necessary condition | **yes** — §Q.3, 360 084 trials, 0 counterexamples |
+| 7 | Final matches still use `canonical_digest` | **yes** — AST-asserted |
+| 8 | Prefilter collision ≠ contamination | **yes** — explicit test |
+| 9 | Full-report equivalence vs the pre-optimisation oracle | **yes** — ids, digests, kept order |
+| 10 | Old implementation kept as oracle only, not a second pathway | **yes** — lives in the test file |
+| 11 | Expensive calls `O(candidates)`, not `O(corpus)` | **yes** — counter assertions |
+| 12 | No wall-clock threshold in any test | **yes** |
+| 13 | No document dropped for performance | **yes** — every document is kept or excluded by the criterion |
+| 14 | No UIT-VSFC official TEST route | **yes** — refusal test retained |
+| 15 | No raw corpus or UIT text in reports/logs | **yes** — asserted |
+| 16 | Progress does not flood stdout | **yes** — ~1 % intervals |
+| 17 | No multiprocessing added | **yes** — deliberately single-process |
+| 18 | Revision 1 chunker untouched | **yes** — no diff in `chunking.py` or its tests |
+| 19 | No scientific hyperparameter changed | **yes** |
+| 20 | `decisions.md` inspected; change needed? | **no** — it states the criterion, not the implementation |
+| 21 | Focused + full suites run | **yes** — 287 / 2 822 passed |
+| 22 | Real corpus re-prepared? | **NO** |
+| 23 | Performance claimed PASS against the real corpus? | **NO** |
+| 24 | Nothing staged; no prohibited git operation | **yes** |
+
+---
+
+**STATUS (Revision 2): PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**
+**DEFECT 2: STAGE-4 CONTAMINATION SCREEN CANONICALISED ALL 1 118 224 DOCUMENTS (>7 h) — REPAIRED (§Q)**
+**CONTAMINATION CRITERION UNCHANGED: `sha256(canon(x))`, DECIDED ONLY AT TIER 3**
+**PREFILTERS PROVEN NECESSARY CONDITIONS — 360 084 TRIALS, 0 COUNTEREXAMPLES**
+**FULL-REPORT EQUIVALENCE VS THE PRE-OPTIMISATION ORACLE**
+**REAL CORPUS NOT RE-PREPARED — NO PERFORMANCE CLAIM AGAINST IT**
+**CHUNKING STILL UNVERIFIED ON REAL DATA — STAGE 5 WAS NEVER REACHED**
 
 **STATUS (Revision 1): REPAIR PASS — READY FOR REAL CORPUS RE-RUN**
 **DEFECT: WHITESPACE-ONLY CUTTING COULD NOT PREPARE THE LOCKED CORPUS — REPAIRED (D-S1B-009)**

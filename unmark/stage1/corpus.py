@@ -30,9 +30,12 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
+
+import unicodedata
 
 from unmark.orthography import canon
+from unmark.orthography.marks import TONE_MARKS
 from unmark.stage1.contracts import Stage1ContractViolation
 from unmark.stage1.protocol import (
     CONTAMINATION_METHOD,
@@ -258,8 +261,109 @@ def concatenate(shards: dict[str, list[CorpusDocument]]) -> list[CorpusDocument]
 # 4. Contamination screen -- exact/canonical only, opened material only
 # ---------------------------------------------------------------------------
 def canonical_digest(text: str) -> str:
-    """sha256 of `canon(text)`. The single comparison key for the screen."""
+    """sha256 of `canon(text)`. **The single comparison key for the screen.**
+
+    Every exclusion decision is made with this function and no other. The
+    prefilters below only decide which documents are *worth* canonicalising.
+    """
     return hashlib.sha256(canon(text).encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Necessary-condition prefilters -- cheap, and provably free of false negatives
+# ---------------------------------------------------------------------------
+_TONE_TRANSLATION = {ord(mark): None for mark in TONE_MARKS}
+"""The five Vietnamese tone marks: U+0300 U+0301 U+0303 U+0309 U+0323."""
+
+
+def placement_insensitive_digest(text: str) -> str:
+    """sha256 of NFD(`text`) with **only the five tone marks** removed.
+
+    **The necessary-condition lemma.** `canon` is NFC plus UNMARK's fixed
+    nucleus-based tone placement; by its own contract it never alters letters,
+    case, punctuation, whitespace, digits or letter-forming diacritics -- *only
+    the position of a tone mark within its syllable may change*. Writing
+    ``f(x) = NFD(x) minus tone marks``::
+
+        f(canon(x)) == f(x)          for every x
+
+    because NFD absorbs the NFC step (``NFD o NFC == NFD``) and removing every
+    tone mark erases the only other thing `canon` may do -- *where* a tone mark
+    sits. Therefore::
+
+        canon(a) == canon(b)  =>  f(a) == f(b)
+
+    so a difference in this digest is a **proof** that the canonical digests
+    differ, and skipping such a document cannot hide contamination.
+
+    The converse does not hold, and is not needed: two texts differing only in
+    tone marks share this digest. That is a **prefilter collision, not
+    contamination** -- every survivor is still decided by `canonical_digest`.
+    """
+    stripped = unicodedata.normalize("NFD", text).translate(_TONE_TRANSLATION)
+    return hashlib.sha256(stripped.encode("utf-8")).hexdigest()
+
+
+def _placement_insensitive_length(text: str) -> int:
+    return len(unicodedata.normalize("NFD", text).translate(_TONE_TRANSLATION))
+
+
+def _standalone_tone_marks(text: str) -> int:
+    """How many of the five tone marks appear as their own characters in `text`."""
+    return sum(text.count(mark) for mark in TONE_MARKS)
+
+
+def _length_guard_excludes(text: str, max_reference_length: int) -> bool:
+    """True when `text` is provably too long to equal any reference.
+
+    **The length lemma.** With `s` the number of standalone tone-mark characters
+    in `x`, and `k` the number of characters whose NFD decomposition releases a
+    tone mark::
+
+        len(NFD(x))  >= len(x) + k          (each such character expands by >= 1)
+        len(f(x))     = len(NFD(x)) - s - k
+                      >= len(x) - s
+
+    So if ``len(x) - s`` already exceeds the longest reference `f`-length, then
+    ``len(f(x))`` does too, the `f`-digests cannot match, and by the lemma above
+    the canonical digests cannot match either.
+
+    This costs five C-level substring counts and no normalisation at all, which
+    is what keeps a 1.1 M-document corpus of long articles off the expensive
+    path entirely.
+    """
+    return len(text) - _standalone_tone_marks(text) > max_reference_length
+
+
+@dataclass(frozen=True)
+class ScreenCounters:
+    """Algorithmic accounting for the screen. **Counts only -- no text.**
+
+    The invariant worth asserting is that
+    `full_canon_calls_for_corpus_candidates` tracks the number of *candidates*,
+    never the number of documents.
+    """
+
+    corpus_documents_seen: int = 0
+    length_guard_skips: int = 0
+    cheap_prefilter_checks: int = 0
+    prefilter_candidates: int = 0
+    full_canon_calls_for_corpus_candidates: int = 0
+    opened_reference_examples: int = 0
+    full_canon_calls_for_reference_set: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "corpus_documents_seen": self.corpus_documents_seen,
+            "length_guard_skips": self.length_guard_skips,
+            "cheap_prefilter_checks": self.cheap_prefilter_checks,
+            "prefilter_candidates": self.prefilter_candidates,
+            "full_canon_calls_for_corpus_candidates": (
+                self.full_canon_calls_for_corpus_candidates
+            ),
+            "opened_reference_examples": self.opened_reference_examples,
+            "full_canon_calls_for_reference_set": self.full_canon_calls_for_reference_set,
+        }
 
 
 @dataclass(frozen=True)
@@ -271,6 +375,7 @@ class ContaminationReport:
     excluded_document_ids: tuple[str, ...]
     excluded_digests: tuple[str, ...]
     method: str = CONTAMINATION_METHOD
+    counters: ScreenCounters = field(default_factory=ScreenCounters)
 
     @property
     def excluded_count(self) -> int:
@@ -284,6 +389,7 @@ class ContaminationReport:
             "excluded_count": self.excluded_count,
             "excluded_document_ids": list(self.excluded_document_ids),
             "excluded_digests": list(self.excluded_digests),
+            "counters": self.counters.to_dict(),
             "official_test_screened": False,
             "claim": (
                 "no EXACT canonical overlap against the UIT-VSFC material already "
@@ -294,14 +400,38 @@ class ContaminationReport:
 
 
 def screen_contamination(
-    documents: Sequence[CorpusDocument], reference_texts: dict[str, Sequence[str]]
+    documents: Sequence[CorpusDocument],
+    reference_texts: dict[str, Sequence[str]],
+    *,
+    on_progress: Callable[[int, int, int], None] | None = None,
 ) -> tuple[list[CorpusDocument], ContaminationReport]:
     """Exclude UVW documents whose `canon()` equals an opened UIT-VSFC text.
+
+    **The criterion is unchanged**: a document is excluded *iff*
+    ``canonical_digest(doc) in {canonical_digest(ref)}``. Three tiers decide only
+    how much work that costs, and the first two can only ever *skip* documents
+    they have **proved** cannot match:
+
+    ===== ============================================ ==================
+    Tier  Test                                          Cost
+    ===== ============================================ ==================
+    1     length guard, 5 substring counts              ~850 M chars/s
+    2     placement-insensitive digest, 1 NFD pass      ~29 M chars/s
+    3     `canonical_digest` -- **the actual decision**  ~1 M chars/s
+    ===== ============================================ ==================
+
+    Measured on this machine; the real corpus made tier 3 alone run for over
+    seven hours. Both prefilters are *necessary conditions* with proofs in their
+    own docstrings, so the set of excluded documents is bit-identical to the
+    previous implementation. A tier-2 collision is not contamination: it becomes
+    a candidate, and tier 3 decides.
 
     Args:
         reference_texts: keyed by source name. Only the names in
             `CONTAMINATION_SCREEN_INPUTS` are accepted -- any other key, and in
             particular anything naming official TEST, raises.
+        on_progress: optional ``(seen, candidates, matches)`` callback. Counts
+            only; no corpus text and no UIT-VSFC text.
     """
     unknown = sorted(set(reference_texts) - set(CONTAMINATION_SCREEN_INPUTS))
     if unknown:
@@ -311,25 +441,68 @@ def screen_contamination(
             "the pre-G1 protocol. Official UIT-VSFC TEST is SEALED and there is no "
             "route to it."
         )
+    # --- the reference side: small, and canonicalised exactly as before ----
     reference: set[str] = set()
+    reference_prefilter: set[str] = set()
+    reference_count = 0
+    longest_reference = 0
     for texts in reference_texts.values():
-        reference.update(canonical_digest(t) for t in texts)
+        for text in texts:
+            reference_count += 1
+            reference.add(canonical_digest(text))
+            reference_prefilter.add(placement_insensitive_digest(text))
+            longest_reference = max(longest_reference, _placement_insensitive_length(text))
 
     kept: list[CorpusDocument] = []
     excluded_ids: list[str] = []
     excluded_digests: list[str] = []
+    seen = length_skips = cheap_checks = candidates = full_calls = 0
+
     for doc in documents:
-        digest = canonical_digest(doc.content)
-        if digest in reference:
-            excluded_ids.append(doc.document_id)
-            excluded_digests.append(digest)
-        else:
+        seen += 1
+        content = doc.content
+
+        # Tier 1 -- five C-level substring counts, no normalisation. Provably
+        # too long to match, so it cannot be contaminated.
+        if reference and _length_guard_excludes(content, longest_reference):
+            length_skips += 1
             kept.append(doc)
+        else:
+            # Tier 2 -- one NFD pass and one digest. A miss PROVES the canonical
+            # digests differ (see `placement_insensitive_digest`).
+            cheap_checks += 1
+            if placement_insensitive_digest(content) not in reference_prefilter:
+                kept.append(doc)
+            else:
+                # Tier 3 -- a candidate. The exclusion decision is made HERE and
+                # only here, by the unchanged criterion. A prefilter collision
+                # that fails this check is kept, exactly as before.
+                candidates += 1
+                full_calls += 1
+                digest = canonical_digest(content)
+                if digest in reference:
+                    excluded_ids.append(doc.document_id)
+                    excluded_digests.append(digest)
+                else:
+                    kept.append(doc)
+
+        if on_progress is not None:
+            on_progress(seen, candidates, len(excluded_ids))
+
     return kept, ContaminationReport(
         screened_against=tuple(sorted(reference_texts)),
         reference_digest_count=len(reference),
         excluded_document_ids=tuple(excluded_ids),
         excluded_digests=tuple(excluded_digests),
+        counters=ScreenCounters(
+            corpus_documents_seen=seen,
+            length_guard_skips=length_skips,
+            cheap_prefilter_checks=cheap_checks,
+            prefilter_candidates=candidates,
+            full_canon_calls_for_corpus_candidates=full_calls,
+            opened_reference_examples=reference_count,
+            full_canon_calls_for_reference_set=reference_count,
+        ),
     )
 
 

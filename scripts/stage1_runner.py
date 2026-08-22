@@ -134,9 +134,25 @@ def run_prepare_corpus(args) -> int:
         reference["uitvsfc_official_validation"] = _read_text_column(
             args.uitvsfc_official_validation
         )
-    kept, contamination = screen_contamination(documents, reference)
+    total_documents = len(documents)
+    step = max(1, total_documents // 100)
+
+    def screen_progress(seen: int, candidates: int, matches: int) -> None:
+        if seen % step == 0 or seen == total_documents:
+            print(f"    contamination: {seen}/{total_documents} docs "
+                  f"({100 * seen / total_documents:.1f}%), candidates={candidates}, "
+                  f"matches={matches}", flush=True)
+
+    kept, contamination = screen_contamination(
+        documents, reference, on_progress=screen_progress
+    )
+    counters = contamination.counters
     print(f"  contamination screen ({contamination.method}): "
           f"{contamination.excluded_count} excluded of {len(documents)}")
+    print(f"    length-guard skips {counters.length_guard_skips}, "
+          f"prefilter checks {counters.cheap_prefilter_checks}, "
+          f"candidates {counters.prefilter_candidates}, "
+          f"full canon calls {counters.full_canon_calls_for_corpus_candidates}")
     print("  official TEST: SEALED, not opened, not screened")
 
     print("[5/6] document-level split (BEFORE chunking)", flush=True)
