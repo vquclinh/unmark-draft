@@ -62,8 +62,11 @@ from unmark.evaluation.preg1_protocol import (
     PREG1_POOLING_SCOPE,
     PRIMARY_DATASET,
     PRIMARY_DATASET_VERSION,
+    PRIMARY_LR_CAVEAT,
     PRIMARY_NUM_LABELS,
     PRIMARY_TASK,
+    SECONDARY_ANALYSIS_LABEL,
+    SECONDARY_SENSITIVITY,
     TRUNCATION,
     TUNING_SEEDS,
     WEIGHT_DECAY_BIAS,
@@ -978,20 +981,36 @@ def sample_stdev(values: Sequence[float]) -> float:
 
 @dataclass(frozen=True)
 class LrCandidate:
-    """One learning rate's aggregate over the tuning seeds. Vanilla only."""
+    """One learning rate's aggregate over the tuning seeds, for ONE pathway.
+
+    `pathway` defaults to VANILLA, so the primary shared-LR selection behaves
+    exactly as before and still refuses Base-only runs unless a caller states
+    BASE_ONLY explicitly. That explicit form exists only for the SECONDARY
+    own-LR sensitivity precommitted in `preg1_protocol.SECONDARY_SENSITIVITY`,
+    which lets each pathway pick its own LR on the same grid and seeds. A
+    candidate is always single-pathway: mixing arms would make the aggregate
+    describe neither.
+    """
 
     learning_rate: float
     runs: tuple[HeadRun, ...]
+    pathway: SystemPathway = SystemPathway.VANILLA
 
     def __post_init__(self) -> None:
         if not self.runs:
             raise EvaluationContractViolation("an LR candidate needs at least one run")
         for run in self.runs:
-            if run.pathway is not SystemPathway.VANILLA:
+            if run.pathway is not self.pathway:
+                if self.pathway is SystemPathway.VANILLA:
+                    raise SplitLeakage(
+                        f"primary LR selection accepts VANILLA runs only, got "
+                        f"{run.pathway.value}. Letting Base-only influence the shared LR "
+                        "would tune the protocol on the arm being measured."
+                    )
                 raise SplitLeakage(
-                    f"primary LR selection accepts VANILLA runs only, got "
-                    f"{run.pathway.value}. Letting Base-only influence the shared LR "
-                    "would tune the protocol on the arm being measured."
+                    f"a {self.pathway.value} candidate accepts {self.pathway.value} "
+                    f"runs only, got {run.pathway.value}. A sensitivity candidate that "
+                    "mixed pathways would describe neither arm's own-LR fit."
                 )
             if run.learning_rate != self.learning_rate:
                 raise EvaluationContractViolation(
@@ -1024,6 +1043,7 @@ class LrCandidate:
     def to_dict(self) -> dict[str, Any]:
         return {
             "learning_rate": self.learning_rate,
+            "pathway": self.pathway.value,
             "seeds": sorted(run.seed for run in self.runs),
             "mean_macro_f1": self.mean_macro_f1,
             "mean_accuracy": self.mean_accuracy,
@@ -1084,15 +1104,30 @@ class FrozenLearningRate:
     tuning_seeds: tuple[int, ...] = TUNING_SEEDS
 
     def __post_init__(self) -> None:
-        if self.selected_on is not SystemPathway.VANILLA:
+        if self.selected_on not in (SystemPathway.VANILLA, SystemPathway.BASE_ONLY):
             raise SplitLeakage(
-                "the primary shared LR is selected on VANILLA only "
-                f"(got {self.selected_on.value})"
+                "an LR is selected on VANILLA (primary) or BASE_ONLY (secondary "
+                f"own-LR sensitivity) only, got {self.selected_on.value}"
             )
         if self.value not in self.grid:
             raise EvaluationContractViolation(
                 f"{self.value} is not in the precommitted grid {sorted(self.grid)}"
             )
+
+    def require_primary(self, context: str) -> "FrozenLearningRate":
+        """Refuse a secondary own-LR value where the PRIMARY shared LR is meant.
+
+        The headline burden result is the shared-LR one. A Base-only own-LR
+        value reaching the primary measurement would silently republish the
+        sensitivity analysis as the primary finding.
+        """
+        if self.selected_on is not SystemPathway.VANILLA:
+            raise SplitLeakage(
+                f"{context} requires the PRIMARY shared LR, selected on VANILLA; "
+                f"this LR was selected on {self.selected_on.value} (secondary "
+                "own-LR sensitivity) and must not replace the primary result"
+            )
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1104,7 +1139,13 @@ class FrozenLearningRate:
 
 
 def freeze_learning_rate(winner: LrCandidate) -> FrozenLearningRate:
-    return FrozenLearningRate(value=winner.learning_rate)
+    """Freeze a selected candidate, recording WHICH pathway selected it.
+
+    For a primary (VANILLA) candidate this is identical to before. A BASE_ONLY
+    candidate freezes as a secondary own-LR selection, and `require_primary`
+    below is what keeps the two from being confused downstream.
+    """
+    return FrozenLearningRate(value=winner.learning_rate, selected_on=winner.pathway)
 
 
 def score_measurement(
@@ -1168,14 +1209,50 @@ class PairedSeedResult:
 
 @dataclass(frozen=True)
 class PairedDiagnostic:
-    """The descriptive pre-G1 burden report. **No hypothesis test.**"""
+    """The descriptive pre-G1 burden report. **No hypothesis test.**
+
+    Two shapes, one implementation of the delta/aggregation arithmetic:
+
+    * PRIMARY (the default) -- both arms trained at the same shared LR, the one
+      Vanilla tuning selected. `base_only_learning_rate` is None and `to_dict`
+      emits exactly the keys the completed primary run emitted.
+    * SECONDARY OWN-LR SENSITIVITY -- `base_only_learning_rate` is supplied,
+      each arm having selected its own LR on the same grid, the same three
+      tuning seeds and the same protocol-dev. It is an additional reading of the
+      same burden, never a replacement for the primary result.
+    """
 
     learning_rate: FrozenLearningRate
     results: tuple[PairedSeedResult, ...]
     measured_on: Preg1Role = Preg1Role.OFFICIAL_VALIDATION
     schema_version: str = PREG1_HEAD_SCHEMA_VERSION
+    base_only_learning_rate: FrozenLearningRate | None = None
+
+    @property
+    def is_secondary(self) -> bool:
+        return self.base_only_learning_rate is not None
 
     def __post_init__(self) -> None:
+        # The Vanilla arm is the primary shared LR in BOTH shapes: the secondary
+        # analysis retunes Base-only only, and never the comparator.
+        self.learning_rate.require_primary("the Vanilla arm of a paired measurement")
+        if self.base_only_learning_rate is not None:
+            if self.base_only_learning_rate.selected_on is not SystemPathway.BASE_ONLY:
+                raise SplitLeakage(
+                    "a secondary own-LR sensitivity pairs the primary Vanilla LR "
+                    "against a BASE_ONLY-selected LR; got "
+                    f"{self.base_only_learning_rate.selected_on.value}"
+                )
+            if self.base_only_learning_rate.grid != self.learning_rate.grid:
+                raise EvaluationContractViolation(
+                    "the secondary analysis uses the same precommitted grid as the "
+                    "primary; the grid is not expanded after seeing results"
+                )
+            if self.base_only_learning_rate.tuning_seeds != self.learning_rate.tuning_seeds:
+                raise EvaluationContractViolation(
+                    "the secondary analysis uses the same three tuning seeds as the "
+                    "primary, so both arms had an equal tuning budget"
+                )
         if self.measured_on is not Preg1Role.OFFICIAL_VALIDATION:
             raise EvaluationContractViolation(
                 "the primary paired measurement is reported on official validation "
@@ -1191,7 +1268,7 @@ class PairedDiagnostic:
     def to_dict(self) -> dict[str, Any]:
         f1_deltas = [r.macro_f1_delta for r in self.results]
         acc_deltas = [r.accuracy_delta for r in self.results]
-        return {
+        report: dict[str, Any] = {
             "schema_version": self.schema_version,
             "dataset": PRIMARY_DATASET,
             "dataset_version": PRIMARY_DATASET_VERSION,
@@ -1215,6 +1292,13 @@ class PairedDiagnostic:
             "interpretation": NO_SIGNIFICANCE_TEST,
             "determinism": DETERMINISM_SCOPE,
         }
+        if self.is_secondary:
+            report["analysis"] = SECONDARY_ANALYSIS_LABEL
+            report["vanilla_learning_rate"] = self.learning_rate.to_dict()
+            report["base_only_learning_rate"] = self.base_only_learning_rate.to_dict()
+            report["secondary_caveat"] = SECONDARY_SENSITIVITY
+            report["primary_lr_caveat"] = PRIMARY_LR_CAVEAT
+        return report
 
 
 def _aggregate(f1_values: Sequence[float], accuracy_values: Sequence[float]) -> dict[str, float]:

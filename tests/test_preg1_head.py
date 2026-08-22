@@ -90,15 +90,21 @@ def flat_run(pathway, lr, seed, f1=0.5, acc=0.5, hidden=8):
     )
 
 
-def full_grid(f1_by_lr=None, acc=0.5):
+def full_grid(f1_by_lr=None, acc=0.5, pathway=SystemPathway.VANILLA):
+    """The whole precommitted grid as candidates, all on one pathway.
+
+    `pathway` defaults to VANILLA (the primary). The secondary own-LR
+    sensitivity sweeps the identical grid and seeds on BASE_ONLY.
+    """
     f1_by_lr = f1_by_lr or {}
     return [
         LrCandidate(
             lr,
             tuple(
-                flat_run(SystemPathway.VANILLA, lr, seed, f1_by_lr.get(lr, 0.5), acc)
+                flat_run(pathway, lr, seed, f1_by_lr.get(lr, 0.5), acc)
                 for seed in TUNING_SEEDS
             ),
+            pathway=pathway,
         )
         for lr in LR_GRID
     ]
@@ -806,10 +812,47 @@ def test_frozen_lr_must_come_from_vanilla_and_the_grid():
     frozen = freeze_learning_rate(select_learning_rate(full_grid({1e-2: 0.9})))
     assert frozen.value == 1e-2
     assert frozen.selected_on is SystemPathway.VANILLA
+    assert frozen.require_primary("ctx") is frozen
     with pytest.raises(EvaluationContractViolation, match="not in the precommitted grid"):
         FrozenLearningRate(value=5e-3)
-    with pytest.raises(SplitLeakage, match="VANILLA only"):
-        FrozenLearningRate(value=1e-3, selected_on=SystemPathway.BASE_ONLY)
+
+
+def test_a_base_only_lr_is_representable_but_never_passes_as_the_primary():
+    """The secondary own-LR sensitivity needs a Base-only-selected LR to EXIST.
+
+    Audit 027 relaxed the constructor, which by itself would have removed the
+    guarantee that a Base-only LR cannot be used as the shared one. The
+    guarantee now lives in `require_primary`, which every primary consumer
+    calls, so this test is what keeps the relaxation from being a hole.
+    """
+    secondary = FrozenLearningRate(value=1e-3, selected_on=SystemPathway.BASE_ONLY)
+    assert secondary.selected_on is SystemPathway.BASE_ONLY
+    with pytest.raises(SplitLeakage, match="must not replace the primary"):
+        secondary.require_primary("the primary paired measurement")
+
+    # A pathway that is neither arm remains unrepresentable.
+    other = next(
+        (p for p in SystemPathway
+         if p not in (SystemPathway.VANILLA, SystemPathway.BASE_ONLY)),
+        None,
+    )
+    if other is not None:
+        with pytest.raises(SplitLeakage):
+            FrozenLearningRate(value=1e-3, selected_on=other)
+
+
+def test_freeze_carries_the_selecting_pathway_so_the_two_cannot_be_confused():
+    primary = freeze_learning_rate(select_learning_rate(full_grid({1e-2: 0.9})))
+    assert primary.selected_on is SystemPathway.VANILLA
+
+    base_runs = full_grid({3e-3: 0.8}, pathway=SystemPathway.BASE_ONLY)
+    secondary = freeze_learning_rate(
+        select_learning_rate(base_runs)
+    )
+    assert secondary.value == 3e-3
+    assert secondary.selected_on is SystemPathway.BASE_ONLY, (
+        "a Base-only sweep must not freeze as though Vanilla had selected it"
+    )
 
 
 # ===========================================================================
@@ -1337,3 +1380,102 @@ def test_cache_load_is_annotated_to_return_bound_representations():
         and r.value.func.id == "BoundRepresentations"
         for r in returns
     )
+
+
+# ===========================================================================
+# I. SECONDARY OWN-LR SENSITIVITY (Audit 027)
+#
+# The same delta/aggregation arithmetic serves two report shapes. These tests
+# pin that the shapes stay distinguishable, that the primary shape is byte-for
+# -byte what the completed primary run emitted, and that a secondary result
+# cannot pass itself off as the primary.
+# ===========================================================================
+def test_a_base_only_candidate_must_be_declared_and_stays_single_pathway():
+    base_runs = tuple(
+        flat_run(SystemPathway.BASE_ONLY, 1e-3, seed, 0.6, 0.7) for seed in TUNING_SEEDS
+    )
+    # declaring the pathway is what makes Base-only aggregation legal at all
+    candidate = LrCandidate(1e-3, base_runs, pathway=SystemPathway.BASE_ONLY)
+    assert candidate.pathway is SystemPathway.BASE_ONLY
+    assert candidate.to_dict()["pathway"] == "BASE_ONLY"
+
+    # the default is still VANILLA, so the primary cannot absorb Base-only runs
+    with pytest.raises(SplitLeakage, match="VANILLA runs only"):
+        LrCandidate(1e-3, base_runs)
+
+    # and a declared Base-only candidate refuses Vanilla runs, symmetrically
+    vanilla_runs = tuple(
+        flat_run(SystemPathway.VANILLA, 1e-3, seed, 0.6, 0.7) for seed in TUNING_SEEDS
+    )
+    with pytest.raises(SplitLeakage, match="BASE_ONLY runs only"):
+        LrCandidate(1e-3, vanilla_runs, pathway=SystemPathway.BASE_ONLY)
+
+
+def test_the_primary_report_shape_is_unchanged_by_the_secondary_feature():
+    """Audit 027 must not alter what the completed primary run emits."""
+    report = paired().to_dict()
+    assert "analysis" not in report
+    assert "base_only_learning_rate" not in report
+    assert "vanilla_learning_rate" not in report
+    assert "secondary_caveat" not in report
+    assert report["learning_rate"]["selected_on"] == "VANILLA"
+
+
+def secondary(**overrides):
+    kwargs = dict(
+        base_only_learning_rate=FrozenLearningRate(
+            3e-3, selected_on=SystemPathway.BASE_ONLY
+        )
+    )
+    kwargs.update(overrides)
+    return paired(**kwargs)
+
+
+def test_the_secondary_report_names_itself_and_carries_both_learning_rates():
+    from unmark.evaluation.preg1_protocol import SECONDARY_ANALYSIS_LABEL
+
+    report = secondary().to_dict()
+    assert report["analysis"] == SECONDARY_ANALYSIS_LABEL == "SECONDARY OWN-LR SENSITIVITY"
+    assert report["vanilla_learning_rate"]["learning_rate"] == 1e-3
+    assert report["vanilla_learning_rate"]["selected_on"] == "VANILLA"
+    assert report["base_only_learning_rate"]["learning_rate"] == 3e-3
+    assert report["base_only_learning_rate"]["selected_on"] == "BASE_ONLY"
+    # the precommitment travels with the result
+    assert "MUST NOT replace" in report["secondary_caveat"]
+    assert "does NOT make Vanilla an upper bound" in report["primary_lr_caveat"]
+    # still descriptive: no significance machinery in either shape
+    assert not {"p_value", "threshold", "passed"} & set(report)
+
+
+def test_the_secondary_pairs_the_primary_vanilla_lr_against_a_base_only_lr():
+    # the Vanilla comparator must itself be a primary (VANILLA) selection
+    with pytest.raises(SplitLeakage, match="must not replace the primary"):
+        paired(learning_rate=FrozenLearningRate(1e-3, selected_on=SystemPathway.BASE_ONLY))
+
+    # and the retuned arm must actually have been selected on BASE_ONLY
+    with pytest.raises(SplitLeakage, match="pairs the primary Vanilla LR"):
+        secondary(base_only_learning_rate=FrozenLearningRate(3e-3))
+
+
+def test_the_secondary_may_not_widen_the_grid_or_the_tuning_budget():
+    widened = FrozenLearningRate(
+        3e-3, selected_on=SystemPathway.BASE_ONLY, grid=tuple(LR_GRID) + (5e-2,)
+    )
+    with pytest.raises(EvaluationContractViolation, match="same precommitted grid"):
+        secondary(base_only_learning_rate=widened)
+
+    extra_seeds = FrozenLearningRate(
+        3e-3, selected_on=SystemPathway.BASE_ONLY,
+        tuning_seeds=tuple(TUNING_SEEDS) + (1234,),
+    )
+    with pytest.raises(EvaluationContractViolation, match="same three tuning seeds"):
+        secondary(base_only_learning_rate=extra_seeds)
+
+
+def test_both_shapes_share_one_delta_implementation():
+    """The arithmetic is identical; only the labelling differs."""
+    primary_report = paired().to_dict()
+    secondary_report = secondary().to_dict()
+    for section in ("vanilla", "base_only", "delta_vanilla_minus_base_only", "per_seed"):
+        assert primary_report[section] == secondary_report[section]
+    assert primary_report["delta_vanilla_minus_base_only"]["mean_macro_f1"] == pytest.approx(0.10)

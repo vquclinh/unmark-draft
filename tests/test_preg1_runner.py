@@ -792,3 +792,293 @@ def test_every_epoch_snapshot_is_a_distinct_object_with_its_own_storage():
 
     pointers = {epoch: snaps[epoch]["weight"].data_ptr() for epoch in snaps}
     assert len(set(pointers.values())) == EPOCHS, "checkpoints share tensor storage"
+
+
+# ===========================================================================
+# SECONDARY OWN-LR SENSITIVITY (Audit 027)
+#
+# The secondary analysis was precommitted in `preg1_protocol` before any
+# primary result existed. These tests check the wiring that keeps it SECONDARY:
+# same grid, same seeds, Base-only retuned, Vanilla neither retuned nor rerun,
+# and an artifact that names itself rather than passing as the primary.
+# ===========================================================================
+def sensitivity_fn():
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    return tree, next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "run_sensitivity"
+    )
+
+
+def test_the_secondary_analysis_was_precommitted_not_invented_after_the_fact():
+    """The precommitment must live in the protocol, not in Audit 027's code."""
+    from unmark.evaluation.preg1_protocol import (
+        PRIMARY_LR_CAVEAT,
+        SECONDARY_SENSITIVITY,
+    )
+
+    assert "SECONDARY sensitivity analysis" in SECONDARY_SENSITIVITY
+    assert "same grid" in SECONDARY_SENSITIVITY
+    assert "MUST NOT replace" in SECONDARY_SENSITIVITY
+    # and the primary must already have disclaimed being a bound
+    assert "does NOT make Vanilla an upper bound" in PRIMARY_LR_CAVEAT
+
+
+def test_sensitivity_retunes_base_only_and_nothing_else():
+    cli = load_cli()
+    assert cli.SENSITIVITY_PATHWAY is SystemPathway.BASE_ONLY
+    assert cli.TUNING_PATHWAY is SystemPathway.VANILLA, "the primary is untouched"
+
+    _, fn = sensitivity_fn()
+    # Every pathway-carrying call in the sensitivity body names the constant,
+    # so no call site can quietly encode the other arm.
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") in {
+            "pathway_text", "representation_key"
+        }:
+            rendered = ast.unparse(node)
+            assert "SENSITIVITY_PATHWAY" in rendered, rendered
+            assert "VANILLA" not in rendered, rendered
+
+
+def test_vanilla_is_neither_retuned_nor_rerun():
+    """The comparator is READ from the primary artifact, never recomputed."""
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn)
+    assert "primary_vanilla_by_seed" in body or "primary_vanilla[" in body
+    # no Vanilla representations are built here at all
+    assert "SystemPathway.VANILLA" not in body, (
+        "run_sensitivity must not construct a Vanilla arm; it reads the primary"
+    )
+
+
+def test_phase_a_is_exactly_the_precommitted_fifteen_runs():
+    cli = load_cli()
+    assert len(cli.tuning_schedule()) == len(LR_GRID) * len(TUNING_SEEDS) == 15
+
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn)
+    # the SAME schedule helper the primary uses -- not a second schedule
+    assert "tuning_schedule()" in body
+    assert "for index, (lr, seed) in enumerate(schedule" in body
+
+
+def test_phase_b_is_five_runs_not_ten():
+    """The secondary trains ONE arm per seed; the other arm is already measured."""
+    from unmark.evaluation.preg1_protocol import MEASUREMENT_SEEDS
+
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn)
+    assert "for index, seed in enumerate(MEASUREMENT_SEEDS" in body
+    assert "for pathway in" not in body, (
+        "a pathway loop would retrain Vanilla and double Phase B to 10 runs"
+    )
+    # two train_head call sites: one for Phase A, one for Phase B
+    assert body.count("train_head(") == 2
+    assert len(MEASUREMENT_SEEDS) == 5
+
+
+def test_the_grid_is_not_expanded_post_hoc():
+    """`require_full_grid` is never disabled, anywhere in the runner."""
+    source = CLI.read_text(encoding="utf-8")
+    assert "require_full_grid=False" not in source
+    assert "expected_seeds=None" not in source
+
+    tree, fn = sensitivity_fn()
+    # the candidates the selector sees are built over LR_GRID itself
+    body = ast.unparse(fn)
+    assert "for lr in LR_GRID" in body
+    # and no numeric LR literal is introduced in the sensitivity path
+    literals = {
+        n.value for n in ast.walk(fn)
+        if isinstance(n, ast.Constant) and isinstance(n.value, float)
+    }
+    assert not literals - set(LR_GRID), f"stray LR literal(s): {literals}"
+
+
+def test_official_validation_is_opened_only_after_the_base_only_lr_is_frozen():
+    """Ordering, not just intent: the file is untouched during selection."""
+    _, fn = sensitivity_fn()
+    freeze_at = [
+        n.lineno for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "freeze_learning_rate"
+    ]
+    validation_at = [
+        n.lineno for n in ast.walk(fn)
+        if isinstance(n, ast.Attribute) and n.attr == "official_validation"
+    ]
+    assert freeze_at and validation_at
+    assert min(validation_at) > max(freeze_at), (
+        "official validation must not be read, encoded or cached during Phase A"
+    )
+
+
+def test_official_test_stays_unreachable_from_the_sensitivity_path():
+    assert not hasattr(Preg1Role, "OFFICIAL_TEST")
+    _, fn = sensitivity_fn()
+    roles = {
+        n.attr for n in ast.walk(fn)
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+        and n.value.id == "Preg1Role"
+    }
+    assert roles <= {"PROTOCOL_TRAIN", "PROTOCOL_DEV", "OFFICIAL_VALIDATION"}, roles
+
+
+def test_sensitivity_exposes_no_scientific_overrides():
+    """Runtime paths only. A flag that could move a precommitted value is the hole."""
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    main = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    flags = {
+        n.args[0].value for n in ast.walk(main)
+        if isinstance(n, ast.Call)
+        and getattr(getattr(n.func, "attr", None), "__str__", str)() == "add_argument"
+        and n.args and isinstance(n.args[0], ast.Constant)
+    }
+    for forbidden in ("--learning-rate", "--lr", "--seeds", "--seed", "--grid",
+                      "--epochs", "--batch-size", "--max-length", "--pooling",
+                      "--base-only-lr"):
+        assert forbidden not in flags, f"{forbidden} could override a locked value"
+
+
+def write_primary_measurement(tmp_path, *, lr=0.01, selected_on="VANILLA",
+                              seeds=None, analysis=None, base_only_lr=None,
+                              measured_on="official-validation"):
+    from unmark.evaluation.preg1_protocol import MEASUREMENT_SEEDS
+
+    seeds = MEASUREMENT_SEEDS if seeds is None else seeds
+    report = {
+        "repository_head": "929f80e",
+        "measured_on": measured_on,
+        "learning_rate": {"learning_rate": lr, "selected_on": selected_on},
+        "per_seed": [
+            {"seed": seed, "vanilla_macro_f1": 0.74, "vanilla_accuracy": 0.90,
+             "base_only_macro_f1": 0.66, "base_only_accuracy": 0.82}
+            for seed in seeds
+        ],
+        "vanilla": {"mean_macro_f1": 0.74},
+        "base_only": {"mean_macro_f1": 0.66},
+        "delta_vanilla_minus_base_only": {"mean_macro_f1": 0.08},
+        "boundaries": {"official_test_used": False, "encoder_trained": False},
+    }
+    if analysis is not None:
+        report["analysis"] = analysis
+    if base_only_lr is not None:
+        report["base_only_learning_rate"] = {"learning_rate": base_only_lr}
+    path = tmp_path / "measurement.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    return path
+
+
+def test_the_primary_comparator_is_verified_not_trusted(tmp_path):
+    cli = load_cli()
+    good = cli.load_primary_measurement(write_primary_measurement(tmp_path))
+    assert len(good["per_seed"]) == 5
+
+    by_seed = cli.primary_vanilla_by_seed(good)
+    from unmark.evaluation.preg1_protocol import MEASUREMENT_SEEDS
+    assert sorted(by_seed) == sorted(MEASUREMENT_SEEDS)
+    assert by_seed[MEASUREMENT_SEEDS[0]] == (0.74, 0.90)
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"selected_on": "BASE_ONLY"}, "selected on VANILLA"),
+    ({"analysis": "SECONDARY OWN-LR SENSITIVITY"}, "PRIMARY shared-LR"),
+    ({"base_only_lr": 0.003}, "not the primary"),
+    ({"seeds": (53148, 59945)}, "needs all of"),
+    ({"measured_on": "protocol-dev"}, "reports on"),
+    ({"lr": 5e-3}, "not in the precommitted grid"),
+])
+def test_a_non_primary_artifact_is_refused_as_the_comparator(tmp_path, kwargs, message):
+    cli = load_cli()
+    path = write_primary_measurement(tmp_path, **kwargs)
+    with pytest.raises(EvaluationContractViolation, match=message):
+        cli.load_primary_measurement(path)
+
+
+def test_a_missing_or_malformed_primary_is_refused(tmp_path):
+    cli = load_cli()
+    with pytest.raises(EvaluationContractViolation, match="not found"):
+        cli.load_primary_measurement(tmp_path / "absent.json")
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    with pytest.raises(EvaluationContractViolation, match="malformed"):
+        cli.load_primary_measurement(bad)
+
+
+def test_the_two_primary_artifacts_are_cross_checked_against_each_other():
+    """The measurement's LR must be the one the tuning sweep actually selected.
+
+    `run_sensitivity` passes the LR it read from the measurement into
+    `load_tuning_artifact`, so a mismatched pair fails closed. Nothing supplies
+    the LR on the command line.
+    """
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn)
+    assert "load_tuning_artifact(Path(args.primary_tuning), primary_lr_value)" in body
+    assert "args.frozen_lr" not in body, "the secondary takes no LR from the caller"
+
+
+def test_the_sensitivity_artifact_names_itself_secondary():
+    from unmark.evaluation.preg1_protocol import (
+        PRIMARY_ANALYSIS_LABEL,
+        SECONDARY_ANALYSIS_LABEL,
+    )
+
+    assert SECONDARY_ANALYSIS_LABEL == "SECONDARY OWN-LR SENSITIVITY"
+    assert PRIMARY_ANALYSIS_LABEL == "PRIMARY SHARED-LR"
+    for word in ("upper bound", "lower bound", "significan", "corrected"):
+        assert word not in SECONDARY_ANALYSIS_LABEL.lower()
+
+    # It is `base_only_learning_rate=` that makes the report label itself
+    # SECONDARY -- printing the constant in a banner would not. Assert the
+    # artifact-producing call actually passes it.
+    _, fn = sensitivity_fn()
+    diagnostic = next(
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "PairedDiagnostic"
+    )
+    supplied = {kw.arg for kw in diagnostic.keywords}
+    assert "base_only_learning_rate" in supplied, supplied
+    assert ast.unparse(
+        next(kw for kw in diagnostic.keywords if kw.arg == "base_only_learning_rate")
+    ).endswith("base_frozen"), "the retuned Base-only LR, not the primary one"
+    assert ast.unparse(
+        next(kw for kw in diagnostic.keywords if kw.arg == "learning_rate")
+    ).endswith("primary_frozen"), "the Vanilla arm stays the primary shared LR"
+
+    body = ast.unparse(fn)
+    assert "SECONDARY_ANALYSIS_LABEL" in body
+    # the primary numbers are carried through for reference, clearly labelled
+    assert "primary_reference_burden" in body
+    assert "primary_provenance" in body
+
+
+def test_the_sensitivity_artifact_reports_no_significance_machinery():
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn).lower()
+    for banned in ("p_value", "p-value", "pvalue", "threshold", "significant",
+                   "passes", "fails", "reject"):
+        assert banned not in body, f"{banned} has no place in a descriptive report"
+
+
+def test_sensitivity_refuses_an_existing_output_directory():
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn)
+    assert "output_dir.exists()" in body and "already exists" in body
+
+
+def test_sensitivity_reuses_the_committed_apis():
+    """No second trainer, selector, metric, checkpoint rule or protocol."""
+    _, fn = sensitivity_fn()
+    body = ast.unparse(fn)
+    for name in ("train_head", "select_learning_rate", "freeze_learning_rate",
+                 "LrCandidate", "PairedSeedResult", "PairedDiagnostic",
+                 "score_measurement", "build_head", "extract_or_load"):
+        assert name in body, f"{name} must be reused, not reimplemented"
+    # and it defines none of them itself
+    tree, _ = sensitivity_fn()
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    for name in ("train_head", "select_learning_rate", "score_measurement",
+                 "freeze_learning_rate", "build_head"):
+        assert name not in defined, f"the runner must not define its own {name}"

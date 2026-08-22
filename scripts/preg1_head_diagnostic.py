@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """Pre-G1 frozen-encoder burden diagnostic — Colab runner.
 
-Two subcommands, in the order the protocol requires:
+Three subcommands, in the order the protocol requires:
 
-    tune       sweep the precommitted LR grid on **VANILLA ONLY**, on
-               protocol-dev, and freeze the winner
-    measure    run the paired Vanilla-vs-Base-only measurement on official
-               validation, using an already-frozen LR
+    tune         sweep the precommitted LR grid on **VANILLA ONLY**, on
+                 protocol-dev, and freeze the winner
+    measure      run the paired Vanilla-vs-Base-only measurement on official
+                 validation, using an already-frozen LR
+    sensitivity  the SECONDARY own-LR sensitivity precommitted in
+                 `preg1_protocol.SECONDARY_SENSITIVITY`: retune **BASE_ONLY**
+                 on the same grid, seeds and budget, then pair it against the
+                 Vanilla results the completed primary run already produced
+
+`sensitivity` runs last and changes nothing upstream of it. It never retunes or
+reruns Vanilla, never expands the grid, and never replaces the primary
+shared-LR result: it is an additional reading of the same burden, and the
+artifact it writes says so in its own `analysis` field.
 
 **There is no `--test` flag and no official-test argument.** `Preg1Role` has no
 `OFFICIAL_TEST` member, so the sealed split is unreachable from this program
@@ -71,10 +80,14 @@ from unmark.evaluation.preg1_protocol import (  # noqa: E402
     MEASUREMENT_SEEDS,
     PADDING,
     PREG1_POOLING,
+    PRIMARY_ANALYSIS_LABEL,
     PRIMARY_DATASET,
     PRIMARY_DATASET_VERSION,
+    PRIMARY_LR_CAVEAT,
     PRIMARY_LR_SELECTION,
     PRIMARY_TASK,
+    SECONDARY_ANALYSIS_LABEL,
+    SECONDARY_SENSITIVITY,
     TRUNCATION,
     TUNING_SEEDS,
     DERIVED_VALIDATION_CSV_SHA256,
@@ -473,7 +486,9 @@ def run_measure(args) -> int:
         return 2
 
     artifact = load_tuning_artifact(Path(args.tuning_artifact), args.frozen_lr)
-    frozen = FrozenLearningRate(value=args.frozen_lr)
+    frozen = FrozenLearningRate(value=args.frozen_lr).require_primary(
+        "the primary paired measurement"
+    )
     print(f"  frozen LR      : {frozen.value:g} (selected on {frozen.selected_on.value})")
     print(f"  tuning head    : {artifact.get('repository_head')}")
     print(f"  seeds          : {list(MEASUREMENT_SEEDS)}")
@@ -609,6 +624,387 @@ def run_measure(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# SECONDARY OWN-LR SENSITIVITY (Audit 027)
+#
+# Precommitted in `preg1_protocol.SECONDARY_SENSITIVITY` BEFORE any primary
+# result existed. It lets Base-only select its own LR on the SAME grid, the SAME
+# three tuning seeds, the SAME protocol-dev, the SAME 30-epoch budget and the
+# SAME checkpoint rule, and pairs it against the primary run's Vanilla results.
+#
+# It is an additional reading of the same burden. It does not replace, correct,
+# bound or re-open the primary shared-LR result.
+# ---------------------------------------------------------------------------
+SENSITIVITY_PATHWAY = SystemPathway.BASE_ONLY
+"""The only pathway the secondary analysis retunes.
+
+Vanilla is NOT retuned: its LR stays the frozen primary one and its per-seed
+scores are read from the completed primary measurement artifact rather than
+recomputed, so the comparator cannot drift.
+"""
+
+
+def run_sensitivity(args) -> int:
+    """SECONDARY OWN-LR SENSITIVITY: Phase A retunes Base-only, Phase B pairs it.
+
+    Phase A  15 BASE_ONLY runs (the same 5 LRs x the same 3 tuning seeds),
+             selected on protocol-dev with the committed selector.
+    Phase B  5 BASE_ONLY measurement runs at the Base-only LR, scored on
+             official validation, paired seed-for-seed against the PRIMARY
+             Vanilla results read from the completed primary artifact.
+
+    Vanilla is never retuned and never rerun here.
+    """
+    from unmark.evaluation.pathways import pathway_text
+    from unmark.evaluation.preg1_head import (
+        build_head,
+        score_measurement,
+        train_head,
+    )
+
+    output_dir = Path(args.output_dir)
+    if output_dir.exists():
+        print(f"REFUSED: {output_dir} already exists; sensitivity artifacts are immutable",
+              file=sys.stderr)
+        return 2
+
+    # --- the primary is verified, then frozen for the rest of this run -----
+    primary = load_primary_measurement(Path(args.primary_measurement))
+    primary_lr_value = float(primary["learning_rate"]["learning_rate"])
+    # Cross-bind the two primary artifacts: the measurement's LR must be the one
+    # the tuning sweep actually selected, on VANILLA, without official validation.
+    primary_tuning = load_tuning_artifact(Path(args.primary_tuning), primary_lr_value)
+    primary_vanilla = primary_vanilla_by_seed(primary)
+    primary_frozen = FrozenLearningRate(value=primary_lr_value).require_primary(
+        "the Vanilla comparator of the secondary sensitivity"
+    )
+
+    print(f"\n{SECONDARY_ANALYSIS_LABEL}")
+    print(f"  precommitment  : {SECONDARY_SENSITIVITY}")
+    print(f"  primary tuning head      : {primary_tuning.get('repository_head')}")
+    print(f"  primary measurement head : {primary.get('repository_head')}")
+    print(f"  primary shared LR        : {primary_frozen.value:g} "
+          f"(selected on {primary_frozen.selected_on.value})")
+    print(f"  primary Vanilla mean macro-F1 : "
+          f"{primary['vanilla']['mean_macro_f1']:.6f}")
+    print(f"  primary Base-only mean macro-F1: "
+          f"{primary['base_only']['mean_macro_f1']:.6f}")
+    print("  the primary result above is READ ONLY and is not recomputed here")
+
+    pool = load_derived_pool(
+        args.derived_train, args.text_column, args.label_column, args.id_column
+    )
+    membership = load_membership(args.split_dir)
+    membership.require_partitions([sample_id for sample_id, _, _ in pool.records])
+
+    tokenizer, encoder = load_frozen_encoder(args.revision)
+    hidden_size = int(encoder.config.hidden_size)
+    cache_root = Path(args.cache_root)
+
+    # --- BASE_ONLY representations, same cache identity as the primary run --
+    bound: dict[Preg1Role, object] = {}
+    keys: dict[str, RepresentationKey] = {}
+    labels: dict[Preg1Role, list] = {}
+    for role in TUNING_ROLES:
+        ids = membership.ids_for(role)
+        texts, role_labels = materialise_split(pool, ids, role)
+        labels[role] = role_labels
+        key = representation_key(
+            role, ids, pool.source_sha256, hidden_size, SENSITIVITY_PATHWAY
+        )
+        name = f"{role.value}.{SENSITIVITY_PATHWAY.value}"
+        keys[name] = key
+        bound[role] = extract_or_load(
+            cache_root, name, key, tokenizer, encoder,
+            [pathway_text(t, SENSITIVITY_PATHWAY) for t in texts],
+        )
+
+    # --- Phase A: the Base-only sweep, same schedule as the primary --------
+    schedule = tuning_schedule()
+    print(f"\nPhase A: {len(schedule)} runs = {len(LR_GRID)} learning rates x "
+          f"{len(TUNING_SEEDS)} tuning seeds, {SENSITIVITY_PATHWAY.value} only, "
+          f"{EPOCHS} epochs each")
+    print(f"  grid          : {list(LR_GRID)} (precommitted; not expanded)")
+    print(f"  selection set : {Preg1Role.PROTOCOL_DEV.value}")
+    print("  official validation is NOT read during Phase A")
+
+    runs_by_lr: dict[float, list] = {lr: [] for lr in LR_GRID}
+    for index, (lr, seed) in enumerate(schedule, start=1):
+        print(f"\n[A {index}/{len(schedule)}] lr={lr:g} seed={seed} "
+              f"{SENSITIVITY_PATHWAY.value}")
+
+        def on_epoch(epoch, score, _lr=lr, _seed=seed):
+            if epoch % 5 == 0 or epoch == EPOCHS:
+                print(f"    epoch {epoch:2d}/{EPOCHS}  "
+                      f"dev macro-F1 {score.macro_f1:.4f}  acc {score.accuracy:.4f}")
+
+        run = train_head(
+            bound[Preg1Role.PROTOCOL_TRAIN], labels[Preg1Role.PROTOCOL_TRAIN],
+            bound[Preg1Role.PROTOCOL_DEV], labels[Preg1Role.PROTOCOL_DEV],
+            learning_rate=lr, seed=seed, epochs=EPOCHS, batch_size=BATCH_SIZE,
+            on_epoch=on_epoch,
+        )
+        print(f"  -> selected epoch {run.selected.epoch}: "
+              f"macro-F1 {run.selected.macro_f1:.4f}  acc {run.selected.accuracy:.4f}")
+        runs_by_lr[lr].append(run)
+
+    candidates = [
+        LrCandidate(lr, tuple(runs_by_lr[lr]), pathway=SENSITIVITY_PATHWAY)
+        for lr in LR_GRID
+    ]
+    winner = select_learning_rate(candidates)          # the committed selector
+    base_frozen = freeze_learning_rate(winner)         # selected_on = BASE_ONLY
+
+    print("\nPhase A per learning rate (mean over tuning seeds):")
+    for candidate in candidates:
+        mark = " <-- selected" if candidate is winner else ""
+        print(f"  lr={candidate.learning_rate:<8g} macro-F1 {candidate.mean_macro_f1:.4f} "
+              f"acc {candidate.mean_accuracy:.4f} sd {candidate.stdev_macro_f1:.4f}{mark}")
+    print(f"\nBASE-ONLY LR: {base_frozen.value:g} "
+          f"(selected on {base_frozen.selected_on.value})")
+    print(f"PRIMARY SHARED LR: {primary_frozen.value:g} (unchanged)")
+
+    # --- official validation is opened HERE, after Phase A has ended -------
+    # Deliberately not loaded above: the file is not read, encoded or cached
+    # until the Base-only LR is already a frozen value, so it cannot have
+    # informed the selection even by ordering accident.
+    validation = load_derived_pool(
+        args.official_validation, args.text_column, args.label_column, args.id_column,
+        expected_sha256=DERIVED_VALIDATION_CSV_SHA256,
+        expected_rows=PUBLISHED_SPLIT_SIZES["validation"],
+        expected_label_counts=dict(PUBLISHED_LABEL_COUNTS["validation"]),
+    )
+    print(f"\n  official validation : {len(validation.records)} rows, "
+          f"sha {validation.source_sha256[:16]}… (measurement only)")
+    validation_ids = [sample_id for sample_id, _, _ in validation.records]
+    validation_labels = [_label_index(label) for _, _, label in validation.records]
+    validation_key = representation_key(
+        Preg1Role.OFFICIAL_VALIDATION, validation_ids, validation.source_sha256,
+        hidden_size, SENSITIVITY_PATHWAY,
+    )
+    validation_name = f"{Preg1Role.OFFICIAL_VALIDATION.value}.{SENSITIVITY_PATHWAY.value}"
+    keys[validation_name] = validation_key
+    bound[Preg1Role.OFFICIAL_VALIDATION] = extract_or_load(
+        cache_root, validation_name, validation_key, tokenizer, encoder,
+        [pathway_text(text, SENSITIVITY_PATHWAY) for _, text, _ in validation.records],
+    )
+
+    # --- Phase B: 5 secondary measurement runs -----------------------------
+    print(f"\nPhase B: {len(MEASUREMENT_SEEDS)} {SENSITIVITY_PATHWAY.value} runs at "
+          f"lr={base_frozen.value:g}, paired against the primary Vanilla results")
+    results = []
+    for index, seed in enumerate(MEASUREMENT_SEEDS, start=1):
+        print(f"\n[B {index}/{len(MEASUREMENT_SEEDS)}] seed={seed} "
+              f"{SENSITIVITY_PATHWAY.value}")
+        snapshots: dict[int, dict] = {}
+
+        def capture(epoch, score, head, _store=snapshots):
+            _store[epoch] = {k: v.detach().clone() for k, v in head.state_dict().items()}
+
+        run = train_head(
+            bound[Preg1Role.PROTOCOL_TRAIN], labels[Preg1Role.PROTOCOL_TRAIN],
+            bound[Preg1Role.PROTOCOL_DEV], labels[Preg1Role.PROTOCOL_DEV],
+            learning_rate=base_frozen.value, seed=seed, epochs=EPOCHS,
+            batch_size=BATCH_SIZE, on_checkpoint=capture,
+        )
+        chosen = run.selected
+        print(f"    selected epoch {chosen.epoch} on {run.scored_on.value}: "
+              f"dev macro-F1 {chosen.macro_f1:.4f}")
+
+        head = build_head(hidden_size, seed)
+        head.load_state_dict(snapshots[chosen.epoch])
+        f1, accuracy = score_measurement(
+            head, bound[Preg1Role.OFFICIAL_VALIDATION], validation_labels
+        )
+        vanilla_f1, vanilla_accuracy = primary_vanilla[seed]
+        print(f"    official validation: macro-F1 {f1:.4f}  acc {accuracy:.4f}")
+        print(f"    primary Vanilla    : macro-F1 {vanilla_f1:.4f}  acc {vanilla_accuracy:.4f}")
+
+        results.append(PairedSeedResult(
+            seed=seed,
+            vanilla_macro_f1=vanilla_f1,
+            vanilla_accuracy=vanilla_accuracy,
+            base_only_macro_f1=f1,
+            base_only_accuracy=accuracy,
+        ))
+        print(f"    delta (Vanilla - Base-only): macro-F1 "
+              f"{results[-1].macro_f1_delta:+.4f}  acc {results[-1].accuracy_delta:+.4f}")
+
+    diagnostic = PairedDiagnostic(
+        learning_rate=primary_frozen,
+        results=tuple(results),
+        base_only_learning_rate=base_frozen,
+    )
+    report = diagnostic.to_dict()
+    report["repository_head"] = args.repository_head
+    report["phase_a"] = {
+        "pathway": SENSITIVITY_PATHWAY.value,
+        "roles_used": [role.value for role in TUNING_ROLES],
+        "official_validation_used": False,
+        "official_test_used": False,
+        "schedule": {
+            "learning_rates": list(LR_GRID),
+            "tuning_seeds": list(TUNING_SEEDS),
+            "planned_runs": len(schedule),
+        },
+        "runs": [run.to_dict() for candidate in candidates for run in candidate.runs],
+        "per_learning_rate": [candidate.to_dict() for candidate in candidates],
+        "selection": {
+            "selected_learning_rate": winner.learning_rate,
+            "frozen": base_frozen.to_dict(),
+            "rule": list(LR_AGGREGATION_RULE),
+            "checkpoint_rule": list(CHECKPOINT_RULE),
+        },
+    }
+    report["primary_provenance"] = {
+        "tuning": {
+            "repository_head": primary_tuning.get("repository_head"),
+            "selected_learning_rate": primary_tuning["selection"]["selected_learning_rate"],
+            "selected_on": primary_tuning["selection"]["frozen"]["selected_on"],
+            "official_validation_used": primary_tuning.get("official_validation_used"),
+        },
+        "measurement": {
+            "repository_head": primary.get("repository_head"),
+            "learning_rate": primary["learning_rate"],
+            "measured_on": primary.get("measured_on"),
+            "boundaries": primary.get("boundaries"),
+        },
+    }
+    report["primary_reference_burden"] = {
+        "note": (
+            "the completed PRIMARY shared-LR result, reproduced verbatim for "
+            "reference. It is not recomputed, adjusted or replaced here."
+        ),
+        "vanilla": primary["vanilla"],
+        "base_only": primary["base_only"],
+        "delta_vanilla_minus_base_only": primary["delta_vanilla_minus_base_only"],
+    }
+    report["input"] = {
+        "derived_train_sha256": pool.source_sha256,
+        "official_validation_sha256": validation.source_sha256,
+        "assignment_digest": membership.assignment_digest,
+    }
+    report["representations"] = {name: key.to_dict() for name, key in keys.items()}
+    report["boundaries"] = {
+        "official_test_used": False,
+        "official_validation_role": "measurement only; never selection",
+        "raw_text_persisted": False,
+        "encoder_trained": False,
+        "vanilla_retuned": False,
+        "vanilla_rerun": False,
+        "vanilla_source": "read from the completed primary measurement artifact",
+    }
+
+    output_dir.mkdir(parents=True)
+    (output_dir / "sensitivity.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    delta = report["delta_vanilla_minus_base_only"]
+    primary_delta = primary["delta_vanilla_minus_base_only"]
+    print(f"\n--- {SECONDARY_ANALYSIS_LABEL} ---")
+    print(f"Vanilla   (primary, lr={primary_frozen.value:g}) mean macro-F1 "
+          f"{report['vanilla']['mean_macro_f1']:.4f} "
+          f"(sd {report['vanilla']['sample_stdev_macro_f1']:.4f})")
+    print(f"Base-only (own LR, lr={base_frozen.value:g})  mean macro-F1 "
+          f"{report['base_only']['mean_macro_f1']:.4f} "
+          f"(sd {report['base_only']['sample_stdev_macro_f1']:.4f})")
+    print(f"Own-LR   burden (Vanilla - Base-only) mean macro-F1 "
+          f"{delta['mean_macro_f1']:+.4f} (sd {delta['sample_stdev_macro_f1']:.4f})")
+    print(f"Shared-LR burden (PRIMARY, for reference) mean macro-F1 "
+          f"{primary_delta['mean_macro_f1']:+.4f} "
+          f"(sd {primary_delta['sample_stdev_macro_f1']:.4f})")
+    print(f"\nWrote {output_dir / 'sensitivity.json'}")
+    print(f"\n{SECONDARY_SENSITIVITY}")
+    print(f"\n{PRIMARY_LR_CAVEAT}")
+    return 0
+
+
+def load_primary_measurement(path: Path) -> dict:
+    """Read the completed PRIMARY measurement and verify it is what it claims.
+
+    The secondary analysis consumes the primary Vanilla numbers rather than
+    reproducing them, so every property the pairing relies on is checked here
+    instead of trusted: that the LR was selected on Vanilla, that the report is
+    the primary shared-LR one and not another sensitivity artifact, that it was
+    measured on official validation, and that all five precommitted seeds are
+    present.
+    """
+    if not path.is_file():
+        raise EvaluationContractViolation(f"primary measurement not found: {path}")
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise EvaluationContractViolation(
+            f"primary measurement is malformed: {error}"
+        ) from error
+
+    if report.get("analysis", PRIMARY_ANALYSIS_LABEL) != PRIMARY_ANALYSIS_LABEL:
+        raise EvaluationContractViolation(
+            f"{path} is a {report['analysis']!r} artifact; the comparator must be "
+            "the PRIMARY shared-LR measurement. A sensitivity result may not be "
+            "paired against another sensitivity result."
+        )
+    if "base_only_learning_rate" in report:
+        raise EvaluationContractViolation(
+            "the primary measurement trains both arms at one shared LR; this "
+            "artifact records a separate Base-only LR and is not the primary"
+        )
+    learning_rate = report.get("learning_rate") or {}
+    if learning_rate.get("selected_on") != SystemPathway.VANILLA.value:
+        raise EvaluationContractViolation(
+            f"the primary measurement records selected_on "
+            f"{learning_rate.get('selected_on')!r}; the shared LR is selected on "
+            f"{SystemPathway.VANILLA.value}"
+        )
+    if learning_rate.get("learning_rate") not in LR_GRID:
+        raise EvaluationContractViolation(
+            f"the primary LR {learning_rate.get('learning_rate')!r} is not in the "
+            f"precommitted grid {sorted(LR_GRID)}"
+        )
+    if report.get("measured_on") != Preg1Role.OFFICIAL_VALIDATION.value:
+        raise EvaluationContractViolation(
+            f"the primary measurement reports on {report.get('measured_on')!r}, not "
+            f"{Preg1Role.OFFICIAL_VALIDATION.value}"
+        )
+    boundaries = report.get("boundaries") or {}
+    if boundaries.get("official_test_used") is not False:
+        raise EvaluationContractViolation(
+            "the primary measurement does not record official_test_used=false"
+        )
+    if boundaries.get("encoder_trained") is not False:
+        raise EvaluationContractViolation(
+            "the primary measurement does not record encoder_trained=false"
+        )
+
+    per_seed = report.get("per_seed") or []
+    seeds = sorted(entry.get("seed") for entry in per_seed)
+    if seeds != sorted(MEASUREMENT_SEEDS):
+        raise EvaluationContractViolation(
+            f"the primary measurement carries seeds {seeds}; the pairing needs all "
+            f"of {sorted(MEASUREMENT_SEEDS)}"
+        )
+    for entry in per_seed:
+        for field in ("vanilla_macro_f1", "vanilla_accuracy"):
+            if not isinstance(entry.get(field), (int, float)):
+                raise EvaluationContractViolation(
+                    f"primary seed {entry.get('seed')} has no numeric {field}"
+                )
+    return report
+
+
+def primary_vanilla_by_seed(report: dict) -> dict[int, tuple[float, float]]:
+    """The primary per-seed Vanilla scores, keyed by seed. Read, never recomputed."""
+    return {
+        int(entry["seed"]): (
+            float(entry["vanilla_macro_f1"]),
+            float(entry["vanilla_accuracy"]),
+        )
+        for entry in report["per_seed"]
+    }
+
+
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--split-dir", required=True, help="preg1-split-v1 membership directory")
     parser.add_argument("--derived-train", required=True, help="approved derived TRAIN csv")
@@ -661,6 +1057,36 @@ def main(argv=None) -> int:
         help="commit sha recorded as provenance in the measurement artifact",
     )
 
+    sensitivity = sub.add_parser(
+        "sensitivity",
+        help="SECONDARY own-LR sensitivity: retune BASE_ONLY on the same grid",
+    )
+    _common(sensitivity)
+    sensitivity.add_argument(
+        "--official-validation", required=True,
+        help="official validation csv; read ONLY in Phase B, after the Base-only "
+             "LR is selected",
+    )
+    sensitivity.add_argument(
+        "--primary-tuning", required=True,
+        help="tuning.json from the completed PRIMARY VANILLA sweep; its selected "
+             "LR is cross-checked against the primary measurement",
+    )
+    sensitivity.add_argument(
+        "--primary-measurement", required=True,
+        help="measurement.json from the completed PRIMARY paired run; supplies the "
+             "Vanilla comparator, which is NOT recomputed",
+    )
+    sensitivity.add_argument(
+        "--revision", default=ENCODER_REVISION,
+        help="encoder revision; defaults to the pinned probe revision and is "
+             "validated against it",
+    )
+    sensitivity.add_argument(
+        "--repository-head", default=None,
+        help="commit sha recorded as provenance in the sensitivity artifact",
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -671,7 +1097,10 @@ def main(argv=None) -> int:
                 "its own recorded position-id evidence."
             )
         membership = load_membership(args.split_dir)
-        frozen = FrozenLearningRate(value=args.frozen_lr) if args.command == "measure" else None
+        if args.command == "measure":
+            FrozenLearningRate(value=args.frozen_lr).require_primary(
+                "the primary paired measurement"
+            )
     except EvaluationContractViolation as error:
         print(f"REFUSED: {error}", file=sys.stderr)
         return 2
@@ -692,6 +1121,13 @@ def main(argv=None) -> int:
             print(f"  selection set  : {Preg1Role.PROTOCOL_DEV.value}")
             print(f"  official validation / TEST : not read\n")
             status = run_tune(args)
+        elif args.command == "sensitivity":
+            print(f"  analysis       : {SECONDARY_ANALYSIS_LABEL}")
+            print(f"  grid           : {list(LR_GRID)} (precommitted; not expanded)")
+            print(f"  tuning seeds   : {list(TUNING_SEEDS)} "
+                  f"({SENSITIVITY_PATHWAY.value} only)")
+            print(f"  Vanilla        : not retuned, not rerun\n")
+            status = run_sensitivity(args)
         else:
             status = run_measure(args)
     except EvaluationContractViolation as error:
