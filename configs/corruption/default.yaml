@@ -25,24 +25,28 @@ unit:
   kind: candidate_syllable_span
 
 eligibility:
-  # TEMPORARY IMPLEMENTATION FALLBACK - see docs/spec/decisions.md D-B2-003.
+  # RESOLVED. GAP-2 was closed by D-B3A-001: the pinned Vietnamese syllable
+  # inventory is present and verified, so `active_eligibility_policy()` returns
+  # VIETNAMESE_SYLLABLE_INVENTORY and `corrupt()` runs under purpose=SCIENTIFIC.
   #
-  # The syllable inventory 4.3 requires does not exist yet (GAP-2), so B2 scores
-  # every maximal alphabetic run and calls them CANDIDATES, never "eligible".
-  # This is NOT the scientific protocol: English spans sit in the p25/p50/p75
-  # denominator, and STRIP_ALL rewrites foreign words spelled with a codepoint
-  # that is also a Vietnamese tone mark (cafe' -> cafe).
+  # This block previously read `policy: UNRESOLVED` / `provisional: true`, which
+  # had become STALE DOCUMENTATION: it contradicted the runtime, which had
+  # already resolved. Corrected in Audit 029; the audited eligibility SEMANTICS
+  # are unchanged by that correction.
   #
-  # corrupt() defaults to purpose=SCIENTIFIC and RAISES while this is UNRESOLVED.
-  # Only implementation verification may pass purpose=SELF_CHECK.
+  # The policy is still COMPUTED from inventory presence, never hard-coded here:
+  # deleting the git-ignored inventory cache re-arms the guard rather than
+  # silently falling back to candidate spans. This file documents the resolved
+  # state; it does not force it.
   #
-  # Resolution owner: B3 / pre-training. Must be closed before stage-1 training
-  # or any main experiment; corruption artifacts produced before and after are
-  # NOT comparable, because the denominator changes.
-  policy: UNRESOLVED
-  resolved_policy_name: VIETNAMESE_SYLLABLE_INVENTORY
-  filter: none
-  provisional: true
+  # Under the resolved policy a candidate span is eligible when its stripped
+  # form is in the pinned inventory (proposal 4.3), so English spans no longer
+  # sit in the p25/p50/p75 denominator.
+  policy: VIETNAMESE_SYLLABLE_INVENTORY
+  filter: stripped_form_membership_of_pinned_inventory
+  provisional: false
+  inventory_manifest: configs/linguistics/vietnamese_syllables.yaml
+  resolution_decision: D-B3A-001
 
 seed_policy:
   # Per-unit decisions come from a keyed digest, never from a global RNG and

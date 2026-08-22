@@ -506,9 +506,21 @@ def test_corpus_is_not_hardcoded():
     assert "corpus" in OPEN_STAGE1_VALUES
 
 
-def test_corruption_redraw_schedule_is_open():
-    assert "corruption_redraw_schedule" in OPEN_STAGE1_VALUES
-    assert "letter_dropout_rate" in OPEN_STAGE1_VALUES
+def test_corruption_schedule_and_scope_policy_are_now_LOCKED():
+    """Both were OPEN until D-S1B-003/004 decided them.
+
+    The old assertion that they are OPEN is not loosened, it is **replaced**:
+    the register must now say they are locked, and must say what to.
+    """
+    from unmark.stage1.contracts import LOCKED_STAGE1_VALUES
+
+    assert "corruption_redraw_schedule" not in OPEN_STAGE1_VALUES
+    assert "letter_dropout_rate" not in OPEN_STAGE1_VALUES
+    assert "per visit" in LOCKED_STAGE1_VALUES["corruption_redraw_schedule"]
+    scope_policy = LOCKED_STAGE1_VALUES["corruption_scope_policy"]
+    assert "0.25" in scope_policy and "domain-separated" in scope_policy
+    # the corpus revision pin is the remaining corpus-side OPEN item
+    assert "corpus_revision_pin" in OPEN_STAGE1_VALUES
 
 
 def test_locked_values_are_recorded_as_locked():
@@ -542,10 +554,53 @@ def test_visit_is_explicit_with_no_implied_schedule():
     assert policy.rate_for("s", 0) == policy.rate_for("s", 0)
 
 
-def test_letter_dropout_scope_is_not_enabled_by_default():
-    assert CorruptionRatePolicy(seed=1).scope == "TONE"
-    with pytest.raises(Stage1ContractViolation, match="optional and unspecified"):
-        CorruptionRatePolicy(seed=1, scope="EVERYTHING")
+def test_the_default_policy_is_the_locked_mixture_not_a_pinned_scope():
+    """Replaces the old "TONE by default" assertion, which encoded the defect.
+
+    A run-global `TONE` scope is exactly what left STRIP-ALL with zero training
+    support, so the default is now the locked mixture and there is no
+    run-global scope to read at all.
+    """
+    from unmark.stage1.contracts import PI_STRIP
+
+    policy = CorruptionRatePolicy(seed=1)
+    assert policy.is_locked_mixture
+    assert policy.pi_strip == PI_STRIP == 0.25
+    assert policy.forced_scope is None
+
+    # asking for a single run-global scope is refused rather than answered
+    with pytest.raises(Stage1ContractViolation, match="no run-global scope"):
+        policy.scope
+
+    # both scopes are actually produced
+    scopes = {policy.scope_for(f"d{i}", 0) for i in range(200)}
+    assert scopes == {"TONE", "TONE_AND_LETTER"}
+
+    with pytest.raises(Stage1ContractViolation, match="unsupported corruption scope"):
+        CorruptionRatePolicy(seed=1, forced_scope="EVERYTHING")
+
+
+def test_a_pinned_scope_is_diagnostic_only_and_cannot_go_scientific():
+    from unmark.stage1.contracts import (
+        ObjectiveWeights,
+        OverflowBehaviour,
+        Stage1Purpose,
+        Stage1RunConfig,
+        TruncationPolicy,
+    )
+
+    pinned = CorruptionRatePolicy(seed=1, forced_scope="TONE")
+    assert pinned.scope == "TONE"          # a pinned policy may be read
+    assert not pinned.is_locked_mixture
+
+    with pytest.raises(Stage1ContractViolation, match="locked corruption mixture"):
+        Stage1RunConfig(
+            purpose=Stage1Purpose.SCIENTIFIC,
+            weights=ObjectiveWeights(1.0, 1.0),
+            truncation=TruncationPolicy(256, OverflowBehaviour.FAIL),
+            corruption=pinned,
+            resolved_values=frozenset(OPEN_STAGE1_VALUES),
+        )
 
 
 # ---------------------------------------------------------------------------

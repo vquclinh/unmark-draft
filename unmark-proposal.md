@@ -311,7 +311,7 @@ A linear fusion variant reduces this further and is included in the ablation.
 > |---|---|
 > | `RESTORE` checkpoint and decoding parameters | G2 |
 > | Dataset versions and splits | G2, full grid |
-> | Stage-1 corpus | stage-1 training |
+> | ~~Stage-1 corpus~~ | **LOCKED** — `undertheseanlp/UVW-2026` @ `a0a79294…`, see §5.1.1 |
 > | `ALIGN` architecture and budget | G3 |
 > | Classification head concrete values | G1 |
 >
@@ -338,6 +338,51 @@ The rule is not "never change anything". G1 exists precisely to discover whether
 | Stage-2 head | trained on **clean data only**, then frozen (see §5.2) |
 
 Linear-versus-MLP fusion, gate-versus-no-gate, and tone-only-versus-both-channels are *ablations*, not open architecture questions.
+
+### 5.1.1 Stage-1 training protocol (locked before Stage-1)
+
+Locked after the pre-G1 burden diagnostic closed. Full rationale in
+`docs/audits/028-stage1-scientific-config-review.md`; decision entries
+D-S1B-001 … D-S1B-008 in `docs/spec/decisions.md`.
+
+| Item | Locked value |
+|---|---|
+| Backbone | `vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6`, frozen, `d = 768` |
+| Adapter | unchanged locked architecture, 3 551 232 trainable parameters |
+| **Stage-1 corpus** | `undertheseanlp/UVW-2026` @ `a0a79294e4568137e25828bb3f2a4cde8546e1fb` |
+| Source shards | **all three** — `train.parquet`, `validation.parquet`, `test.parquet`, concatenated in that order. The upstream names are **source shards, not a split** |
+| Contamination screen | exact/canonical duplicates against **only** the UIT-VSFC material pre-G1 already opened. Official TEST stays **SEALED**; the post-unsealing audit is **report-only** |
+| Partition | UNMARK's own **document-level** split, 5 000 dev documents, seed `51733` |
+| Chunking | **split first, chunk second**; every chunk inherits its parent document's partition, so no article can span both sides. `max_length = 256`, no truncation, `on_overflow = FAIL` as a guard |
+| Corruption rate | `p ~ U(0,1)` per example, redrawn per visit |
+| **Corruption scope** | per-example Bernoulli mixture, `P(TONE_AND_LETTER) = π_strip = 0.25`, drawn from a stream **domain-separated** from the rate draw so that `p \| scope` is uniform for **both** scopes |
+| Objective | `L = λ_a·D(h'(x_p), h(x)) + λ_c·D(h'(x), h(x))`, cosine, pooled, masked-mean over non-special content; `λ_a + λ_c = 2` so only `r = λ_c/λ_a` varies |
+| Optimizer | AdamW, betas `(0.9, 0.999)`, eps `1e-8`, amsgrad off, **constant LR, no warmup**, accumulation 1, no clipping initially, FP32 |
+| Weight decay | `0.01` on the fusion/gate weight matrices; `0.0` on biases, LayerNorm and **both embedding tables** |
+| Budget | batch 128, evaluate at update 0 and every 500; cap 20 000, **one** continuation of the same run to 40 000, then STOP and mark `BUDGET_LIMITED` |
+| Validation | held-out **unlabeled** only, fixed grid `FULL, P50, P100, STRIP_ALL`, corruption seed `19225`; score = worst case over the grid |
+| Selection | **no downstream score may influence any Stage-1 value** |
+
+**Why the scope mixture.** §4.6's primary sentence corrupts the *tone* channel
+only, and §6.3 reports **`STRIP-ALL`** as the headline number. Implemented
+literally, that combination gives the headline condition **zero training
+support**: with a tone-only scope the corrupted branch's letter channel is
+identical to the clean one in every example. The mixture is the "optional second
+rate" §4.6 already anticipates, and is the smallest change that gives every
+headline evaluation condition training support without performing restoration.
+
+**Run plan — exactly 11 runs, and nothing follows them.**
+
+| Stage | Runs | Learning rate | `r` | Seed |
+|---|---|---|---|---|
+| LR pilot | 3 | swept `{1e-4, 3e-4, 1e-3}` | fixed `1` | `21230` |
+| `r` Phase 1 | 5 | frozen pilot winner | swept `{0.25, 0.5, 1, 2, 4}` | `21230` |
+| **Final main Stage-1** | 3 | selected | selected | `36930, 7309, 5993` |
+
+The three final runs are simultaneously the descriptive characterisation of the
+selected configuration **and the final main Stage-1 adapters**. There is no
+further training round, and neither grid is reopened after Phase 1.
+
 
 ### 5.2 Baselines (locked before any UNMARK number is seen)
 
@@ -686,6 +731,8 @@ Most of what was open in v1.0 is now locked in §5. What remains, to be settled 
 ### Changelog
 
 **v1.4 (20 Aug 2026).** Narrow corrections from the B4A adapter-contract preflight, each recorded in `docs/spec/decisions.md`. Stage-1 pooling was locked to attention-masked mean over non-special content tokens; §4.6 previously locked "pooled representations only" without saying which pool, which is a scientific choice and not a detail. The letter-diacritic table is **5 rows**, not the `~10` the parameter budget estimated: Vietnamese places at most one letter-forming mark per character, so the anticipated combination states do not arise, and §8.2's `n_letter=10` sketch was stale. The budget line and the sketch are corrected. Nothing about the orthographic taxonomy, the fusion equation, the gate, or the tone table changed.
+
+**v1.5 (22 Aug 2026).** Stage-1 protocol locked and added as §5.1.1 after the pre-G1 burden diagnostic closed. Stage-1 corpus pinned to `undertheseanlp/UVW-2026` @ `a0a79294e4568137e25828bb3f2a4cde8546e1fb`, all three source shards, with the upstream train/validation/test names recorded as **source shards, not a split**. Corruption scope became a per-example Bernoulli mixture with `π_strip = 0.25`, drawn from a stream domain-separated from the rate draw: implemented literally, §4.6's tone-only sentence gave §6.3's headline `STRIP-ALL` condition **zero training support**. Split-before-chunk with partition inheritance, so no article can span Stage-1 train and dev. Locked optimizer, budget (20 000 with one continuation to 40 000), the 11-run LR→`r`→final sequence, and held-out unlabeled selection with UIT-VSFC excluded from every Stage-1 value. **The compiled PDF is STALE with respect to this revision.**
 
 **v1.3 (19 Aug 2026).** Corrected a false structural claim: the gate recovers the *base-only pathway*, not the unmodified model, because `e_i` is computed from the stripped stream. The consequences are now stated positively (the base grid is invariant by construction, so corruption is channel-level inside UNMARK) and negatively (clean input forgoes the encoder's original tokenization; `UPPER` is a different pathway). Tone table enlarged to 7 slots so all three H4 policies share one architecture. Main fusion fixed as a single linear projection, resolving the disagreement between the architecture lock and the parameter budget. Letter channel pools in embedding space rather than label space. Stage-2 head locked to clean-only training. Deterministic rule added for deciding whether an alphabetic span is Vietnamese. §5 relabelled *partially* locked, with a table of what each open item blocks.
 

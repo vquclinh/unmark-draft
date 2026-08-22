@@ -3716,13 +3716,30 @@ Steps 4→5→6 give this by construction. Chunking before splitting would let t
 chunks of one article land on opposite sides — near-duplicate leakage into the
 very held-out signal that selects `r` and the learning rate.
 
-**Still OPEN and blocking execution.** The exact Hugging Face **dataset
-revision** and the **sha256 of all three parquet files** must be pinned before
-any Stage-1 run, and verified at load. An unpinned corpus is as unreproducible as
-an unpinned backbone. Public `main` was **observed** at review time as
-`a0a79294e4568137e25828bb3f2a4cde8546e1fb`; this is recorded as an
-**unverified observation only** — nothing was downloaded, `main` moves, and
-execution must name an explicit full revision.
+**The pin is CLOSED** (2026-08-22). The researcher executed it outside the
+repository; the values are committed to
+[`configs/data/uvw_2026.json`](../../configs/data/uvw_2026.json) and verified at
+load — filename, **exact byte size** and **exact sha256**, all three, before a
+single row is read.
+
+```
+dataset  : undertheseanlp/UVW-2026
+revision : a0a79294e4568137e25828bb3f2a4cde8546e1fb
+```
+
+| # | File (concatenation order) | Bytes | sha256 |
+|---|---|---|---|
+| 1 | `train.parquet` | 608 316 204 | `524374d40fc7b25501c9d3c7420d9d6f41973d24476418523d3f0536a8c955f2` |
+| 2 | `validation.parquet` | 78 047 554 | `d3da59890851b2e68698b4fd8e67aef5439dbad8132e1a264d98eaab9936a83f` |
+| 3 | `test.parquet` | 79 550 587 | `60fcbe70fd7c110fae09b34ee9306960f8db3738c5a7ce679753060bd7c4e323` |
+
+**All three shards are used.** The shard named `test.parquet` is an upstream
+**unlabeled Wikipedia source shard** and has no relation to UIT-VSFC official
+TEST, which remains SEALED. Parquet bytes are **not** committed to git.
+
+A moving `main` is never resolved: `verify_corpus_root` refuses anything whose
+name, size or digest differs, and `CorpusPin` refuses a revision that is not a
+full 40-character sha.
 
 **Later ablation.** Broader corpora (for example CulturaX-vi) **may** be explored
 as a corpus/domain ablation. Such an ablation **must not retroactively replace
@@ -3773,7 +3790,7 @@ stops.
 
 | | |
 |---|---|
-| **Status** | **RESOLVED DECISION** (mechanism + value); **NOT YET IMPLEMENTED** |
+| **Status** | **RESOLVED DECISION** (mechanism + value); **IMPLEMENTED** 2026-08-22, Audit 029 |
 | **Owner** | Stage-1B |
 
 **The defect.** [Audit 028 §F](../audits/028-stage1-scientific-config-review.md)
@@ -3825,10 +3842,20 @@ the most literal reading of "second rate" — would require modifying the audite
 which is in **no** evaluation condition and matches no real typing behaviour.
 More machinery, less relevant support.
 
-**Blocking.** `scope_for` **does not exist yet**. Until it is implemented, with
-ML-free tests proving STRIP-ALL support exists, P100 support survives, the
-streams are independent and `p` is uniform within each scope, **STRIP-ALL support
-is still zero and Stage-1 training must not begin.**
+**Implemented** in `CorruptionRatePolicy.scope_for` (Audit 029). `prepare_example`
+now draws **both** `rate_for` and `scope_for`; the run-global scope is gone, and
+asking a mixture policy for a single `scope` raises rather than answering.
+`Stage1RunConfig` refuses a SCIENTIFIC purpose unless the policy is the locked
+mixture, so a pinned scope cannot reach an experiment.
+
+Evidence (`tests/test_stage1_corruption_scope.py`, 14 ML-free tests): both
+scopes are realised; the empirical `P(TONE_AND_LETTER)` over 6 000 ids is within
+0.02 of 0.25; `p | scope` covers all ten deciles with mean ≈ 0.5 for **both**
+scopes; `scope_for` provably never calls `rate_for` and vice versa; letter-channel
+degradation now occurs (it was **0/N** before) while tone-only degradation
+survives; base invariance holds throughout. No statistical independence *proof*
+is claimed from a finite sample — the **construction** is tested, plus
+deterministic finite-sample sanity.
 
 | | |
 |---|---|
@@ -3945,3 +3972,136 @@ the opposite of Stage-1's purpose.
 | | |
 |---|---|
 | **Proposal updated** | **NO**. PDF stale: **YES** (unchanged) |
+
+
+### D-S1B-005 — two additional pre-use determinism pins
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | Stage-1B |
+
+Audit 028 locked the root seed scheme but omitted two deterministic roles that
+implementation needs. Both are derived with the **same** `derive_seeds(tag, count)`
+convention and were **verified by the repository helper**, not copied:
+
+| Role | Namespace tag | Seed |
+|---|---|---|
+| Pilot / Phase-1 selection | `UNMARK-STAGE1-v1\|selection` | **21230** |
+| Final main Stage-1, run 0 | `UNMARK-STAGE1-v1\|train\|0` | **36930** |
+| Final main Stage-1, run 1 | `UNMARK-STAGE1-v1\|train\|1` | **7309** |
+| Final main Stage-1, run 2 | `UNMARK-STAGE1-v1\|train\|2` | **5993** |
+| Training corruption stream | `UNMARK-STAGE1-v1\|corruption` | **35422** |
+| **Document split** | `UNMARK-STAGE1-v1\|split` | **51733** |
+| **Validation corruption** | `UNMARK-STAGE1-v1\|validation-corruption` | **19225** |
+
+All **seven are distinct** — asserted at import time in
+`unmark/stage1/protocol.py`, so a future collision breaks the build rather than
+quietly coupling two roles.
+
+**Why the validation corruption seed must be its own role.** If the held-out
+corruption were keyed on the training seed, the three final runs would each be
+scored on *different* corruptions and would not be comparable; and a candidate
+could look better purely because its seed drew easier validation corruptions.
+Separating it makes "every candidate sees the same held-out realization" a
+property of the key, not of discipline.
+
+**Why the split seed must be its own role.** The partition must not move when a
+training seed changes, or the dev set would differ between runs of the same
+configuration.
+
+This clarification does **not** reopen Audit 028; it records two values that
+audit's scheme implied but did not enumerate.
+
+| | |
+|---|---|
+| **Proposal updated** | **YES** — §5.1 Stage-1 protocol block. PDF stale: **YES** |
+
+
+### D-S1B-006 — the Stage-1 metric unit is the prepared chunk
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (clarification, recorded before any run) |
+| **Owner** | Stage-1B |
+
+`d_c` and `d_clean` are means over **prepared chunks, unweighted** — one Stage-1
+example, one vote. Recorded explicitly rather than left to an implementation
+accident, because the alternative is not neutral: **document-weighted**
+aggregation would give a 40-chunk article the same influence as a 1-chunk stub,
+silently re-weighting the corpus toward short documents in the *selection*
+signal while training saw every chunk equally.
+
+Constant `METRIC_UNIT = "prepared_chunk"` in `unmark/stage1/protocol.py`.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — an implementation-level clarification. PDF stale: **YES** |
+
+
+### D-S1B-007 — Stage-1 trains in FP32
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — a-priori implementation choice, before the first run |
+| **Owner** | Stage-1B |
+
+**FP32.** No AMP, no bf16, no fp16, no `GradScaler`, no `autocast`.
+
+The training GPU has 90+ GB, so mixed precision would be a **memory
+optimisation that changes numerics** for no scientific reason. Stage-1's
+objective is a cosine distance between pooled representations; reduced precision
+would perturb exactly the quantity being measured, and the resulting differences
+would be indistinguishable from real effects.
+
+Asserted by test: `autocast`, `GradScaler`, `half` and `bfloat16` appear in no
+Stage-1 module. If mixed precision is ever wanted, it is a decision entry and a
+re-run, not an optimisation.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO** — implementation detail. PDF stale: **YES** |
+
+
+### D-S1B-008 — Stage-1 corpus pipeline, data order and resume semantics
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation) — Audit 029 |
+| **Owner** | Stage-1B |
+
+**Corpus pipeline.** A dedicated `prepare-corpus` path produces a
+**manifest-bound** prepared corpus; scientific training consumes only that
+artifact and refuses a manifest incompatible with the locked protocol. Order:
+verify pin → read/concatenate in the locked shard order → schema check
+(`id`, `content`, unique non-null) → exact/canonical contamination screen →
+**document-level split** → **then** chunk → chunks inherit their parent's
+partition. Duplicate source document ids **fail and are reported**; they are
+never renamed or de-duplicated, because document identity keys the corruption
+stream.
+
+**Split primitive.** `stratified_group_split` was **not** reused: it is
+fraction-based and label-stratified, and the Stage-1 corpus is unlabeled and
+needs an exact count of 5 000. Reusing it would have required inventing a label
+and a fraction that only approximates the locked count. A stable
+hash-ranking (`blake2b` over `tag|seed|document_id`, id as tie-break) is used
+instead — no global RNG, and order-independent by construction.
+
+**Training data order.** A per-pass stable hash ranking keyed on
+`(seed, visit, chunk_id)`. Within one pass every training chunk is consumed
+exactly once, and `visit` increments **only** at the pass boundary. Each example
+carries the `visit` it was drawn under, so a batch straddling a boundary
+corrupts each half under its own pass.
+
+**Resume.** The checkpoint carries adapter state, optimizer state, global update,
+`visit`, the in-pass **cursor**, and the corpus digest — enough to make a resumed
+run scientifically equivalent to an uninterrupted one. Because `pass_order` is a
+pure function of `(chunk_ids, seed, visit)`, the resume payload is a cursor
+rather than an opaque RNG blob. Resume **fails closed** when the chunk set,
+schema, or run provenance differs. A resume must not restart the pass, advance
+`visit` early, re-serve consumed chunks, or change the corruption stream — each
+asserted by test.
+
+| | |
+|---|---|
+| **Proposal updated** | **YES** — §5.1 Stage-1 protocol block. PDF stale: **YES** |

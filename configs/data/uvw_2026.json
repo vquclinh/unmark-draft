@@ -1,0 +1,56 @@
+{
+  "_comment": [
+    "Committed reproducibility pin for the Stage-1 training corpus.",
+    "",
+    "PINNED. The revision, byte sizes and SHA-256 values below were obtained by the",
+    "researcher outside this repository and recorded here verbatim. See",
+    "docs/audits/029-stage1-runner-implementation.md and docs/spec/decisions.md",
+    "D-S1B-002.",
+    "",
+    "The corpus preparation path verifies ALL THREE at run time: filename, exact",
+    "byte size and exact sha256. Any mismatch fails closed. A moving `main` is",
+    "never used: the scientific runner resolves this exact revision only.",
+    "",
+    "shard_labels_are_a_split is FALSE and load-bearing. The upstream UVW",
+    "train/validation/test names are SOURCE SHARDS of one unlabeled Wikipedia",
+    "corpus; the shard named test.parquet has no relation to UIT-VSFC official",
+    "TEST, which remains SEALED. UNMARK builds its own document-level partition.",
+    "",
+    "concatenation_order is part of the pin: it fixes document enumeration, and",
+    "sample_id keys the corruption draw, so a different order is a different",
+    "corruption stream at an identical revision.",
+    "",
+    "Changing dataset, revision, any filename, size or sha256 is an EXPERIMENT",
+    "DEPENDENCY CHANGE and must be recorded in docs/spec/decisions.md.",
+    "",
+    "Parquet bytes are NOT committed to git."
+  ],
+  "schema_version": "stage1-corpus-pin-v1",
+  "dataset": "undertheseanlp/UVW-2026",
+  "revision": "a0a79294e4568137e25828bb3f2a4cde8546e1fb",
+  "shard_labels_are_a_split": false,
+  "concatenation_order": [
+    "train.parquet",
+    "validation.parquet",
+    "test.parquet"
+  ],
+  "files": [
+    {
+      "name": "train.parquet",
+      "bytes": 608316204,
+      "sha256": "524374d40fc7b25501c9d3c7420d9d6f41973d24476418523d3f0536a8c955f2"
+    },
+    {
+      "name": "validation.parquet",
+      "bytes": 78047554,
+      "sha256": "d3da59890851b2e68698b4fd8e67aef5439dbad8132e1a264d98eaab9936a83f"
+    },
+    {
+      "name": "test.parquet",
+      "bytes": 79550587,
+      "sha256": "60fcbe70fd7c110fae09b34ee9306960f8db3738c5a7ce679753060bd7c4e323"
+    }
+  ],
+  "required_columns": ["id", "content"],
+  "verified_at_load": ["name", "bytes", "sha256"]
+}

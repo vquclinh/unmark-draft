@@ -1,0 +1,419 @@
+"""The Stage-1 training loop. **Imports torch lazily; NOT executed in Audit 029.**
+
+Implements exactly the locked protocol (D-S1B-003, D-S1B-004). Everything that
+can be decided without tensors lives in `selection`, `sampler`, `optim` and
+`protocol`, so this module is the loop and the bookkeeping only.
+
+Three invariants the loop must never violate, each checked rather than assumed:
+
+* the **encoder is frozen** -- it is never handed to the optimizer, stays in
+  eval, and its gradient must remain absent;
+* **resume is exact** -- adapter, optimizer, `visit` and the in-pass cursor are
+  all checkpointed, so a resumed run is scientifically the run it continues;
+* **the budget is precommitted** -- one continuation from 20 000 to 40 000 and
+  then `BUDGET_LIMITED`, never an open-ended extension.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+from unmark.stage1.contracts import (
+    ObjectiveWeights,
+    Stage1ContractViolation,
+    TruncationPolicy,
+)
+from unmark.stage1.protocol import (
+    ADAPTER_TRAINABLE_PARAMETERS,
+    BATCH_SIZE,
+    ENCODER_CHECKPOINT,
+    ENCODER_REVISION,
+    EVAL_EVERY_UPDATES,
+    EXTENDED_MAX_UPDATES,
+    GRADIENT_ACCUMULATION_STEPS,
+    GRADIENT_CLIPPING,
+    HIDDEN_SIZE,
+    INITIAL_MAX_UPDATES,
+    PRECISION,
+    STAGE1_PROTOCOL_VERSION,
+    lambdas_for_r,
+)
+from unmark.stage1.sampler import DeterministicSampler
+from unmark.stage1.selection import ValidationPoint, budget_decision, select_checkpoint
+
+CHECKPOINT_SCHEMA_VERSION = "stage1-checkpoint-v1"
+
+
+class TrainerContractViolation(Stage1ContractViolation):
+    """Raised when the training environment contradicts the locked protocol."""
+
+
+# ---------------------------------------------------------------------------
+# Provenance
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RunProvenance:
+    """Everything a resume must match. A mismatch fails closed."""
+
+    run_seed: int
+    corruption_seed: int
+    learning_rate: float
+    r: float
+    corpus_manifest_digest: str
+    repository_head: str | None
+    backbone_checkpoint: str = ENCODER_CHECKPOINT
+    backbone_revision: str = ENCODER_REVISION
+    protocol_version: str = STAGE1_PROTOCOL_VERSION
+    precision: str = PRECISION
+
+    @property
+    def weights(self) -> ObjectiveWeights:
+        lambda_align, lambda_clean = lambdas_for_r(self.r)
+        return ObjectiveWeights(lambda_align=lambda_align, lambda_clean=lambda_clean)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_seed": self.run_seed,
+            "corruption_seed": self.corruption_seed,
+            "learning_rate": self.learning_rate,
+            "r": self.r,
+            **self.weights.to_dict(),
+            "corpus_manifest_digest": self.corpus_manifest_digest,
+            "repository_head": self.repository_head,
+            "backbone_checkpoint": self.backbone_checkpoint,
+            "backbone_revision": self.backbone_revision,
+            "protocol_version": self.protocol_version,
+            "precision": self.precision,
+        }
+
+    def require_match(self, other: dict[str, Any]) -> None:
+        """Refuse to resume into a different experiment."""
+        mine = self.to_dict()
+        for key in (
+            "run_seed", "corruption_seed", "learning_rate", "r",
+            "corpus_manifest_digest", "backbone_checkpoint", "backbone_revision",
+            "protocol_version", "precision",
+        ):
+            if other.get(key) != mine[key]:
+                raise TrainerContractViolation(
+                    f"checkpoint provenance mismatch on {key!r}: checkpoint has "
+                    f"{other.get(key)!r}, this environment has {mine[key]!r}. Resuming "
+                    "would silently continue a different experiment."
+                )
+
+
+# ---------------------------------------------------------------------------
+# Model contract
+# ---------------------------------------------------------------------------
+def verify_model_contract(unmark_encoder: Any) -> dict[str, Any]:
+    """Assert the frozen-encoder / trainable-adapter split. **Lazy torch.**"""
+    import torch
+    from torch import nn
+
+    encoder = unmark_encoder.encoder
+    trainable = [(n, p) for n, p in unmark_encoder.named_parameters() if p.requires_grad]
+    encoder_names = {n for n, _ in encoder.named_parameters()}
+    leaked = [n for n, _ in trainable if n.startswith("encoder.") or n in encoder_names]
+    if leaked:
+        raise TrainerContractViolation(
+            f"{len(leaked)} encoder parameter(s) require grad, e.g. {leaked[:5]}. The "
+            "encoder is fully frozen (proposal §5.1)."
+        )
+    if encoder.training:
+        raise TrainerContractViolation("the frozen encoder must stay in eval mode")
+    total = sum(p.numel() for _, p in trainable)
+    hidden = int(getattr(encoder.config, "hidden_size", HIDDEN_SIZE))
+    if hidden == HIDDEN_SIZE and total != ADAPTER_TRAINABLE_PARAMETERS:
+        raise TrainerContractViolation(
+            f"adapter has {total} trainable parameters; the locked architecture has "
+            f"{ADAPTER_TRAINABLE_PARAMETERS} at d={HIDDEN_SIZE}. Capacity is not changed "
+            "here -- a larger adapter is a later ablation."
+        )
+    return {
+        "trainable_parameters": total,
+        "trainable_tensors": len(trainable),
+        "encoder_trainable_parameters": 0,
+        "encoder_training_mode": False,
+        "hidden_size": hidden,
+        "precision": PRECISION,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+@dataclass
+class MonitorWindow:
+    """Aggregate evidence over a window, not per-batch verdicts.
+
+    A single batch may legitimately contain no letter-degraded syllable -- with
+    `pi_strip = 0.25` that is ordinary sampling, not a defect. Failing a batch
+    for it would be a false alarm, so the channel-liveness evidence is
+    accumulated and reported over the window instead.
+    """
+
+    batches: int = 0
+    tone_channel_differs: int = 0
+    letter_channel_differs: int = 0
+    tone_embedding_grad_batches: int = 0
+    letter_embedding_grad_batches: int = 0
+    base_invariance_violations: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "batches": self.batches,
+            "tone_channel_differs": self.tone_channel_differs,
+            "letter_channel_differs": self.letter_channel_differs,
+            "tone_embedding_grad_batches": self.tone_embedding_grad_batches,
+            "letter_embedding_grad_batches": self.letter_embedding_grad_batches,
+            "base_invariance_violations": self.base_invariance_violations,
+            "letter_channel_ever_degraded": self.letter_channel_differs > 0,
+            "tone_channel_ever_degraded": self.tone_channel_differs > 0,
+        }
+
+
+def gradient_report(unmark_encoder: Any) -> dict[str, Any]:
+    """Per-group gradient norms, plus the two hard invariants. **Lazy torch.**"""
+    import torch
+
+    groups: dict[str, float] = {}
+    for name, parameter in unmark_encoder.named_parameters():
+        if parameter.grad is None:
+            continue
+        norm = float(parameter.grad.detach().norm())
+        if not torch.isfinite(torch.tensor(norm)):
+            raise TrainerContractViolation(
+                f"non-finite gradient in {name!r}. Stage-1 stops rather than stepping "
+                "an optimizer on a poisoned gradient."
+            )
+        groups[name] = norm
+    encoder_names = {n for n, _ in unmark_encoder.encoder.named_parameters()}
+    encoder_grads = {n: v for n, v in groups.items() if n in encoder_names or n.startswith("encoder.")}
+    if encoder_grads:
+        raise TrainerContractViolation(
+            f"the frozen encoder received gradients: {sorted(encoder_grads)[:5]}"
+        )
+    return {"adapter_group_grad_norms": groups, "encoder_grad_tensors": 0}
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing
+# ---------------------------------------------------------------------------
+def checkpoint_payload(
+    *,
+    provenance: RunProvenance,
+    adapter_state: Any,
+    optimizer_state: Any,
+    global_update: int,
+    sampler_state: dict[str, Any],
+    cap: int,
+    budget_limited: bool,
+) -> dict[str, Any]:
+    """Everything required to resume **exactly**. No raw corpus text."""
+    return {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "provenance": provenance.to_dict(),
+        "adapter_state": adapter_state,
+        "optimizer_state": optimizer_state,
+        "global_update": global_update,
+        "sampler_state": sampler_state,
+        "cap": cap,
+        "budget_limited": budget_limited,
+    }
+
+
+REQUIRED_CHECKPOINT_KEYS = (
+    "schema_version",
+    "provenance",
+    "adapter_state",
+    "optimizer_state",
+    "global_update",
+    "sampler_state",
+    "cap",
+)
+
+
+def verify_checkpoint(payload: dict[str, Any], provenance: RunProvenance) -> None:
+    """Fail closed unless the checkpoint can reproduce this exact run."""
+    missing = [k for k in REQUIRED_CHECKPOINT_KEYS if k not in payload]
+    if missing:
+        raise TrainerContractViolation(f"checkpoint is missing {missing}; cannot resume exactly")
+    if payload["schema_version"] != CHECKPOINT_SCHEMA_VERSION:
+        raise TrainerContractViolation(
+            f"checkpoint schema {payload['schema_version']!r} != {CHECKPOINT_SCHEMA_VERSION!r}"
+        )
+    provenance.require_match(payload["provenance"])
+
+
+# ---------------------------------------------------------------------------
+# The run
+# ---------------------------------------------------------------------------
+@dataclass
+class RunResult:
+    provenance: RunProvenance
+    points: list[ValidationPoint] = field(default_factory=list)
+    cap: int = INITIAL_MAX_UPDATES
+    budget_limited: bool = False
+    continued: bool = False
+
+    @property
+    def selected(self) -> ValidationPoint:
+        return select_checkpoint(self.points)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provenance": self.provenance.to_dict(),
+            "cap": self.cap,
+            "continued_past_initial_budget": self.continued,
+            "budget_limited": self.budget_limited,
+            "evaluations": [p.to_dict() for p in self.points],
+            "selected": self.selected.to_dict(),
+            "optimizer": {
+                "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
+                "gradient_clipping": GRADIENT_CLIPPING,
+                "batch_size": BATCH_SIZE,
+                "eval_every_updates": EVAL_EVERY_UPDATES,
+            },
+            "raw_text_persisted": False,
+        }
+
+
+def resolve_budget(result: RunResult) -> RunResult:
+    """Apply the precommitted budget rule to a finished trajectory.
+
+    Pure bookkeeping over already-computed validation points, so the rule is
+    testable without training anything.
+    """
+    decision = budget_decision(result.selected.update, result.cap)
+    if decision.continue_run:
+        result.cap = EXTENDED_MAX_UPDATES
+        result.continued = True
+        result.budget_limited = False
+    else:
+        result.budget_limited = decision.budget_limited
+    return result
+
+
+def train_run(
+    *,
+    objective: Any,
+    provenance: RunProvenance,
+    train_chunks: dict[str, str],
+    tokenizer: Any,
+    corruption_policy: Any,
+    truncation: TruncationPolicy,
+    evaluate_fn: Callable[[int], ValidationPoint],
+    pad_token_id: int,
+    classifier: Any = None,
+    unk_token_id: int | None = None,
+    cap: int = INITIAL_MAX_UPDATES,
+    resume: dict[str, Any] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+) -> RunResult:
+    """One Stage-1 run, to `cap` updates. **Imports torch lazily.**
+
+    Not executed by Audit 029: no real model or corpus is loaded there.
+
+    The loop is deliberately small. Everything scientific -- the schedule, the
+    selection rule, the budget rule, the corruption draws, the parameter groups
+    -- is decided in the torch-free modules and only *applied* here.
+    """
+    import torch
+
+    from unmark.stage1.data import Stage1Example, collate_stage1_batch, prepare_example
+    from unmark.stage1.optim import build_optimizer
+
+    if not train_chunks:
+        raise TrainerContractViolation("no training chunks supplied")
+    if not corruption_policy.is_locked_mixture:
+        raise TrainerContractViolation(
+            "scientific training requires the locked corruption mixture (D-S1B-003); a "
+            "run-global scope is exactly the defect that left STRIP-ALL unsupported"
+        )
+    contract = verify_model_contract(objective.unmark_encoder)
+
+    optimizer = build_optimizer(
+        [(n, p) for n, p in objective.unmark_encoder.named_parameters() if p.requires_grad],
+        provenance.learning_rate,
+    )
+    sampler = DeterministicSampler(tuple(sorted(train_chunks)), seed=provenance.run_seed)
+    global_update = 0
+    result = RunResult(provenance=provenance, cap=cap)
+
+    if resume is not None:
+        verify_checkpoint(resume, provenance)
+        objective.unmark_encoder.load_state_dict(resume["adapter_state"], strict=False)
+        optimizer.load_state_dict(resume["optimizer_state"])
+        sampler = DeterministicSampler.from_state(tuple(sorted(train_chunks)), resume["sampler_state"])
+        global_update = int(resume["global_update"])
+        result.points = [ValidationPoint(**p) for p in resume.get("points", [])]
+        result.continued = cap > INITIAL_MAX_UPDATES
+
+    # Update 0 BEFORE any optimizer step, so the initial clean-path distance and
+    # the initial condition distances are measured rather than assumed.
+    if not any(p.update == 0 for p in result.points):
+        result.points.append(evaluate_fn(0))
+
+    window = MonitorWindow()
+    objective.train(True)
+    while global_update < cap:
+        pairs = sampler.next_batch(BATCH_SIZE)
+        prepared = []
+        for chunk_id, visit in pairs:
+            item = prepare_example(
+                Stage1Example(text=train_chunks[chunk_id], sample_id=chunk_id),
+                tokenizer,
+                corruption_policy=corruption_policy,
+                truncation=truncation,
+                visit=visit,
+                classifier=classifier,
+                unk_token_id=unk_token_id,
+            )
+            if item is None:
+                raise TrainerContractViolation(
+                    f"chunk {chunk_id!r} overflowed at training time; after correct "
+                    "pre-chunking this cannot happen (on_overflow=FAIL is a guard)"
+                )
+            window.tone_channel_differs += int(item.channels_differ)
+            window.letter_channel_differs += int(item.letter_channels_differ)
+            prepared.append(item)
+
+        batch = collate_stage1_batch(prepared, pad_token_id)
+        loss_result = objective(batch)
+
+        optimizer.zero_grad(set_to_none=True)
+        loss_result.loss.backward()
+        grads = gradient_report(objective.unmark_encoder)
+        window.batches += 1
+        for name, norm in grads["adapter_group_grad_norms"].items():
+            lowered = name.lower()
+            if "tone" in lowered and norm > 0:
+                window.tone_embedding_grad_batches += 1
+            if "letter" in lowered and norm > 0:
+                window.letter_embedding_grad_batches += 1
+        optimizer.step()
+        global_update += 1
+
+        if global_update % EVAL_EVERY_UPDATES == 0 or global_update == cap:
+            point = evaluate_fn(global_update)
+            result.points.append(point)
+            objective.train(True)
+            if on_event is not None:
+                on_event({
+                    "global_update": global_update,
+                    "visit": sampler.visit,
+                    "position": sampler.position,
+                    "loss": float(loss_result.loss.detach()),
+                    "loss_align": float(loss_result.loss_align.detach()),
+                    "loss_clean": float(loss_result.loss_clean.detach()),
+                    "validation": point.to_dict(),
+                    "monitor_window": window.to_dict(),
+                    "gradients": grads,
+                    "model_contract": contract,
+                })
+            window = MonitorWindow()
+
+    return resolve_budget(result)

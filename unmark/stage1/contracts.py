@@ -83,6 +83,15 @@ class UnresolvedStage1Value(RuntimeError):
 # What is locked, and what is not
 # ---------------------------------------------------------------------------
 LOCKED_STAGE1_VALUES: dict[str, str] = {
+    "corruption_redraw_schedule": (
+        "redrawn per visit; `visit` = pass index (D-S1B-004)."
+    ),
+    "corruption_scope_policy": (
+        "per-example Bernoulli mixture, P(TONE_AND_LETTER) = pi_strip = 0.25, "
+        "drawn from a stream domain-separated from the rate draw (D-S1B-003). "
+        "This is the 'optional second rate' proposal §4.6 anticipates; no "
+        "independent per-syllable letter-dropout q is introduced."
+    ),
     "corruption_rate_distribution": (
         "p ~ U(0,1) per example, continuous -- proposal §4.6 and the §5.1 lock. "
         "Not a fixed rate and not only the endpoints."
@@ -117,13 +126,10 @@ OPEN_STAGE1_VALUES: dict[str, str] = {
         "what to do when a sequence exceeds max_length, given that truncating "
         "input ids without the channel metadata would desynchronise B3 projection."
     ),
-    "corruption_redraw_schedule": (
-        "whether p is redrawn per epoch/visit or fixed per example for the whole "
-        "run. The distribution is locked; the schedule is not."
-    ),
-    "letter_dropout_rate": (
-        "proposal §4.6: 'An optional second rate governs letter-diacritic "
-        "dropout.' Optional, unspecified, and not enabled here."
+    "corpus_revision_pin": (
+        "the UVW-2026 dataset is locked (D-S1B-002); the exact revision and the "
+        "three parquet sha256 values are pinned in configs/data/uvw_2026.json and "
+        "verified at load."
     ),
     "stage1_seed": "the concrete experiment seed; the API requires one explicitly.",
     "batch_size": "not specified for Stage-1.",
@@ -288,7 +294,6 @@ SCIENTIFIC_REQUIRED_VALUES: tuple[str, ...] = (
     "corpus",
     "max_length",
     "truncation_behaviour",
-    "corruption_redraw_schedule",
     "stage1_seed",
     "batch_size",
 )
@@ -326,6 +331,14 @@ class Stage1RunConfig:
                 f"resolved_values names items that are not in the OPEN register: {sorted(unknown)}"
             )
         if self.purpose is Stage1Purpose.SCIENTIFIC:
+            if not self.corruption.is_locked_mixture:
+                raise Stage1ContractViolation(
+                    "a SCIENTIFIC Stage-1 configuration requires the locked corruption "
+                    "mixture (D-S1B-003): forced_scope must be None and pi_strip must "
+                    f"be {PI_STRIP}. A pinned scope is diagnostic only -- a run-global "
+                    "TONE scope is exactly the defect that left STRIP-ALL with zero "
+                    "training support."
+                )
             missing = [v for v in SCIENTIFIC_REQUIRED_VALUES if v not in self.resolved_values]
             if missing:
                 raise UnresolvedStage1Value(
@@ -349,41 +362,133 @@ class Stage1RunConfig:
             "note": self.note,
             **self.weights.to_dict(),
             **self.truncation.to_dict(),
-            "corruption_seed": self.corruption.seed,
-            "corruption_scope": self.corruption.scope,
+            "corruption": self.corruption.to_dict(),
         }
+
+
+SUPPORTED_SCOPES = ("TONE", "TONE_AND_LETTER")
+
+RATE_NAMESPACE = "stage1-rate"
+SCOPE_NAMESPACE = "stage1-scope"
+"""Domain separation tags for the two independent draws (D-S1B-003)."""
+
+PI_STRIP = 0.25
+"""`P(scope = TONE_AND_LETTER)` per example/visit.
+
+Locked a-priori by the researcher (D-S1B-003) **before any Stage-1 result
+existed**, and never tuned -- not on UIT-VSFC, not on any downstream score, and
+not on the Stage-1 held-out signal.
+
+It exists because the previous single-scope policy gave the headline evaluation
+condition `STRIP-ALL` **zero training support**: with a run-global `"TONE"`
+scope the corrupted branch's letter channel was bit-identical to the clean
+branch's in every prepared example.
+"""
 
 
 @dataclass(frozen=True)
 class CorruptionRatePolicy:
-    """How the per-example corruption rate `p` is drawn.
+    """How the per-example corruption rate `p` **and scope** are drawn.
 
-    **Locked:** `p ~ U(0,1)` per example, continuous (§4.6, §5.1).
+    **Locked:** `p ~ U(0,1)` per example, continuous (§4.6, §5.1); redraw per
+    visit (D-S1B-004); scope drawn per example from a Bernoulli mixture with
+    `P(TONE_AND_LETTER) = pi_strip = 0.25` (D-S1B-003).
 
-    **OPEN:** whether `p` is redrawn per epoch/visit. `visit` is therefore an
-    explicit argument with no default schedule attached -- the caller states
-    which draw it wants, and the project decides the schedule later.
+    Two **domain-separated** keyed digests, never one shared scalar::
 
-    The draw is a keyed digest over `(schema, seed, sample_id, visit)`, so it is
-    reproducible from its key alone and **uses no module-global RNG**. Python's
-    `random` module would make the same batch differ between processes.
+        rate_for (id, visit) -> blake2b(RATE_NAMESPACE  | schema | seed | id | visit)
+        scope_for(id, visit) -> blake2b(SCOPE_NAMESPACE | schema | seed | id | visit)
+
+    so that
+
+        P(p | scope = TONE)            = U(0, 1)
+        P(p | scope = TONE_AND_LETTER) = U(0, 1)
+
+    up to the deterministic finite sample. Deriving `scope` from `p` -- for
+    example "strip letters only when p > 0.9" -- would confine the
+    letter-degraded regime to part of the rate range, confounding "letters
+    missing" with corruption severity, so any measured STRIP-ALL behaviour could
+    not be attributed to letter information alone.
+
+    Both digests are reproducible from their key alone and **use no
+    module-global RNG**: Python's `random` would make the same batch differ
+    between processes.
+
+    Args:
+        forced_scope: **DIAGNOSTIC ONLY.** Pins one scope for every example
+            instead of drawing the locked mixture. A scientific configuration
+            must leave it `None`; `is_locked_mixture` reports which state this
+            policy is in, and `Stage1RunConfig` refuses a SCIENTIFIC purpose
+            without the mixture.
     """
 
     seed: int
-    scope: str = "TONE"
+    forced_scope: str | None = None
+    pi_strip: float = PI_STRIP
     schema_version: str = STAGE1_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise Stage1ContractViolation(f"seed must be an int, got {self.seed!r}")
-        if self.scope not in {"TONE", "TONE_AND_LETTER"}:
+        if self.forced_scope is not None and self.forced_scope not in SUPPORTED_SCOPES:
             raise Stage1ContractViolation(
-                f"unsupported corruption scope {self.scope!r}; the letter-dropout rate "
-                "is optional and unspecified (§4.6), so it is not enabled by default"
+                f"unsupported corruption scope {self.forced_scope!r}; supported: "
+                f"{list(SUPPORTED_SCOPES)}"
             )
+        if isinstance(self.pi_strip, bool) or not isinstance(self.pi_strip, (int, float)):
+            raise Stage1ContractViolation(f"pi_strip must be a real number, got {self.pi_strip!r}")
+        if not 0.0 <= self.pi_strip <= 1.0:
+            raise Stage1ContractViolation(f"pi_strip must be in [0, 1], got {self.pi_strip}")
+
+    @property
+    def is_locked_mixture(self) -> bool:
+        """True when this policy is the locked scientific one (D-S1B-003)."""
+        return self.forced_scope is None and self.pi_strip == PI_STRIP
+
+    @property
+    def scope(self) -> str:
+        """Back-compatible read of a **pinned** scope. Raises for the mixture.
+
+        The mixture has no single scope, and returning one would be a lie that a
+        caller could act on. Ask `scope_for(sample_id, visit)` instead.
+        """
+        if self.forced_scope is None:
+            raise Stage1ContractViolation(
+                "this policy draws the scope per example (the locked mixture); there "
+                "is no run-global scope. Use scope_for(sample_id, visit)."
+            )
+        return self.forced_scope
+
+    def _unit_draw(self, namespace: str, sample_id: str, visit: int) -> float:
+        """One `[0, 1)` draw from a namespaced key. The only randomness here."""
+        payload = "|".join(
+            (namespace, self.schema_version, str(self.seed), str(sample_id), str(visit))
+        )
+        digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, "big") / float(1 << 64)
 
     def rate_for(self, sample_id: str, visit: int = 0) -> float:
         """`p` for one example, in [0, 1). Deterministic and reproducible."""
-        payload = "|".join((self.schema_version, str(self.seed), str(sample_id), str(visit)))
-        digest = hashlib.blake2b(payload.encode("utf-8"), digest_size=8).digest()
-        return int.from_bytes(digest, "big") / float(1 << 64)
+        return self._unit_draw(RATE_NAMESPACE, sample_id, visit)
+
+    def scope_for(self, sample_id: str, visit: int = 0) -> str:
+        """The corruption scope for one example. Independent of `rate_for`.
+
+        `"TONE_AND_LETTER"` with probability `pi_strip`, else `"TONE"`. Uses
+        `< pi_strip`, matching B2's own `score < probability` selection rule.
+        """
+        if self.forced_scope is not None:
+            return self.forced_scope
+        draw = self._unit_draw(SCOPE_NAMESPACE, sample_id, visit)
+        return "TONE_AND_LETTER" if draw < self.pi_strip else "TONE"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seed": self.seed,
+            "pi_strip": self.pi_strip,
+            "forced_scope": self.forced_scope,
+            "is_locked_mixture": self.is_locked_mixture,
+            "rate_namespace": RATE_NAMESPACE,
+            "scope_namespace": SCOPE_NAMESPACE,
+            "schema_version": self.schema_version,
+        }

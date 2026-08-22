@@ -81,6 +81,7 @@ class PreparedStage1Example:
     corrupted_text: str
     base_text: str
     corruption_rate: float
+    corruption_scope: str
 
     reference_input_ids: tuple[int, ...]
     reference_special_tokens_mask: tuple[int, ...]
@@ -111,6 +112,16 @@ class PreparedStage1Example:
     def channels_differ(self) -> bool:
         """Whether corruption actually changed the observed tone channel."""
         return self.clean_tone_ids != self.corrupt_tone_ids
+
+    @property
+    def letter_channels_differ(self) -> bool:
+        """Whether corruption removed letter-diacritic information.
+
+        Under the old run-global `"TONE"` scope this was **never** true, which
+        is precisely how STRIP-ALL ended up with no training support. It is a
+        monitored quantity now, not an assumption.
+        """
+        return self.clean_letter_ids != self.corrupt_letter_ids
 
     def clean_encoded(self) -> EncodedExample:
         return EncodedExample(
@@ -244,6 +255,50 @@ def prepare_example(
         BaseInvarianceViolation: if `b(C(x)) != b(x)`, or if the corrupted text
             does not reproduce the clean base token grid.
     """
+    # Two INDEPENDENT, domain-separated draws (D-S1B-003). The scope is drawn per
+    # example, never fixed for the run: a run-global "TONE" scope is exactly what
+    # left STRIP-ALL with zero training support.
+    rate = corruption_policy.rate_for(example.sample_id, visit)
+    scope = corruption_policy.scope_for(example.sample_id, visit)
+    condition = CorruptionCondition(
+        name=f"stage1-{scope.lower()}-p{rate:.6f}",
+        scope=CorruptionScope[scope],
+        probability=rate,
+        description="Stage-1 structured channel dropout, p ~ U(0,1) per example (§4.6)",
+    )
+    return prepare_with_condition(
+        example,
+        tokenizer,
+        condition=condition,
+        corruption_seed=corruption_policy.seed,
+        truncation=truncation,
+        visit=visit,
+        classifier=classifier,
+        unk_token_id=unk_token_id,
+        extra_metadata={"corruption_pi_strip": corruption_policy.pi_strip},
+    )
+
+
+def prepare_with_condition(
+    example: Stage1Example,
+    tokenizer: Any,
+    *,
+    condition: CorruptionCondition,
+    corruption_seed: int,
+    truncation: TruncationPolicy,
+    visit: int,
+    classifier: Callable[[str], Eligibility] | None = None,
+    unk_token_id: int | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+) -> PreparedStage1Example | None:
+    """Prepare one example under an **explicitly supplied** corruption condition.
+
+    The single implementation of the three-branch preparation. `prepare_example`
+    calls it with the drawn training condition; the held-out evaluator calls it
+    with each fixed condition of the locked validation grid. Keeping one
+    implementation is what makes "validation sees exactly the training pipeline"
+    a fact rather than a claim.
+    """
     canonical = canon(example.text)
 
     # --- PATH R: clean reference. No adapter, no channels, no b(x). ---------
@@ -256,15 +311,8 @@ def prepare_example(
     )
 
     # --- PATH K: adapted corrupted ---------------------------------------
-    rate = corruption_policy.rate_for(example.sample_id, visit)
-    condition = CorruptionCondition(
-        name=f"stage1-p{rate:.6f}",
-        scope=CorruptionScope[corruption_policy.scope],
-        probability=rate,
-        description="Stage-1 structured channel dropout, p ~ U(0,1) per example (§4.6)",
-    )
     corrupted_text = corrupt(
-        canonical, condition, seed=corruption_policy.seed, sample_id=example.sample_id
+        canonical, condition, seed=corruption_seed, sample_id=example.sample_id
     ).corrupted_text
     corrupt_base, corrupt_content_ids, corrupt_projections = project_text(
         corrupted_text, tokenizer, classifier, unk_token_id
@@ -302,7 +350,8 @@ def prepare_example(
         canonical_text=canonical,
         corrupted_text=corrupted_text,
         base_text=clean_base,
-        corruption_rate=rate,
+        corruption_rate=condition.probability,
+        corruption_scope=condition.scope.value,
         reference_input_ids=tuple(reference_ids),
         reference_special_tokens_mask=tuple(reference_special),
         base_input_ids=tuple(base_ids),
@@ -314,9 +363,11 @@ def prepare_example(
         corrupt_tone_mask=tuple(corrupt_encoded.tone_mask),
         corrupt_letter_ids=tuple(tuple(row) for row in corrupt_encoded.letter_ids),
         metadata={
-            "corruption_scope": corruption_policy.scope,
-            "corruption_seed": corruption_policy.seed,
+            "corruption_condition": condition.name,
+            "corruption_scope": condition.scope.value,
+            "corruption_seed": corruption_seed,
             "visit": visit,
+            **(extra_metadata or {}),
         },
     )
 
@@ -389,13 +440,14 @@ def padded_stage1_batch(
         "corrupt_letter_mask": pad_letter_masks(corrupted["letter_mask"]),
         "sample_ids": [e.sample_id for e in examples],
         "corruption_rates": [e.corruption_rate for e in examples],
+        "corruption_scopes": [e.corruption_scope for e in examples],
     }
 
 
 _BOOL_FIELDS = frozenset(
     {"clean_tone_mask", "clean_letter_mask", "corrupt_tone_mask", "corrupt_letter_mask"}
 )
-_NON_TENSOR_FIELDS = frozenset({"sample_ids", "corruption_rates"})
+_NON_TENSOR_FIELDS = frozenset({"sample_ids", "corruption_rates", "corruption_scopes"})
 
 
 def collate_stage1_batch(
