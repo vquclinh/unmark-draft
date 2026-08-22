@@ -9,10 +9,25 @@
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Revision 1a** | **2026-08-22** — evidence-accuracy cleanup. Audit-only: §L/§M labelled historical, three overstated §P claims corrected, and the uncaptured original exception recorded. No code, test or decision changed. See §P.11. |
+| **Revision 1** | **2026-08-22** — **post-commit real-corpus defect and repair**, revised in place. The chunker could not prepare the locked corpus: "never split a syllable" had been implemented as "cut only at whitespace", and real UVW-2026 contains oversized **non-whitespace** units. See §P. |
 
 ---
 
 ## A. VERDICT
+
+**REVISION 1 (2026-08-22): REPAIR PASS — READY FOR REAL CORPUS RE-RUN**
+
+The implementation below passed every local and torch-gated test, was committed
+as `0a34083`, and then **failed against the real corpus**: the chunker treated a
+maximal non-whitespace unit as orthographically atomic, and UVW-2026 contains
+such units up to **1 707 tokens**. Repaired in §P. **PRE-TRAIN remains BLOCKED**
+until real `prepare-corpus` succeeds in Colab and the real-PhoBERT no-update
+smoke passes.
+
+---
+
+## A. VERDICT (as first written)
 
 **IMPLEMENTATION PASS — STAGE-1 STACK COMPLETE; NOT EXECUTED**
 
@@ -210,11 +225,11 @@ chunk set.
 
 | # | Requirement | How |
 |---|---|---|
-| 1 | Preserve text order | contiguous segments, emitted in order; `" ".join(chunks) == content` asserted |
+| 1 | Preserve text order | **STRENGTHENED in Revision 1** — was `" ".join(chunks) == content`, which assumes single-space separation. Now: chunks are contiguous half-open slices tiling `[0, len(content))`, `"".join(texts) == content` byte-exact. See §P.4 |
 | 2 | No extra normalization | AST-asserted: the chunker calls no `canon`, `decompose`, `corrupt`, `normalize`, `lower` |
 | 3 | Stable ids | `{document_id}#{chunk_index}`, re-derived and asserted in `PreparedChunk.__post_init__` |
 | 4 | Fits **both** paths | reference and base length functions both checked; the test's mock base path is deliberately *longer* |
-| 5 | Never split a syllable | cuts land only on whitespace boundaries |
+| 5 | Never split a syllable | **CORRECTED in Revision 1** — was "cuts land only on whitespace boundaries", which is a stronger rule than the science requires and could not prepare the real corpus. Now: cuts land on offsets that `decompose` reports as outside every `SyllableSpan`. See §P |
 | 6 | Runs after the split | partition is an argument |
 | 7 | Inherits parent partition | copied, never assigned |
 
@@ -345,11 +360,22 @@ with `active_eligibility_policy()`; corpus pin manifest structurally validated.
 
 ---
 
-## L. WHAT DID **NOT** RUN
+## L. WHAT DID **NOT** RUN *(pre-commit state — partly SUPERSEDED by §P)*
 
-**No real Stage-1 scientific execution occurred.**
+> **HISTORICAL.** This section records what was true when Audit 029 was first
+> written, **before** commit `0a34083`. Two of its claims have since been
+> overtaken by real-corpus evidence and are annotated inline. **§P is the
+> current state.** The original text is preserved rather than deleted, because
+> the audit's value depends on showing what was known when.
+
+**No real Stage-1 scientific execution occurred.** *(Still true: no training, no
+optimizer step, no downstream task, and official TEST untouched — then and now.)*
 
 - UVW-2026 **not** downloaded (766 MB); `prepare-corpus` **not** run
+  — **SUPERSEDED by §P:** the researcher subsequently ran `prepare-corpus`
+  against the real pinned bytes (it exited 2) and ran a real-tokenizer
+  preflight. The corpus was **never downloaded into this environment**, which
+  remains true, and no *successful* preparation has occurred.
 - PhoBERT **not** loaded; no real forward, no real backward
 - LR pilot, `r` sweep, final main: **not run**
 - No optimizer step on real data or a real model
@@ -357,19 +383,32 @@ with `active_eligibility_policy()`; corpus pin manifest structurally validated.
 - Local `.venv` remains **ML-free** (no torch, transformers, datasets, numpy, sklearn)
 
 Everything above is synthetic fixtures, AST/contract assertions, and toy-tensor
-tests that skip locally.
+tests that skip locally. *(Still true of everything done **in this environment**;
+§P adds real-corpus evidence gathered **outside** it.)*
 
 ---
 
-## M. LIMITATIONS
+## M. LIMITATIONS *(pre-commit — items 1-2 SUPERSEDED by §P)*
+
+> **HISTORICAL.** Written before commit `0a34083`. Limitation 1 correctly
+> predicted the defect §P then found; limitation 2 named exactly the unknown
+> that broke the run. Both are now answered — see §P.1 and §P.9 for the current
+> limitations.
 
 1. **Nothing has executed.** Every claim is structural or synthetic. The real
    parquet schema has been *asserted* (`id`, `content`) but never *observed* —
    `read_shard` fails closed if the columns are absent, which is the correct
    posture, but the first `prepare-corpus` run is where that is confirmed.
+   — **ANSWERED in §P.1:** the schema **is** now observed on the real bytes:
+   1 118 224 documents, 0 duplicate ids, 0 null/empty ids or content, `id` and
+   `content` present in all three shards.
 2. **Chunk-size behaviour on real Wikipedia is unknown.** The chunker is proved
    against mock length functions; real article length distribution, chunk counts
    and any indivisible-span failures are unmeasured.
+   — **PARTLY ANSWERED, and this is where the defect was:** §P.1 shows the real
+   corpus contains maximal non-whitespace units up to 1 707 tokens, which the
+   committed chunker could not handle. Real chunk **counts** and the length
+   **distribution** remain unmeasured (§P.9.4).
 3. **The 6 torch-gated tests have never run.** They skip in the ML-free venv.
 4. **`execute_stage` has never been exercised end to end.** Its orchestration is
    tested only through the units it calls.
@@ -438,10 +477,345 @@ tests that skip locally.
 
 ---
 
-**STATUS: IMPLEMENTATION PASS — STAGE-1 STACK COMPLETE; NOT EXECUTED**
-**STRIP-ALL SUPPORT: IMPLEMENTED AND MEASURED — NO LONGER BLOCKING**
+## P. REVISION 1 — POST-COMMIT REAL-CORPUS DEFECT AND REPAIR
+
+**Date:** 2026-08-22 **Baseline commit:** `0a34083af184a6d25db845b36fb4f0a6a18792be`
+
+### P.1 What the real corpus showed
+
+The committed runner passed **every local test** and **6/6 torch-gated tests in
+Colab**. The pinned bytes were then inspected directly:
+
+```
+dataset  : undertheseanlp/UVW-2026
+revision : a0a79294e4568137e25828bb3f2a4cde8546e1fb
+train.parquet      608 316 204 B  sha256 524374d40fc7b25501c9d3c7420d9d6f41973d24476418523d3f0536a8c955f2
+validation.parquet  78 047 554 B  sha256 d3da59890851b2e68698b4fd8e67aef5439dbad8132e1a264d98eaab9936a83f
+test.parquet        79 550 587 B  sha256 60fcbe70fd7c110fae09b34ee9306960f8db3738c5a7ce679753060bd7c4e323
+```
+
+**The parts of the contract that held.** Every schema and identity assumption
+Audit 029 listed as *asserted but never observed* (§M.1) is now **observed**:
+
+| Property | Real value |
+|---|---|
+| Total documents | **1 118 224** |
+| Unique ids | **1 118 224** |
+| Duplicate ids | **0** |
+| Null / empty ids | **0 / 0** |
+| Null / empty content | **0 / 0** |
+| `id` and `content` present in all three shards | **yes** |
+
+So the pin, the schema check and the duplicate-id contract are all confirmed
+against reality.
+
+**The chunker is the identified blocking defect; schema and identity assumptions
+were independently confirmed by the real-corpus preflight.** The original
+30-minute `prepare-corpus` invocation returned exit status 2, but its inner
+stderr — and therefore the actual `Stage1ContractViolation` it raised — **was not
+captured**. This audit does not claim to have seen that exception, and does not
+claim the chunker was the *only* thing that could have failed. It claims what the
+evidence supports: the chunker contains a deterministic blocking defect for real
+oversized non-whitespace units, and the other pipeline stages were independently
+verified against the real bytes.
+
+**What failed.** A real-tokenizer preflight at the locked revision
+`01daacda68afe13d83023d16ec647239e344a1e6` found oversized maximal
+**non-whitespace** units immediately — at least 20 before the diagnostic stopped
+collecting:
+
+| Document | Characters | Clean tokens (incl. specials) |
+|---|---|---|
+| `Iraq` | 501 | 298 |
+| `Quần_đảo_Hoàng_Sa` | 263 | 260 |
+| `Viên_Chiếu` | 876 | 873 |
+| `Đội_tuyển_bóng_đá_quốc_gia_Afghanistan` | 2 647 | **1 707** |
+
+**What this evidence does and does not establish.** The preflight *measured*
+these spans with the locked tokenizer; it did **not** execute `chunk_document`
+on each listed example. The chain is therefore:
+
+1. maximal non-whitespace spans exist in the real pinned corpus (**measured**);
+2. the locked PhoBERT tokenizer puts them above `max_length = 256` (**measured**);
+3. inspection of the committed whitespace-only chunker shows that such a unit,
+   once reached, **necessarily** fails its fit-alone contract (**contract
+   inspection**);
+4. the defect was then **reproduced** against the committed code on a
+   constructed fixture of the same shape (§P.6).
+
+Together these establish that **the committed implementation cannot robustly
+prepare the locked corpus**. That is a statement about the code's contract, not
+a transcript of every listed document failing.
+
+### P.2 Root cause
+
+D-S1B-002 requires that chunking "never split a syllable span". Audit 029
+implemented that as **"cuts land only on whitespace boundaries"** — §G rule 5,
+now corrected in place. Whitespace *is* safe, so the premise is true; but it is
+**sufficient, not necessary**, and the implementation silently promoted it to the
+definition of indivisibility. A maximal non-whitespace unit was therefore treated
+as atomic.
+
+The repository's own orthography contradicts that.
+`unmark/orthography/decompose.py::_segment_syllables` splits the unit stream on
+`unit.is_letter`, so a `SyllableSpan` is a **maximal alphabetic run**. Underscores,
+hyphens and punctuation are *between* spans. Measured below on a fixture built from the observed identifier, and on
+that identifier itself:
+
+```
+# CONSTRUCTED fixture: the observed identifier repeated x12 by this audit
+decompose("Đội_tuyển_bóng_đá_quốc_gia_Afghanistan" x12) -> 84 SyllableSpans
+# REAL observed identifier, measured on its own
+decompose("Đội_tuyển_bóng_đá_quốc_gia_Afghanistan")     ->  7 SyllableSpans
+```
+
+**This measurement is on a CONSTRUCTED fixture, not on real corpus content.**
+The *document identifier* `Đội_tuyển_bóng_đá_quốc_gia_Afghanistan` is real
+evidence from the preflight; the string measured above is that identifier
+**repeated twelve times by this audit** to reach 467 characters. The real
+document is reported as 2 647 characters / 1 707 tokens, and **its content is not
+available in this environment** — nothing was downloaded.
+
+The real identifier **on its own** is 38 characters and `decompose` reports
+**7** spans in it, with boundaries at the underscores:
+`(0,3,'Đội') (4,9,'tuyển') (10,14,'bóng')`. That is the load-bearing fact, and it
+is measured on real observed text: a single maximal non-whitespace unit already
+contains multiple orthographic spans, so **legal interior boundaries exist**. The
+×12 repetition only makes the unit large enough to exceed `max_length` locally so
+the defect can be reproduced without the corpus.
+
+**A conflated fact.** B3B alignment reconstructs PhoBERT BPE over maximal
+non-whitespace units (D-B3B1B-001). That is about **tokenization alignment**, is
+authoritative, and is **unchanged**. It never implied the *document chunker* must
+regard those units as scientifically atomic. Recorded as **D-S1B-009**.
+
+### P.3 The repaired contract
+
+| | Rule |
+|---|---|
+| Fast path | unchanged greedy accumulation over whitespace-delimited segments |
+| Fallback | only when a single non-whitespace unit cannot fit alone |
+| Safe offset | a character-unit boundary **not strictly inside a `SyllableSpan`**, obtained by *querying* `decompose` — `safe_cut_offsets` introduces no second syllable parser and no new linguistic rule |
+| Vietnamese candidate spans | **indivisible** |
+| Combining sequences | never split — candidates are unit boundaries, so a base and its marks stay together |
+| Non-canonical text | `decompose` returns *canonical* offsets; when `canon(text) != text` they do not address the original, so **no interior boundary is offered** and the chunker stays fail-closed rather than normalising the corpus |
+| Truly atomic oversized region | **fail closed** with document id, shard, source row, range, char count and both measured lengths |
+| Every emitted chunk | re-measured; must satisfy `max_length = 256` on **both** paths |
+| Truncation / dropping / normalisation / synthetic whitespace | still forbidden |
+| Runtime overflow | still `FAIL`, still a guard |
+
+Correctness does not depend on token counts growing monotonically with text:
+the greedy scan records the last *fitting* candidate, and every emitted chunk is
+independently length-checked.
+
+### P.4 Text preservation is now actually lossless
+
+The old invariant `" ".join(chunks) == content` assumed single-space separation.
+It would have masked collapsed runs of whitespace, tabs and newlines, and cannot
+describe an internal non-whitespace cut at all.
+
+`PreparedChunk` now carries **`source_start` / `source_end`**, and
+`verify_tiles_source` asserts that chunks are contiguous half-open slices tiling
+`[0, len(content))` — no gaps, no overlaps, in order — and that
+`"".join(texts) == content` **byte-exact**. `PreparedChunk.__post_init__` also
+refuses any chunk whose text length disagrees with its range, so a chunk cannot
+be a rewrite of its source. Chunks now retain the whitespace that separates them
+rather than being stripped.
+
+### P.5 Files changed in Revision 1
+
+| File | Change |
+|---|---|
+| `unmark/stage1/chunking.py` | Rewritten: `safe_cut_offsets`, two-tier chunking, range-based `PreparedChunk`, `verify_tiles_source` |
+| `scripts/stage1_runner.py` | Persists `source_start`/`source_end`; `[n/6]` stage banners; chunking progress every 1 %; chunking failures name the stage and re-raise the original error unchanged |
+| `tests/test_stage1_chunking.py` | Rewritten — 13 → **35** tests |
+| `docs/spec/decisions.md` | **D-S1B-009** added; status table updated |
+| `docs/audits/029-…md` | This section; §G rules 1 and 5 corrected at the point of the original error |
+
+`unmark-proposal.md` **unchanged and no change required** — it states the
+contract at the right abstraction ("split first, chunk second … no truncation")
+and never asserted a whitespace-only rule. The over-strong claim existed only in
+this audit's prose.
+
+### P.6 Regression tests
+
+The defect was **reproduced against the committed code first**: a 467-character
+underscored title raised `ChunkingViolation`; after the repair it yields 2 chunks
+with exact reconstruction.
+
+`tests/test_stage1_chunking.py` — **35 passed**. Coverage against Task D's list:
+
+| Required case | Test |
+|---|---|
+| Oversized non-whitespace span | `test_an_oversized_maximal_non_whitespace_span_is_subdivided` |
+| Base path longer, forces earlier cut | `test_a_longer_base_path_forces_an_earlier_cut` |
+| Internal punctuation boundaries | `test_internal_punctuation_offers_legal_boundaries` (8 separators) |
+| Candidate span never bisected | `test_no_vietnamese_candidate_span_is_ever_bisected` (4 fixtures, checked against `decompose`) |
+| Atomic Vietnamese span fails closed | `test_a_genuinely_atomic_vietnamese_span_still_fails_closed` |
+| Multiple spaces / tabs / newlines / leading+trailing | `test_exact_reconstruction_and_range_tiling` (6 fixtures) |
+| Exact reconstruction + range tiling | same, plus `test_the_tiling_verifier_actually_catches_a_gap` |
+| Stable chunk ids | `test_stable_chunk_ids_across_repeated_calls` |
+| Order independence | `test_document_order_does_not_change_any_document_s_chunks` |
+| ≤256 on both injected lengths | `test_every_emitted_chunk_fits_both_paths` |
+| No truncation / no dropping / no synthetic whitespace | `test_no_truncation_and_no_dropping`, `test_whitespace_is_never_collapsed_or_synthesised` |
+| Split-before-chunk, partition inheritance | 4 tests, unchanged in substance |
+| Long non-Vietnamese no-whitespace surface | `test_a_long_non_vietnamese_no_whitespace_surface_is_subdividable` |
+| B3 alignment/channel tests still green | full suite below |
+
+**Mutation-verified** (each injected violation caught):
+
+| Injected violation | Caught by |
+|---|---|
+| Revert to whitespace-only cutting | `test_a_long_non_vietnamese_no_whitespace_surface_is_subdividable` |
+| Allow cuts inside a `SyllableSpan` | `test_no_vietnamese_candidate_span_is_ever_bisected` |
+| Strip chunk text (collapse whitespace) | `test_no_truncation_and_no_dropping` |
+
+Two further mutations — removing the final per-chunk length assertion and
+removing the internal `verify_tiles_source` call — were **not** caught, because
+the greedy algorithm already satisfies both properties. They are
+**defence-in-depth guards, not independently verified**, and this audit does not
+claim otherwise. `verify_tiles_source` itself *is* directly tested.
+
+No real document name is hard-coded in production logic; the fixtures live only
+in tests.
+
+### P.7 Failure visibility (Task E)
+
+The real `prepare-corpus` ran ~30 minutes and exited 2, surfacing only
+`CalledProcessError`. Two reasons: the six pipeline stages printed nothing until
+each completed, and the chunking loop — the slow stage, one tokenization per
+segment across 1.1 M documents — was silent.
+
+Small, semantics-free changes: `[1/6]`…`[6/6]` stage banners; a chunking progress
+line every ~1 % of documents with the running chunk count; and a chunking failure
+that prints **which stage failed and the contract message** to stderr before
+**re-raising the original error unchanged**. Nothing is swallowed, and no corpus
+text is written to logs — the violation carries ids, shard, row, ranges and
+lengths only.
+
+### P.8 Test results
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_chunking.py` | **35 passed** (was 13) |
+| Full repository | **2 535 passed, 97 skipped** (was 2 513 / 97) |
+| Torch-gated | 6 skipped locally; unchanged, run on Colab |
+
+`.venv` remains ML-free.
+
+### P.9 Limitations of Revision 1
+
+1. **The real corpus has NOT been re-prepared.** I do not have the 766 MB of
+   pinned bytes and did not download them. Every claim here rests on synthetic
+   fixtures built to the shape of the reported evidence.
+2. **The repair is not proven closed by these tests.** Only a real
+   `prepare-corpus` run can show whether *other* documents contain regions that
+   are genuinely atomic and oversized — a single alphabetic run longer than 256
+   tokens would still, correctly, fail closed.
+3. **Whether any real document is non-canonical is unmeasured.** For such a
+   document `safe_cut_offsets` returns nothing and an oversized unit fails
+   closed. That is deliberate — normalising the corpus is forbidden — but the
+   real frequency is unknown.
+4. **Chunk-count and runtime impact on the full corpus are unknown.** The
+   fallback adds a `decompose` call per oversized unit only, but the overall
+   ~30-minute cost is unaddressed; this task did not optimise it.
+5. The two defence-in-depth guards noted in §P.6 are not independently verified.
+6. **The original failing exception was never captured.** The first real
+   `prepare-corpus` invocation ran ~30 minutes and returned exit status 2, but
+   the notebook surfaced only `CalledProcessError` — the inner stderr and the
+   `Stage1ContractViolation` it carried were lost. The blocking chunker defect is
+   therefore established by **three converging lines of evidence**, not by a
+   traceback from that run:
+
+   | # | Evidence | Kind |
+   |---|---|---|
+   | 1 | Real-corpus tokenizer preflight: oversized maximal non-whitespace units exist and exceed 256 at the locked tokenizer revision | measured on real bytes |
+   | 2 | Contract inspection of the committed chunker: such a unit, once reached, necessarily fails its fit-alone check | code inspection |
+   | 3 | Reproduction against the committed code on a constructed fixture of the same shape (§P.6) | executed locally |
+
+   This is sufficient to justify the repair, and it is **not** the same as having
+   observed the original failure directly. A residual possibility cannot be
+   excluded from the evidence available: that the ~30-minute run also failed, or
+   first failed, somewhere this audit has not identified. The stage banners and
+   progress output added in §P.7 exist precisely so the next run does not lose
+   that information.
+
+### P.10 Self-audit for Revision 1
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Audit 029 revised **in place**; no Audit 030 | **yes** |
+| 2 | Defect reproduced against committed code before repairing | **yes** — §P.6 |
+| 3 | Root cause identified from repository code, not guessed | **yes** — `_segment_syllables` splits on `unit.is_letter` |
+| 4 | Existing orthographic API reused; no second syllable parser | **yes** — `safe_cut_offsets` only queries `decompose` |
+| 5 | No cut inside a Vietnamese candidate span | **yes** — verified against `decompose` on 4 fixtures |
+| 6 | No cut inside a combining sequence | **yes** — candidates are unit boundaries |
+| 7 | No blind splitting at bytes, code points, BPE pieces or fixed counts | **yes** |
+| 8 | `max_length = 256` unchanged | **yes** |
+| 9 | Runtime overflow still `FAIL` | **yes** |
+| 10 | No truncation, no document dropped, no text lost | **yes** — exact tiling asserted |
+| 11 | No synthetic whitespace; none collapsed | **yes** — byte-exact reconstruction |
+| 12 | No corpus normalization / repair / rewrite | **yes** — AST-asserted the chunker calls no `canon`/`replace`/`sub`/… |
+| 13 | Preservation invariant strengthened to exact tiling | **yes** — §P.4 |
+| 14 | Split-before-chunk and partition inheritance intact | **yes** |
+| 15 | Stable chunk ids; order-independent | **yes** |
+| 16 | Both paths measured on every **emitted** chunk | **yes** |
+| 17 | Fail-closed retained for genuinely atomic regions | **yes**, with full provenance |
+| 18 | No scientific hyperparameter changed | **yes** — no change to seeds, grids, `pi_strip`, objective, optimizer, batch size, corpus pin, dev count, TEST policy |
+| 19 | UIT-VSFC TEST untouched | **yes** |
+| 20 | No raw corpus text in logs or reports | **yes** |
+| 21 | Original contract error not swallowed | **yes** — re-raised unchanged |
+| 22 | Decisions log updated | **yes** — D-S1B-009 |
+| 23 | Proposal: change needed? | **no** — it never stated the whitespace-only rule; recorded explicitly |
+| 24 | Compiled PDF | **STALE**, not regenerated |
+| 25 | Focused + full suites run | **yes** — 35 / 2 535 passed |
+| 26 | Real corpus re-prepared? | **NO** — bytes not available here |
+| 27 | Nothing staged; no prohibited git operation | **yes** |
+| 28 | Defect claimed closed? | **NO** — synthetic tests are not corpus evidence |
+
+### P.11 Revision 1a — evidence-accuracy cleanup (2026-08-22)
+
+An audit-only pass over Revision 1's evidence claims. **No implementation code,
+no test and no scientific decision was touched.** Five claims were overstated and
+are corrected:
+
+| # | Overstated claim | Corrected to |
+|---|---|---|
+| 1 | §L/§M read as current state while asserting UVW was never downloaded and real schema/chunk behaviour unknown | Both labelled **HISTORICAL (pre-commit)** with inline `SUPERSEDED` / `ANSWERED` annotations pointing at §P. Original text preserved, not deleted |
+| 2 | "**Every one of these raised `ChunkingViolation`**" | The preflight *measured* the spans; it did **not** run `chunk_document` on each example. Replaced with the explicit four-step chain: measured spans → measured token lengths → contract inspection → reproduction on a fixture |
+| 3 | "**The chunker is the only thing that failed**" | "The chunker is the **identified blocking defect**; schema and identity assumptions were independently confirmed by the real-corpus preflight." The uncaptured stderr is stated plainly |
+| 4 | "**Measured directly on the real title**" → 84 spans | The 84-span measurement is on a **fixture this audit constructed** (the observed identifier ×12). The real document's *content* is unavailable here. The load-bearing measurement is restated on the **real identifier alone**: 38 chars, **7** spans, boundaries at the underscores |
+| 5 | §P.9 did not record how the defect was established | New limitation 6: the original exception was never captured; the defect rests on three converging lines of evidence, and a residual unidentified failure cannot be excluded |
+
+**Verification of this cleanup**
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Only the audit file modified | **yes** — no code, no tests, no decisions |
+| 2 | Historical record preserved, not deleted | **yes** — §L/§M annotated in place |
+| 3 | No claim of having seen the original exception | **yes** — explicitly disclaimed |
+| 4 | Synthetic evidence never called real-corpus content | **yes** — fixture and real identifier separated, both numbers given |
+| 5 | Real-corpus facts kept as real | **yes** — 1 118 224 docs, 0 duplicates, 0 nulls, token measurements |
+| 6 | Repair verdict unchanged | **yes** — REPAIR PASS stands; the repair rests on the corrected evidence |
+| 7 | PRE-TRAIN still BLOCKED | **yes** |
+| 8 | `git diff --check` clean; nothing staged | **yes** |
+
+**The verdict does not weaken.** Every correction is about *how the defect was
+demonstrated*, not *whether it exists*: a single real 38-character identifier
+containing 7 orthographic spans is by itself sufficient to show that the
+whitespace-only rule was wrong.
+
+---
+
+**STATUS (Revision 1): REPAIR PASS — READY FOR REAL CORPUS RE-RUN**
+**DEFECT: WHITESPACE-ONLY CUTTING COULD NOT PREPARE THE LOCKED CORPUS — REPAIRED (D-S1B-009)**
+**CHUNK BOUNDARIES: ORTHOGRAPHICALLY SAFE OFFSETS FROM `decompose`; SPANS STILL INDIVISIBLE**
+**TEXT PRESERVATION: EXACT RANGE TILING, BYTE-EXACT RECONSTRUCTION**
+**REAL CORPUS NOT RE-PREPARED — SYNTHETIC TESTS ARE NOT CORPUS EVIDENCE**
+**STRIP-ALL SUPPORT: IMPLEMENTED AND MEASURED**
 **CORPUS PIN: CLOSED (all three shards, verified at load)**
 **NO REAL STAGE-1 SCIENTIFIC EXECUTION OCCURRED**
 **COMPILED PROPOSAL PDF: STALE**
+**PRE-TRAIN: BLOCKED until real `prepare-corpus` succeeds and the real-PhoBERT no-update smoke passes**
 **THIS IS NOT THE PRE-TRAIN AUDIT**
 **ALL CHANGES UNSTAGED**

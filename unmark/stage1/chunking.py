@@ -1,39 +1,58 @@
 """Deterministic, tokenizer-aware pre-chunking. **Torch-free.**
 
-Implements the Audit-028 chunking contract (D-S1B-002). Seven requirements, each
-enforced rather than documented:
+Implements the Audit-028 chunking contract (D-S1B-002), as corrected by
+D-S1B-009 after the real corpus was inspected.
 
-1. **Preserve text order** -- chunks are contiguous and emitted in source order.
-2. **No extra normalization** -- the chunker never calls `canon()`, never
-   repairs, never restores. It only *cuts*, at boundaries that already exist.
+Seven requirements, each enforced rather than documented:
+
+1. **Preserve the source exactly** -- chunks are contiguous half-open slices of
+   the original ``content`` that tile ``[0, len(content))`` with no gaps and no
+   overlaps, so ``"".join(texts) == content`` byte for byte. Whitespace is never
+   collapsed, regenerated or inserted.
+2. **No normalization** -- the chunker never canonicalises, repairs or rewrites.
+   It only decides *where* to cut.
 3. **Stable ids** -- ``{document_id}#{chunk_index}``.
 4. **Fits `max_length` on BOTH tokenizer paths** -- the reference path
    (``canon(x)``) and the base path (``b(canon(x))``) have different lengths and
-   separate padding domains, so both are measured.
-5. **Never split a syllable span** -- cuts land on whitespace boundaries, which
-   never fall inside a syllable.
+   separate padding domains, so both are measured on every emitted chunk.
+5. **Never cut inside a Vietnamese candidate span**, and never inside a
+   character unit (a base codepoint plus its combining marks).
 6. **Runs only after the document-level partition exists.**
 7. **Every chunk inherits its parent document's partition.**
 
 Requirements 6 and 7 are structural: `chunk_document` *takes* a partition and
-copies it onto every chunk. There is no code path that assigns a partition to a
-chunk, so chunks of one article cannot land on opposite sides of the split.
+copies it onto every chunk. No code path assigns a partition to a chunk.
 
-**No truncation, ever.** A span that cannot fit raises `ChunkingViolation` with
-enough provenance to diagnose it -- text is never silently dropped.
+**Where the cut boundaries come from.** Audit 029 originally implemented "never
+split a syllable" as "only ever cut at whitespace". Real UVW-2026 disproved that
+implication: the corpus contains maximal **non-whitespace** units far larger than
+`max_length` (observed up to 1 707 tokens), typically underscored article titles.
+Whitespace-only cutting therefore could not prepare the locked corpus at all.
 
-The length function is injected, so the core logic is testable with a
-lightweight mock and the real pinned tokenizer is not needed to prove the
-contract.
+The authoritative definition lives in `unmark.orthography`: `decompose`
+segments text into **maximal alphabetic runs** (`SyllableSpan`), and it is those
+runs -- not whitespace-delimited words -- that must not be bisected. An
+underscore, hyphen or comma inside a long title is a span *boundary*, so cutting
+there is orthographically safe. `safe_cut_offsets` below is a pure **query** over
+`decompose`'s own output: it introduces no second syllable parser and no new
+linguistic rule.
+
+**No truncation, ever.** A region that genuinely cannot be subdivided raises
+`ChunkingViolation` with enough provenance to diagnose it. Text is never dropped.
+
+The length functions are injected, so the whole contract is testable with a
+lightweight mock and the real pinned tokenizer is not needed to prove it.
 """
 
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
-from unmark.stage1.corpus import CorpusDocument, CorpusContractViolation
+from unmark.orthography import decompose
+from unmark.stage1.corpus import CorpusContractViolation, CorpusDocument
 from unmark.stage1.protocol import CHUNK_ID_TEMPLATE, CHUNK_SCHEMA_VERSION, MAX_LENGTH
 
 
@@ -48,13 +67,21 @@ contract is testable without the real tokenizer."""
 
 @dataclass(frozen=True)
 class PreparedChunk:
-    """One Stage-1 training example, bound to its parent and its partition."""
+    """One Stage-1 training example, bound to its parent and its partition.
+
+    `source_start`/`source_end` are the half-open range of the **original**
+    document content this chunk was taken from. They exist so that exact
+    reconstruction is a checkable property of the artifact rather than a claim:
+    `verify_tiles_source` re-derives the document from the ranges alone.
+    """
 
     chunk_id: str
     document_id: str
     partition: str
     chunk_index: int
     text: str
+    source_start: int
+    source_end: int
     reference_length: int
     base_length: int
     source_shard: str
@@ -68,21 +95,66 @@ class PreparedChunk:
         )
         if self.chunk_id != expected:
             raise ChunkingViolation(f"chunk id {self.chunk_id!r} does not match {expected!r}")
+        if self.source_end <= self.source_start:
+            raise ChunkingViolation(
+                f"chunk {self.chunk_id!r} has empty range "
+                f"[{self.source_start}, {self.source_end})"
+            )
+        if len(self.text) != self.source_end - self.source_start:
+            raise ChunkingViolation(
+                f"chunk {self.chunk_id!r} text length {len(self.text)} does not match its "
+                f"source range width {self.source_end - self.source_start}; the chunker "
+                "must slice, never rewrite"
+            )
 
 
-_WHITESPACE = re.compile(r"(\s+)")
+# ---------------------------------------------------------------------------
+# Safe cut offsets -- a QUERY over the authoritative orthography, not a parser
+# ---------------------------------------------------------------------------
+def safe_cut_offsets(text: str, classifier: Callable[[str], Any] | None = None) -> frozenset[int]:
+    """Offsets in `text` at which a cut changes no orthographic semantics.
 
+    Derived entirely from `unmark.orthography.decompose`:
 
-def _segments(text: str) -> list[str]:
-    """Split into alternating content/whitespace pieces, losslessly.
+    * candidate offsets are **character-unit boundaries**, so a cut can never
+      land between a base codepoint and its combining marks;
+    * offsets strictly inside a `SyllableSpan` -- a maximal alphabetic run --
+      are removed, so a Vietnamese candidate is never bisected.
 
-    ``"".join(_segments(t)) == t`` for every input, which is what lets the
-    chunker guarantee that no interior content is lost. Cuts are only ever made
-    *between* segments, and a whitespace segment never falls inside a syllable.
+    Returns the empty set when `canon(text) != text`. `decompose` reports offsets
+    into the *canonical* string, so for non-canonically-spelled input those
+    offsets do not address the original, and using them would cut in the wrong
+    place. The chunker treats an empty result as "no safe interior boundary
+    here" and stays fail-closed rather than normalising the corpus.
     """
-    return [s for s in _WHITESPACE.split(text) if s != ""]
+    if not text:
+        return frozenset()
+    parts = decompose(text, eligibility_classifier=classifier)
+    if parts.canonical_text != text:
+        return frozenset()
+    unsafe: set[int] = set()
+    for span in parts.syllables:
+        unsafe.update(range(span.canonical_start + 1, span.canonical_end))
+    candidates = {unit.canonical_start for unit in parts.units}
+    candidates.update((0, len(text)))
+    return frozenset(candidates - unsafe)
 
 
+_SEGMENT = re.compile(r"\s+|\S+")
+
+
+def _segment_bounds(text: str) -> list[int]:
+    """Boundary offsets between maximal whitespace and non-whitespace runs.
+
+    Returns the *ends*, in order, so ``[0] + _segment_bounds(t)`` tiles `t`.
+    Lossless by construction: the pattern alternates and covers every character.
+    """
+    return [match.end() for match in _SEGMENT.finditer(text)]
+
+
+# ---------------------------------------------------------------------------
+# Chunking
+# ---------------------------------------------------------------------------
 def chunk_document(
     document: CorpusDocument,
     partition: str,
@@ -90,86 +162,132 @@ def chunk_document(
     reference_length: LengthFn,
     base_length: LengthFn,
     max_length: int = MAX_LENGTH,
+    classifier: Callable[[str], Any] | None = None,
 ) -> list[PreparedChunk]:
     """Cut one document into chunks that fit BOTH paths. Partition is inherited.
 
-    `partition` is an argument, never derived here -- requirement 6/7. The
-    chunker cannot see the split seed and cannot assign a side.
+    Two-tier, so the common case stays cheap:
+
+    * **fast path** -- extend greedily over whitespace-delimited segments while
+      the accumulated text still fits. This is the original behaviour and covers
+      essentially all documents.
+    * **fallback** -- when a *single* non-whitespace segment cannot fit on its
+      own, subdivide it at `safe_cut_offsets`. Only reached for the oversized
+      units the real corpus actually contains.
+
+    Every emitted chunk is length-checked, so correctness never depends on the
+    token count growing monotonically with the text.
     """
     if partition not in {"train", "dev"}:
         raise ChunkingViolation(
             f"chunk_document requires the parent document's partition, got {partition!r}"
         )
-    segments = _segments(document.content)
-    if not segments:
+    content = document.content
+    if not content:
         raise ChunkingViolation(f"document {document.document_id!r} has no content to chunk")
 
-    def fits(text: str) -> bool:
-        return reference_length(text) <= max_length and base_length(text) <= max_length
+    def fits(start: int, end: int) -> bool:
+        piece = content[start:end]
+        return reference_length(piece) <= max_length and base_length(piece) <= max_length
 
-    chunks: list[PreparedChunk] = []
-    current: list[str] = []
+    def provenance(start: int, end: int) -> str:
+        piece = content[start:end]
+        return (
+            f"document {document.document_id!r} (shard {document.source_shard}, source row "
+            f"{document.source_row}), range [{start}, {end}) of {len(content)}, "
+            f"{len(piece)} chars, reference={reference_length(piece)} "
+            f"base={base_length(piece)}, max_length={max_length}"
+        )
+
+    bounds = _segment_bounds(content)
+    ranges: list[tuple[int, int]] = []
+    start = 0
     index = 0
 
-    def emit(pieces: list[str]) -> None:
-        nonlocal index
-        text = "".join(pieces).strip()
-        if not text:
-            return
-        chunks.append(
-            PreparedChunk(
-                chunk_id=CHUNK_ID_TEMPLATE.format(
-                    document_id=document.document_id, chunk_index=index
-                ),
-                document_id=document.document_id,
-                partition=partition,
-                chunk_index=index,
-                text=text,
-                reference_length=reference_length(text),
-                base_length=base_length(text),
-                source_shard=document.source_shard,
-            )
-        )
-        index += 1
+    while start < len(content):
+        index = bisect_right(bounds, start)
+        best: int | None = None
+        cursor = index
+        while cursor < len(bounds):
+            end = bounds[cursor]
+            if end <= start:
+                cursor += 1
+                continue
+            if fits(start, end):
+                best = end
+                cursor += 1
+            else:
+                break
+        if best is None:
+            # Not even the first segment fits on its own: subdivide it at
+            # orthographically safe interior boundaries.
+            hard_end = bounds[index] if index < len(bounds) else len(content)
+            best = _subdivide(content, start, hard_end, fits, provenance, classifier)
+        ranges.append((start, best))
+        start = best
 
-    def require_fits_alone(segment: str) -> None:
-        """A segment that cannot fit on its own is indivisible.
-
-        Whitespace is the only boundary that never splits a syllable, so there
-        is nowhere legal left to cut. Fail closed with full provenance -- never
-        truncate, never drop, and never emit an oversized chunk.
-        """
-        text = segment.strip()
-        if not text or fits(text):
-            return
-        raise ChunkingViolation(
-            f"indivisible span does not fit max_length={max_length} in document "
-            f"{document.document_id!r} (shard {document.source_shard}, source row "
-            f"{document.source_row}), segment {text[:60]!r}… "
-            f"reference={reference_length(text)} base={base_length(text)}. "
-            "Stage-1 does not truncate and does not drop text."
-        )
-
-    for segment in segments:
-        if not current:
-            require_fits_alone(segment)
-            current = [segment]
-            continue
-        candidate = current + [segment]
-        if fits("".join(candidate).strip()):
-            current = candidate
-            continue
-        emit(current)
-        # the segment that could not be appended now STARTS a chunk, so it must
-        # fit on its own -- checking only the append would let an oversized
-        # segment become its own oversized chunk.
-        require_fits_alone(segment)
-        current = [segment]
-    emit(current)
-
-    if not chunks:
+    if not ranges:
         raise ChunkingViolation(f"document {document.document_id!r} produced no chunks")
+
+    chunks = [
+        PreparedChunk(
+            chunk_id=CHUNK_ID_TEMPLATE.format(
+                document_id=document.document_id, chunk_index=position
+            ),
+            document_id=document.document_id,
+            partition=partition,
+            chunk_index=position,
+            text=content[begin:finish],
+            source_start=begin,
+            source_end=finish,
+            reference_length=reference_length(content[begin:finish]),
+            base_length=base_length(content[begin:finish]),
+            source_shard=document.source_shard,
+        )
+        for position, (begin, finish) in enumerate(ranges)
+    ]
+    verify_tiles_source(chunks, content, document.document_id)
+    for chunk in chunks:
+        if chunk.reference_length > max_length or chunk.base_length > max_length:
+            raise ChunkingViolation(
+                f"emitted chunk {chunk.chunk_id!r} exceeds max_length: "
+                f"reference={chunk.reference_length} base={chunk.base_length} "
+                f"max_length={max_length}"
+            )
     return chunks
+
+
+def _subdivide(
+    content: str,
+    start: int,
+    hard_end: int,
+    fits: Callable[[int, int], bool],
+    provenance: Callable[[int, int], str],
+    classifier: Callable[[str], Any] | None,
+) -> int:
+    """Largest safe end in `(start, hard_end]` that fits. Fail closed otherwise.
+
+    Cuts come from `safe_cut_offsets`, so a Vietnamese candidate span is never
+    bisected and a combining sequence is never split.
+    """
+    segment = content[start:hard_end]
+    offsets = sorted(o for o in safe_cut_offsets(segment, classifier) if 0 < o <= len(segment))
+    best: int | None = None
+    for offset in offsets:
+        end = start + offset
+        if fits(start, end):
+            best = end
+        elif best is not None:
+            break
+    if best is None:
+        raise ChunkingViolation(
+            "indivisible orthographic region does not fit: "
+            + provenance(start, hard_end)
+            + ". No safe interior cut point produced a fitting chunk -- a cut would have "
+            "split a Vietnamese candidate span or a combining sequence. Stage-1 does not "
+            "truncate and does not drop text."
+        )
+    return best
 
 
 def chunk_corpus(
@@ -179,6 +297,8 @@ def chunk_corpus(
     reference_length: LengthFn,
     base_length: LengthFn,
     max_length: int = MAX_LENGTH,
+    classifier: Callable[[str], Any] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[PreparedChunk]:
     """Chunk every document, inheriting each one's already-decided partition.
 
@@ -191,7 +311,7 @@ def chunk_corpus(
             "document-level split must run BEFORE chunking (D-S1B-002 steps 4-5)."
         )
     out: list[PreparedChunk] = []
-    for document in documents:
+    for position, document in enumerate(documents, start=1):
         out.extend(
             chunk_document(
                 document,
@@ -199,9 +319,48 @@ def chunk_corpus(
                 reference_length=reference_length,
                 base_length=base_length,
                 max_length=max_length,
+                classifier=classifier,
             )
         )
+        if on_progress is not None:
+            on_progress(position, len(out))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Invariants, asserted rather than assumed
+# ---------------------------------------------------------------------------
+def verify_tiles_source(
+    chunks: Sequence[PreparedChunk], content: str, document_id: str
+) -> None:
+    """Chunks must tile `[0, len(content))` exactly and reconstruct it byte-exact.
+
+    This replaces the earlier `" ".join(...) == content` check, which silently
+    assumed single-space separation and would have masked collapsed runs of
+    whitespace, tabs and newlines -- and could not describe an internal
+    non-whitespace cut at all.
+    """
+    cursor = 0
+    for chunk in chunks:
+        if chunk.source_start != cursor:
+            raise ChunkingViolation(
+                f"document {document_id!r}: chunk {chunk.chunk_id!r} starts at "
+                f"{chunk.source_start}, expected {cursor} -- chunks must be contiguous "
+                "with no gaps and no overlaps"
+            )
+        cursor = chunk.source_end
+    if cursor != len(content):
+        raise ChunkingViolation(
+            f"document {document_id!r}: chunks cover {cursor} of {len(content)} characters; "
+            "text would be lost"
+        )
+    rebuilt = "".join(chunk.text for chunk in chunks)
+    if rebuilt != content:
+        raise ChunkingViolation(
+            f"document {document_id!r}: reconstruction differs from the source "
+            f"({len(rebuilt)} vs {len(content)} chars). The chunker slices; it never "
+            "normalises, collapses whitespace or rewrites."
+        )
 
 
 def verify_no_parent_spans_partitions(chunks: Iterable[PreparedChunk]) -> int:

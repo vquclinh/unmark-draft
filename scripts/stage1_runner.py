@@ -56,6 +56,7 @@ from unmark.stage1.corpus import (  # noqa: E402
     screen_contamination,
     verify_corpus_root,
 )
+from unmark.linguistics import make_classifier, try_load_inventory  # noqa: E402
 from unmark.stage1.chunking import chunk_corpus, verify_no_parent_spans_partitions  # noqa: E402
 from unmark.stage1.manifest import (  # noqa: E402
     CHUNKS_NAME,
@@ -106,11 +107,13 @@ def run_prepare_corpus(args) -> int:
               file=sys.stderr)
         return 2
 
+    print("[1/6] verifying the corpus pin", flush=True)
     pin = load_pin()
     print(f"corpus pin: {pin.dataset} @ {pin.revision}")
     source = verify_corpus_root(Path(args.corpus_root), pin)
     print("  all three shards verified: name, byte size and sha256")
 
+    print("[2/6] reading and concatenating the three shards", flush=True)
     documents_by_shard = {}
     for name in CORPUS_SHARD_ORDER:
         path = Path(args.corpus_root) / name
@@ -119,9 +122,11 @@ def run_prepare_corpus(args) -> int:
         documents_by_shard[name] = docs
         print(f"  {name}: {len(docs)} documents")
 
+    print("[3/6] schema + duplicate-id check", flush=True)
     documents = concatenate(documents_by_shard)
     print(f"  concatenated in locked order: {len(documents)} documents, ids unique")
 
+    print("[4/6] contamination screen (exact/canonical, opened material only)", flush=True)
     reference: dict[str, list[str]] = {}
     if args.uitvsfc_derived_train:
         reference["uitvsfc_derived_train"] = _read_text_column(args.uitvsfc_derived_train)
@@ -134,16 +139,36 @@ def run_prepare_corpus(args) -> int:
           f"{contamination.excluded_count} excluded of {len(documents)}")
     print("  official TEST: SEALED, not opened, not screened")
 
+    print("[5/6] document-level split (BEFORE chunking)", flush=True)
     partition = partition_documents([d.document_id for d in kept])
     print(f"  document split (seed {SPLIT_SEED}): "
           f"train {len(partition.train)}, dev {len(partition.dev)}")
 
+    print("[6/6] deterministic pre-chunking", flush=True)
     tokenizer = _load_tokenizer(args.revision)
     reference_length, base_length = _length_functions(tokenizer)
-    chunks = chunk_corpus(
-        kept, partition.assignment,
-        reference_length=reference_length, base_length=base_length, max_length=MAX_LENGTH,
-    )
+    classifier = make_classifier(try_load_inventory())
+
+    total = len(kept)
+    every = max(1, total // 100)
+
+    def report(done: int, chunks_so_far: int) -> None:
+        if done % every == 0 or done == total:
+            print(f"    chunking {done}/{total} documents ({100 * done / total:.1f}%), "
+                  f"{chunks_so_far} chunks", flush=True)
+
+    try:
+        chunks = chunk_corpus(
+            kept, partition.assignment,
+            reference_length=reference_length, base_length=base_length,
+            max_length=MAX_LENGTH, classifier=classifier, on_progress=report,
+        )
+    except Stage1ContractViolation as error:
+        # Surface WHICH stage failed and on what, without dumping corpus text.
+        # The original contract error is re-raised unchanged, never swallowed.
+        print(f"\nREFUSED during CHUNKING (stage 5 of 6, after the document split):\n"
+              f"  {error}", file=sys.stderr, flush=True)
+        raise
     parents = verify_no_parent_spans_partitions(chunks)
     print(f"  chunked AFTER splitting: {len(chunks)} chunks from {parents} documents")
 
@@ -165,6 +190,8 @@ def run_prepare_corpus(args) -> int:
                 "partition": chunk.partition,
                 "chunk_index": chunk.chunk_index,
                 "text": chunk.text,
+                "source_start": chunk.source_start,
+                "source_end": chunk.source_end,
                 "source_shard": chunk.source_shard,
             }, ensure_ascii=False) + "\n")
     print(f"\nWrote {output}/ (manifest + {len(chunks)} chunks)")

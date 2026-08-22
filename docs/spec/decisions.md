@@ -36,7 +36,8 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-S1A-001 … D-S1A-004 (Stage-1 data path and objective) |
 | **OPEN — RESEARCHER DECISION REQUIRED** | D-S1A-005 — `lambda_a`, `lambda_c`, Stage-1 corpus, `max_length`, corruption redraw schedule and every training hyperparameter. **Concrete values are now PROPOSED** in [Audit 028](../audits/028-stage1-scientific-config-review.md); the register stays OPEN until the researcher approves them |
 | **RESOLVED DECISION** (cont.) | D-PREG1-015 (pre-G1 CLOSED — primary and secondary), D-S1B-001 (UIT-VSFC excluded from Stage-1 selection), D-B3B0-007 (main backbone locked) |
-| **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock) |
+| **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock), D-S1B-005 … D-S1B-008 (seed roles, metric unit, FP32, pipeline/resume) |
+| **RESOLVED DECISION** (cont.) | D-S1B-009 — **implementation correction**: chunk boundaries are orthographically-safe offsets, not whitespace only. Found by real-corpus evidence after commit `0a34083` |
 | **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
@@ -4105,3 +4106,99 @@ asserted by test.
 | | |
 |---|---|
 | **Proposal updated** | **YES** — §5.1 Stage-1 protocol block. PDF stale: **YES** |
+
+
+### D-S1B-009 — chunk boundaries are orthographically safe offsets, not whitespace
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — implementation correction, from real-corpus evidence |
+| **Owner** | Stage-1B |
+| **Found** | 2026-08-22, after commit `0a34083af184a6d25db845b36fb4f0a6a18792be` |
+
+**The original assumption.** [D-S1B-002](#d-s1b-002--stage-1-corpus-and-the-contamination-contract)
+requires that chunking "never split a syllable span". Audit 029 **implemented**
+that as *"cuts land only on whitespace boundaries"*, on the reasoning that
+whitespace never falls inside a syllable. The premise is true; **the implication
+is not**. Whitespace is *sufficient* for safety, not *necessary*, and treating a
+maximal non-whitespace unit as atomic is a far stronger rule than the science
+requires.
+
+**The real-corpus evidence.** A real-tokenizer preflight against the pinned
+corpus (`undertheseanlp/UVW-2026` @ `a0a79294e4568137e25828bb3f2a4cde8546e1fb`,
+locked PhoBERT tokenizer revision `01daacda68afe13d83023d16ec647239e344a1e6`)
+found oversized maximal **non-whitespace** units immediately — at least 20 before
+the diagnostic stopped collecting. Representative:
+
+| Document | Characters | Clean tokens (incl. specials) |
+|---|---|---|
+| `Iraq` | 501 | 298 |
+| `Quần_đảo_Hoàng_Sa` | 263 | 260 |
+| `Viên_Chiếu` | 876 | 873 |
+| `Đội_tuyển_bóng_đá_quốc_gia_Afghanistan` | 2 647 | **1 707** |
+
+These are underscored article titles: one whitespace-delimited unit, but many
+separate orthographic spans. Under the whitespace-only rule every one of them
+raised `ChunkingViolation`, so **the committed runner could not prepare the
+locked corpus at all**.
+
+**Why the rule was wrong, in the repository's own terms.**
+`unmark.orthography.decompose` segments text into **maximal alphabetic runs**
+(`SyllableSpan`) — `_segment_syllables` splits on `unit.is_letter`. The
+indivisible orthographic object is therefore the *alphabetic run*, not the
+whitespace-delimited word. An underscore, hyphen or comma inside a title is a
+span **boundary**. Measured on the real title above, `decompose` reports **84
+separate spans** inside the single "indivisible" unit.
+
+A separate fact was conflated: B3B alignment reconstructs PhoBERT BPE over
+maximal non-whitespace units ([D-B3B1B-001](#d-b3b1b-001--alignment-runs-over-whitespace-chunks-not-linguistic-spans)).
+That is about **tokenization alignment** and remains authoritative and unchanged.
+It never implied that the **document chunker** must treat those units as
+scientifically atomic.
+
+**The corrected decision.**
+
+| | Rule |
+|---|---|
+| Preferred boundary | whitespace, unchanged — the fast path is the original greedy behaviour |
+| Fallback | when a single non-whitespace unit cannot fit alone, subdivide it at **orthographically safe offsets** |
+| Safe offset | a character-unit boundary that is **not strictly inside a `SyllableSpan`**, obtained by *querying* `decompose` — no second syllable parser, no new linguistic rule |
+| Vietnamese candidate spans | remain **indivisible** |
+| Non-canonical text | `decompose` reports canonical offsets; when `canon(text) != text` those do not address the original, so **no interior boundary is offered** and the chunker stays fail-closed rather than normalising |
+| Truly atomic oversized region | **fail closed** with document id, shard, source row, range and both measured lengths |
+| Truncation / dropping / normalisation | still **forbidden** |
+| Both paths | every **emitted** chunk is re-measured and must satisfy `max_length = 256` on the clean **and** base paths |
+| Runtime overflow | still `FAIL`, still a guard |
+
+**Text preservation strengthened.** Audit 029 described preservation as
+`" ".join(chunks) == content`, which silently assumes single-space separation and
+would mask collapsed runs of whitespace, tabs and newlines — and cannot describe
+an internal non-whitespace cut at all. `PreparedChunk` now carries
+`source_start` / `source_end`, and `verify_tiles_source` asserts the chunks are
+contiguous half-open slices tiling `[0, len(content))` with no gaps or overlaps,
+reconstructing the source **exactly**.
+
+**Scientific values unchanged.** `max_length = 256`, the corpus pin, the split
+seed and count, corruption policy, `pi_strip`, seeds, optimizer, batch size, the
+LR and `r` grids, the objective, the selection metric and the official-TEST
+policy are all untouched. No document is dropped and no text is altered.
+
+**Affected files.** `unmark/stage1/chunking.py` (repair),
+`scripts/stage1_runner.py` (source ranges persisted; stage banners and chunking
+progress so a long failure identifies its stage), `tests/test_stage1_chunking.py`
+(rewritten, 35 tests), `docs/audits/029-stage1-runner-implementation.md`
+(revised in place).
+
+**Proposal.** **NOT updated, and none was required.** `unmark-proposal.md` states
+the chunking contract at the correct abstraction — "split first, chunk second …
+no truncation" (§5.1.1) — and never asserted a whitespace-only rule. The
+over-strong claim existed only in the Audit 029 implementation prose, which is
+corrected in place. §4.4's B3B alignment wording is about tokenization and is
+unaffected.
+
+**Compiled proposal PDF: STALE** (unchanged by this entry; regeneration is still
+pending from D-S1B-005/008).
+
+**Not closed by synthetic tests.** The repaired chunker has **not** been run on
+the real 766 MB corpus. PRE-TRAIN stays **BLOCKED** until real `prepare-corpus`
+succeeds in Colab and the real-PhoBERT no-update smoke passes.
