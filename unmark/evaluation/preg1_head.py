@@ -877,11 +877,20 @@ def train_head(
     epochs: int = EPOCHS,
     batch_size: int = BATCH_SIZE,
     on_epoch: Callable[[int, EpochScore], None] | None = None,
+    on_checkpoint: Callable[[int, EpochScore, Any], None] | None = None,
 ) -> HeadRun:
     """Train the linear head for **all** `epochs`, scoring after each one.
 
     Every epoch executes; nothing stops early. Selection happens afterwards,
     from the returned scores.
+
+    `on_checkpoint(epoch, score, head)` is called after every checkpoint-eligible
+    epoch with the **live head**. It exists because the paired measurement must
+    score *the selected checkpoint* on official validation, and the selection is
+    only known after all 30 epochs have run -- so a caller has to be able to
+    snapshot each epoch's parameters and restore the one the committed selector
+    picks. Purely additive: it changes no equation, no value and no default
+    behaviour, and a caller that ignores it gets exactly the previous semantics.
 
     **Roles and pathway are read from the representations' provenance**, not
     passed in. Training representations must be bound to `PROTOCOL_TRAIN` and
@@ -936,6 +945,8 @@ def train_head(
         scores.append(score)
         if on_epoch is not None:
             on_epoch(epoch, score)
+        if on_checkpoint is not None:
+            on_checkpoint(epoch, score, head)
 
     return HeadRun(
         pathway=pathway,

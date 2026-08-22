@@ -95,15 +95,32 @@ def test_tuning_is_vanilla_only():
 
 
 def test_base_only_never_appears_in_the_tune_path():
-    """AST over `run_tune` and its helpers: `BASE_ONLY` is not reachable."""
-    source = CLI.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    tune_fns = {"run_tune", "materialise_split", "representation_key",
-                "tuning_schedule", "tuning_artifact", "extract_or_load"}
+    """`BASE_ONLY` is unreachable from `tune` — checked on CODE, not prose.
+
+    `representation_key` legitimately *documents* that a Vanilla cache cannot be
+    reloaded as Base-only, so a substring scan would fail on its own docstring.
+    What matters is that the tune path never *evaluates* `BASE_ONLY`.
+    """
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    tune_fns = {"run_tune", "materialise_split", "tuning_schedule",
+                "tuning_artifact", "extract_or_load"}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in tune_fns:
-            body = ast.unparse(node)
-            assert "BASE_ONLY" not in body, f"{node.name} references BASE_ONLY"
+            attributes = {a.attr for a in ast.walk(node) if isinstance(a, ast.Attribute)}
+            assert "BASE_ONLY" not in attributes, f"{node.name} evaluates BASE_ONLY"
+
+    # `representation_key` may mention it in prose but must DEFAULT to VANILLA.
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "representation_key")
+    defaults = dict(zip([a.arg for a in fn.args.args][-len(fn.args.defaults):],
+                        fn.args.defaults)) if fn.args.defaults else {}
+    assert "pathway" in defaults
+    assert ast.unparse(defaults["pathway"]) == "TUNING_PATHWAY"
+
+    cli = load_cli()
+    assert cli.representation_key(
+        Preg1Role.PROTOCOL_DEV, ["a"], "a" * 64, 8
+    ).pathway is SystemPathway.VANILLA
 
 
 def test_tune_may_only_touch_protocol_train_and_protocol_dev():
@@ -193,15 +210,19 @@ def test_measure_still_requires_a_frozen_lr():
                   "--official-validation", "v"])  # no --frozen-lr
 
 
-def test_measure_does_not_execute_a_measurement():
-    """The first downstream number is deliberately not wired here."""
-    source = CLI.read_text(encoding="utf-8")
-    tree = ast.parse(source)
+def test_measure_reuses_the_committed_trainer_and_scorer():
+    """`measure` is now wired; it must reuse, not reimplement."""
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "run_measure")
     body = ast.unparse(fn)
-    assert "train_head" not in body and "score_measurement" not in body
-    assert "NOT EXECUTED" in body
+    for name in ("train_head", "score_measurement", "PairedSeedResult",
+                 "PairedDiagnostic", "build_head", "load_derived_pool",
+                 "load_membership", "pathway_text", "extract_or_load"):
+        assert name in body, f"{name} must be reused"
+    # the checkpoint choice comes from the committed selector, not a local scan
+    assert "run.selected" in body
+    assert "max(" not in body and "argmax" not in body.replace("argmax(dim=1)", "")
 
 
 # ---------------------------------------------------------------------------
@@ -406,3 +427,368 @@ def test_tune_refuses_an_existing_output_directory(tmp_path):
               if isinstance(n, ast.FunctionDef) and n.name == "run_tune")
     body = ast.unparse(fn)
     assert "already exists" in body and "output_dir.exists()" in body
+
+
+# ---------------------------------------------------------------------------
+# The paired measurement (Audit 026)
+# ---------------------------------------------------------------------------
+def test_exactly_five_paired_seeds_and_ten_head_runs():
+    from unmark.evaluation.preg1_protocol import MEASUREMENT_SEEDS
+
+    assert len(MEASUREMENT_SEEDS) == 5
+    assert len(set(MEASUREMENT_SEEDS)) == 5
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_measure")
+    body = ast.unparse(fn)
+    # one loop over the seeds, one inner loop over the two pathways => 5 x 2
+    assert "for index, seed in enumerate(MEASUREMENT_SEEDS" in body
+    assert "for pathway in (SystemPathway.VANILLA, SystemPathway.BASE_ONLY)" in body
+    assert body.count("train_head(") == 1, "one call site, driven by the loops"
+
+
+def write_tuning(tmp_path, lr=0.01, selected_on="VANILLA", validation_used=False):
+    path = tmp_path / "tuning.json"
+    path.write_text(json.dumps({
+        "repository_head": "d10aaae",
+        "official_validation_used": validation_used,
+        "selection": {
+            "selected_learning_rate": lr,
+            "frozen": {"learning_rate": lr, "selected_on": selected_on},
+            "rule": ["highest MEAN selected-checkpoint Macro-F1 across the tuning seeds"],
+        },
+    }), encoding="utf-8")
+    return path
+
+
+def test_the_frozen_lr_must_equal_the_tuning_artifact_selection(tmp_path):
+    cli = load_cli()
+    artifact = write_tuning(tmp_path, lr=0.01)
+    assert cli.load_tuning_artifact(artifact, 0.01)["selection"]["selected_learning_rate"] == 0.01
+    with pytest.raises(EvaluationContractViolation, match="does not match"):
+        cli.load_tuning_artifact(artifact, 0.003)
+
+
+def test_a_caller_cannot_substitute_another_lr(tmp_path):
+    """Every other grid rate is refused against a 0.01 artifact."""
+    cli = load_cli()
+    artifact = write_tuning(tmp_path, lr=0.01)
+    for other in (lr for lr in LR_GRID if lr != 0.01):
+        with pytest.raises(EvaluationContractViolation, match="not a caller choice"):
+            cli.load_tuning_artifact(artifact, other)
+
+
+def test_the_lr_must_have_been_selected_on_vanilla(tmp_path):
+    """Base-only cannot retroactively become the selecting pathway."""
+    cli = load_cli()
+    artifact = write_tuning(tmp_path, selected_on="BASE_ONLY")
+    with pytest.raises(EvaluationContractViolation, match="must be\\s+selected on VANILLA|selected on"):
+        cli.load_tuning_artifact(artifact, 0.01)
+
+
+def test_a_tuning_run_that_touched_official_validation_is_refused(tmp_path):
+    cli = load_cli()
+    artifact = write_tuning(tmp_path, validation_used=True)
+    with pytest.raises(EvaluationContractViolation, match="official_validation_used"):
+        cli.load_tuning_artifact(artifact, 0.01)
+
+
+def test_a_missing_or_malformed_tuning_artifact_is_refused(tmp_path):
+    cli = load_cli()
+    with pytest.raises(EvaluationContractViolation, match="not found"):
+        cli.load_tuning_artifact(tmp_path / "absent.json", 0.01)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{oops", encoding="utf-8")
+    with pytest.raises(EvaluationContractViolation, match="malformed"):
+        cli.load_tuning_artifact(bad, 0.01)
+
+
+def test_official_validation_is_gated_on_its_own_locked_identity():
+    """It is loaded with its own SHA, rows and label counts — not by filename."""
+    from unmark.evaluation.preg1_protocol import (
+        DERIVED_VALIDATION_CSV_SHA256, PUBLISHED_LABEL_COUNTS, PUBLISHED_SPLIT_SIZES,
+    )
+
+    assert DERIVED_VALIDATION_CSV_SHA256 == (
+        "9c475c8998871c0c7317ee200b3e7db827128cd2dfec9de5c689aca299acc8d0"
+    )
+    assert PUBLISHED_SPLIT_SIZES["validation"] == 1583
+    assert PUBLISHED_LABEL_COUNTS["validation"] == {
+        "negative": 705, "neutral": 73, "positive": 805
+    }
+    body = ast.unparse(next(
+        n for n in ast.walk(ast.parse(CLI.read_text(encoding="utf-8")))
+        if isinstance(n, ast.FunctionDef) and n.name == "run_measure"
+    ))
+    assert "DERIVED_VALIDATION_CSV_SHA256" in body
+    assert "PUBLISHED_SPLIT_SIZES['validation']" in body
+
+
+def test_official_validation_never_selects_a_checkpoint_or_an_lr():
+    """`train_head` is called with protocol-train/dev only; scoring is separate."""
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_measure")
+    call = next(n for n in ast.walk(fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "train_head")
+    supplied = ast.unparse(call)
+    assert "PROTOCOL_TRAIN" in supplied and "PROTOCOL_DEV" in supplied
+    assert "OFFICIAL_VALIDATION" not in supplied, (
+        "official validation must never reach the trainer or the selector"
+    )
+    scorer = next(n for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                  and n.func.id == "score_measurement")
+    assert "OFFICIAL_VALIDATION" in ast.unparse(scorer)
+    # and no LR selection happens here at all
+    assert not [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id in {"select_learning_rate", "freeze_learning_rate"}]
+
+
+def test_the_same_seed_drives_both_arms():
+    """One seed variable feeds both pathways, so the paired init guarantee holds."""
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_measure")
+    body = ast.unparse(fn)
+    assert "seed=seed" in body
+    assert "build_head(hidden_size, seed)" in body
+
+    # NESTING, checked on the tree. A textual index would find the *extraction*
+    # loop over pathways, which legitimately precedes the seed loop.
+    seed_loop = next(
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.For) and "MEASUREMENT_SEEDS" in ast.unparse(node.iter)
+    )
+    inner = [
+        node for node in ast.walk(seed_loop)
+        if isinstance(node, ast.For) and "SystemPathway.BASE_ONLY" in ast.unparse(node.iter)
+    ]
+    assert inner, "the pathway loop must be nested inside the seed loop"
+    trainer = [
+        node for node in ast.walk(inner[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "train_head"
+    ]
+    assert trainer, "both arms must be trained inside one seed iteration"
+
+
+def test_representation_keys_separate_the_two_pathways():
+    cli = load_cli()
+    vanilla = cli.representation_key(
+        Preg1Role.OFFICIAL_VALIDATION, ["a"], "a" * 64, 768, SystemPathway.VANILLA)
+    base = cli.representation_key(
+        Preg1Role.OFFICIAL_VALIDATION, ["a"], "a" * 64, 768, SystemPathway.BASE_ONLY)
+    assert vanilla.pathway is SystemPathway.VANILLA
+    assert base.pathway is SystemPathway.BASE_ONLY
+    with pytest.raises(EvaluationContractViolation, match="pathway"):
+        base.require_compatible(vanilla)
+
+
+def test_provenance_mismatch_fails_closed_rather_than_reusing_a_cache():
+    """`extract_or_load` calls `cache.load(key)`, which compares every field."""
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "extract_or_load")
+    body = ast.unparse(fn)
+    assert "cache.load(key)" in body, "the loaded key must be the one we require"
+
+
+def test_measure_records_no_significance_machinery(tmp_path):
+    """The report shape comes from the committed PairedDiagnostic."""
+    from unmark.evaluation.preg1_head import (
+        FrozenLearningRate, PairedDiagnostic, PairedSeedResult,
+    )
+    from unmark.evaluation.preg1_protocol import MEASUREMENT_SEEDS
+
+    report = PairedDiagnostic(
+        learning_rate=FrozenLearningRate(0.01),
+        results=tuple(PairedSeedResult(s, 0.70, 0.80, 0.60, 0.72) for s in MEASUREMENT_SEEDS),
+    ).to_dict()
+
+    def keys(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield k
+                yield from keys(v)
+        elif isinstance(node, list):
+            for item in node:
+                yield from keys(item)
+
+    assert not set(keys(report)) & {
+        "p_value", "significant", "threshold", "confidence_interval",
+        "test_statistic", "verdict", "passed",
+    }
+    assert len(report["per_seed"]) == 5
+    for arm in ("vanilla", "base_only", "delta_vanilla_minus_base_only"):
+        assert "mean_macro_f1" in report[arm] and "sample_stdev_macro_f1" in report[arm]
+
+
+def test_measure_persists_no_raw_text():
+    """The artifact is built from digests, keys and floats only."""
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_measure")
+    body = ast.unparse(fn)
+    assert "report['representations'] = {name: key.to_dict()" in body
+    assert "'raw_text_persisted': False" in body
+    # texts are used for tokenization only, never written
+    assert "json.dumps(report" in body and "texts" not in body.split("json.dumps(report")[1]
+
+
+def test_measure_refuses_an_existing_output_directory():
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "run_measure")
+    body = ast.unparse(fn)
+    assert "output_dir.exists()" in body and "already exists" in body
+
+
+def test_measure_refuses_a_revision_other_than_the_pinned_one(tmp_path, capsys):
+    cli = load_cli()
+    status = cli.main([
+        "measure", "--split-dir", str(tmp_path), "--derived-train", str(tmp_path / "x.csv"),
+        "--text-column", "t", "--label-column", "l", "--id-column", "i",
+        "--cache-root", str(tmp_path / "c"), "--output-dir", str(tmp_path / "o"),
+        "--official-validation", str(tmp_path / "v.csv"),
+        "--frozen-lr", "0.01", "--tuning-artifact", str(tmp_path / "tuning.json"),
+        "--revision", "0" * 40,
+    ])
+    assert status == 2
+    assert "pinned diagnostic revision" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint snapshots must be independent of later training (Audit 026 review)
+# ---------------------------------------------------------------------------
+try:  # pragma: no cover - depends on the environment
+    import torch  # noqa: F401
+
+    TORCH = True
+except ImportError:  # pragma: no cover - the normal local state
+    TORCH = False
+
+requires_torch = pytest.mark.skipif(not TORCH, reason="torch is not installed locally")
+
+
+def test_the_runner_clones_every_checkpoint_tensor():
+    """Structural, runs locally: a bare `state_dict()` would alias live params.
+
+    `Module.state_dict()` hands back tensors that share storage with the live
+    parameters, so `saved[epoch] = head.state_dict()` would leave all 30 entries
+    tracking the optimizer and every "checkpoint" would end up holding the
+    final-epoch weights. The runner must clone. This catches a regression
+    without needing torch; `test_checkpoint_snapshots_survive_later_training`
+    proves the behaviour.
+    """
+    tree = ast.parse(CLI.read_text(encoding="utf-8"))
+    capture = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "capture")
+    body = ast.unparse(capture)
+    assert "state_dict()" in body
+    assert ".clone()" in body, "each checkpoint tensor must be cloned, not aliased"
+    # and the aliasing form must not be what is stored
+    assert "_store[epoch] = head.state_dict()" not in body
+
+
+@requires_torch
+def test_checkpoint_snapshots_survive_later_training():
+    """Behavioural: an early checkpoint must not drift to the final weights.
+
+    Three assertions, in order of what they rule out:
+
+    1. a **bare** `state_dict()` captured in the same run *does* alias — so the
+       hazard is real and this test is not vacuous;
+    2. the runner's cloned epoch-1 snapshot still differs from epoch 30;
+    3. restoring epoch 1 yields exactly epoch 1, not the final weights.
+    """
+    import torch
+
+    from unmark.evaluation.preg1_head import (
+        BoundRepresentations, build_head, train_head,
+    )
+    from unmark.evaluation.preg1_protocol import EPOCHS
+
+    cli = load_cli()
+    hidden, n_train, n_dev = 8, 40, 12
+    train_key = cli.representation_key(
+        Preg1Role.PROTOCOL_TRAIN, [f"train:{i:05d}" for i in range(n_train)],
+        "a" * 64, hidden)
+    dev_key = cli.representation_key(
+        Preg1Role.PROTOCOL_DEV, [f"train:{i:05d}" for i in range(n_dev)],
+        "a" * 64, hidden)
+    torch.manual_seed(0)
+    train = BoundRepresentations(torch.randn(n_train, hidden), train_key)
+    dev = BoundRepresentations(torch.randn(n_dev, hidden), dev_key)
+    train_labels = [i % 3 for i in range(n_train)]
+    dev_labels = [i % 3 for i in range(n_dev)]
+
+    cloned: dict[int, dict] = {}
+    aliased: dict[int, dict] = {}
+
+    def capture(epoch, score, head):
+        # exactly what the runner does
+        cloned[epoch] = {k: v.detach().clone() for k, v in head.state_dict().items()}
+        # the unsafe form, kept only to prove the hazard is real
+        aliased[epoch] = head.state_dict()
+
+    seed = 53148
+    run = train_head(
+        train, train_labels, dev, dev_labels,
+        learning_rate=0.01, seed=seed, epochs=EPOCHS, on_checkpoint=capture,
+    )
+    assert len(cloned) == EPOCHS
+
+    # 1. the hazard is real: the aliased epoch-1 entry now holds final weights.
+    assert torch.equal(aliased[1]["weight"], aliased[EPOCHS]["weight"]), (
+        "a bare state_dict() no longer aliases live parameters — the runner's "
+        "clone may be redundant, but this assumption must be reviewed, not assumed"
+    )
+
+    # 2. the cloned snapshot did NOT drift.
+    assert not torch.equal(cloned[1]["weight"], cloned[EPOCHS]["weight"])
+    assert not torch.equal(cloned[1]["weight"], aliased[1]["weight"])
+
+    # 3. restoring epoch 1 returns exactly epoch 1.
+    head = build_head(hidden, seed)
+    head.load_state_dict(cloned[1])
+    assert torch.equal(head.weight, cloned[1]["weight"])
+    assert torch.equal(head.bias, cloned[1]["bias"])
+    assert not torch.equal(head.weight, cloned[EPOCHS]["weight"]), (
+        "restoring an early checkpoint must not yield the final-epoch weights"
+    )
+
+    # and the selector's choice is restorable for any eligible epoch
+    assert run.selected.epoch in cloned
+
+
+@requires_torch
+def test_every_epoch_snapshot_is_a_distinct_object_with_its_own_storage():
+    """No two cloned checkpoints may share a tensor."""
+    import torch
+
+    from unmark.evaluation.preg1_head import BoundRepresentations, train_head
+    from unmark.evaluation.preg1_protocol import EPOCHS
+
+    cli = load_cli()
+    hidden = 8
+    key_t = cli.representation_key(
+        Preg1Role.PROTOCOL_TRAIN, [f"train:{i:05d}" for i in range(20)], "a" * 64, hidden)
+    key_d = cli.representation_key(
+        Preg1Role.PROTOCOL_DEV, [f"train:{i:05d}" for i in range(9)], "a" * 64, hidden)
+    torch.manual_seed(0)
+    train = BoundRepresentations(torch.randn(20, hidden), key_t)
+    dev = BoundRepresentations(torch.randn(9, hidden), key_d)
+
+    snaps: dict[int, dict] = {}
+
+    def capture(epoch, score, head):
+        snaps[epoch] = {k: v.detach().clone() for k, v in head.state_dict().items()}
+
+    train_head(train, [i % 3 for i in range(20)], dev, [i % 3 for i in range(9)],
+               learning_rate=0.01, seed=720, epochs=EPOCHS, on_checkpoint=capture)
+
+    pointers = {epoch: snaps[epoch]["weight"].data_ptr() for epoch in snaps}
+    assert len(set(pointers.values())) == EPOCHS, "checkpoints share tensor storage"

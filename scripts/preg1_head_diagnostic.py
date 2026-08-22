@@ -48,6 +48,8 @@ from unmark.evaluation.preg1_head import (  # noqa: E402
     LrCandidate,
     NO_SIGNIFICANCE_TEST,
     Preg1Role,
+    PairedDiagnostic,
+    PairedSeedResult,
     RepresentationCache,
     RepresentationKey,
     SplitMembership,
@@ -75,6 +77,9 @@ from unmark.evaluation.preg1_protocol import (  # noqa: E402
     PRIMARY_TASK,
     TRUNCATION,
     TUNING_SEEDS,
+    DERIVED_VALIDATION_CSV_SHA256,
+    PUBLISHED_LABEL_COUNTS,
+    PUBLISHED_SPLIT_SIZES,
     Preg1Protocol,
 )
 
@@ -145,15 +150,25 @@ def _label_index(label) -> int:
 
 
 def representation_key(
-    role: Preg1Role, sample_ids: Sequence[str], source_sha256: str, hidden_size: int
+    role: Preg1Role,
+    sample_ids: Sequence[str],
+    source_sha256: str,
+    hidden_size: int,
+    pathway: SystemPathway = TUNING_PATHWAY,
 ) -> RepresentationKey:
-    """Provenance for one cached representation set. Every field is locked."""
+    """Provenance for one cached representation set. Every field is locked.
+
+    `pathway` defaults to VANILLA so the tune path cannot name anything else;
+    the paired measurement passes BASE_ONLY explicitly for its own arm. The
+    pathway is part of the key, so a Vanilla cache can never be reloaded as
+    Base-only.
+    """
     return RepresentationKey(
         dataset=PRIMARY_DATASET,
         dataset_version=PRIMARY_DATASET_VERSION,
         task=PRIMARY_TASK,
         role=role,
-        pathway=TUNING_PATHWAY,
+        pathway=pathway,
         source_identity=source_sha256,
         ordered_id_digest=ordered_id_digest(sample_ids),
         tokenizer_id=ENCODER_CHECKPOINT,
@@ -400,18 +415,197 @@ def run_tune(args) -> int:
     return 0
 
 
+def load_tuning_artifact(path: Path, supplied_lr: float) -> dict:
+    """Read the persisted tuning artifact and bind the frozen LR to it.
+
+    The caller may not substitute a learning rate. `--frozen-lr` must equal the
+    `selected_learning_rate` the artifact records, and that selection must have
+    been made on VANILLA — otherwise the shared LR would not be the one Vanilla
+    tuning chose, and the paired comparison would silently stop being paired on
+    the protocol it claims.
+    """
+    if not path.is_file():
+        raise EvaluationContractViolation(f"tuning artifact not found: {path}")
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise EvaluationContractViolation(f"tuning artifact is malformed: {error}") from error
+
+    selection = artifact.get("selection", {})
+    selected = selection.get("selected_learning_rate")
+    if selected is None:
+        raise EvaluationContractViolation(
+            "tuning artifact records no selected_learning_rate"
+        )
+    if selected != supplied_lr:
+        raise EvaluationContractViolation(
+            f"--frozen-lr {supplied_lr!r} does not match the tuning artifact's "
+            f"selected_learning_rate {selected!r}. The LR is not a caller choice."
+        )
+    selected_on = selection.get("frozen", {}).get("selected_on")
+    if selected_on != SystemPathway.VANILLA.value:
+        raise EvaluationContractViolation(
+            f"the tuning artifact selected on {selected_on!r}; the primary LR must "
+            "be selected on VANILLA"
+        )
+    if artifact.get("official_validation_used") is not False:
+        raise EvaluationContractViolation(
+            "the tuning artifact does not record official_validation_used=false"
+        )
+    return artifact
+
+
 def run_measure(args) -> int:
-    """Gated on an already-frozen LR. **Not executed in this build.**"""
+    """The paired Vanilla-vs-Base-only measurement: 5 seeds x 2 pathways.
+
+    Official validation is read **here and only here**, after the LR is frozen.
+    It never selects a checkpoint and never influenced the learning rate.
+    """
+    import torch
+
+    from unmark.evaluation.pathways import pathway_text
+    from unmark.evaluation.preg1_head import build_head, score_measurement, train_head
+
+    output_dir = Path(args.output_dir)
+    if output_dir.exists():
+        print(f"REFUSED: {output_dir} already exists; measurement artifacts are immutable",
+              file=sys.stderr)
+        return 2
+
+    artifact = load_tuning_artifact(Path(args.tuning_artifact), args.frozen_lr)
     frozen = FrozenLearningRate(value=args.frozen_lr)
     print(f"  frozen LR      : {frozen.value:g} (selected on {frozen.selected_on.value})")
+    print(f"  tuning head    : {artifact.get('repository_head')}")
     print(f"  seeds          : {list(MEASUREMENT_SEEDS)}")
-    print(f"  measured on    : {Preg1Role.OFFICIAL_VALIDATION.value}")
-    print("\nMEASUREMENT NOT EXECUTED IN THIS BUILD.")
-    print(
-        "  The paired Vanilla-vs-Base-only measurement is the first downstream\n"
-        "  number in this project and is deliberately not wired here. `tune`\n"
-        "  must complete and its LR be reviewed first."
+
+    pool = load_derived_pool(
+        args.derived_train, args.text_column, args.label_column, args.id_column
     )
+    membership = load_membership(args.split_dir)
+    membership.require_partitions([sample_id for sample_id, _, _ in pool.records])
+
+    # Official validation: its own file, gated on its own locked identity.
+    validation = load_derived_pool(
+        args.official_validation, args.text_column, args.label_column, args.id_column,
+        expected_sha256=DERIVED_VALIDATION_CSV_SHA256,
+        expected_rows=PUBLISHED_SPLIT_SIZES["validation"],
+        expected_label_counts=dict(PUBLISHED_LABEL_COUNTS["validation"]),
+    )
+    print(f"  official validation : {len(validation.records)} rows, "
+          f"sha {validation.source_sha256[:16]}… (measurement only)")
+
+    tokenizer, encoder = load_frozen_encoder(args.revision)
+    hidden_size = int(encoder.config.hidden_size)
+    cache_root = Path(args.cache_root)
+
+    # --- representations: one per (role, pathway) -------------------------
+    bound: dict[tuple[Preg1Role, SystemPathway], object] = {}
+    keys: dict[str, RepresentationKey] = {}
+    for pathway in (SystemPathway.VANILLA, SystemPathway.BASE_ONLY):
+        for role in TUNING_ROLES:
+            ids = membership.ids_for(role)
+            texts, _ = materialise_split(pool, ids, role)
+            key = representation_key(role, ids, pool.source_sha256, hidden_size, pathway)
+            name = f"{role.value}.{pathway.value}"
+            keys[name] = key
+            bound[(role, pathway)] = extract_or_load(
+                cache_root, name, key, tokenizer, encoder,
+                [pathway_text(t, pathway) for t in texts],
+            )
+        # official validation, same treatment, measurement role
+        ids = [sample_id for sample_id, _, _ in validation.records]
+        texts = [text for _, text, _ in validation.records]
+        key = representation_key(
+            Preg1Role.OFFICIAL_VALIDATION, ids, validation.source_sha256,
+            hidden_size, pathway,
+        )
+        name = f"{Preg1Role.OFFICIAL_VALIDATION.value}.{pathway.value}"
+        keys[name] = key
+        bound[(Preg1Role.OFFICIAL_VALIDATION, pathway)] = extract_or_load(
+            cache_root, name, key, tokenizer, encoder,
+            [pathway_text(t, pathway) for t in texts],
+        )
+
+    labels = {
+        role: materialise_split(pool, membership.ids_for(role), role)[1]
+        for role in TUNING_ROLES
+    }
+    validation_labels = [_label_index(label) for _, _, label in validation.records]
+
+    # --- 5 seeds x 2 pathways --------------------------------------------
+    print(f"\n{len(MEASUREMENT_SEEDS) * 2} runs = {len(MEASUREMENT_SEEDS)} seeds "
+          f"x 2 pathways, lr={frozen.value:g}, {EPOCHS} epochs each")
+    results = []
+    for index, seed in enumerate(MEASUREMENT_SEEDS, start=1):
+        scored = {}
+        for pathway in (SystemPathway.VANILLA, SystemPathway.BASE_ONLY):
+            print(f"\n[{index}/{len(MEASUREMENT_SEEDS)}] seed={seed} {pathway.value}")
+            snapshots: dict[int, dict] = {}
+
+            def capture(epoch, score, head, _store=snapshots):
+                _store[epoch] = {k: v.detach().clone() for k, v in head.state_dict().items()}
+
+            run = train_head(
+                bound[(Preg1Role.PROTOCOL_TRAIN, pathway)], labels[Preg1Role.PROTOCOL_TRAIN],
+                bound[(Preg1Role.PROTOCOL_DEV, pathway)], labels[Preg1Role.PROTOCOL_DEV],
+                learning_rate=frozen.value, seed=seed, epochs=EPOCHS,
+                batch_size=BATCH_SIZE, on_checkpoint=capture,
+            )
+            chosen = run.selected  # the committed checkpoint selector
+            print(f"    selected epoch {chosen.epoch} on {run.scored_on.value}: "
+                  f"dev macro-F1 {chosen.macro_f1:.4f}")
+
+            head = build_head(hidden_size, seed)
+            head.load_state_dict(snapshots[chosen.epoch])
+            f1, accuracy = score_measurement(
+                head, bound[(Preg1Role.OFFICIAL_VALIDATION, pathway)], validation_labels
+            )
+            print(f"    official validation: macro-F1 {f1:.4f}  acc {accuracy:.4f}")
+            scored[pathway] = (f1, accuracy)
+
+        results.append(PairedSeedResult(
+            seed=seed,
+            vanilla_macro_f1=scored[SystemPathway.VANILLA][0],
+            vanilla_accuracy=scored[SystemPathway.VANILLA][1],
+            base_only_macro_f1=scored[SystemPathway.BASE_ONLY][0],
+            base_only_accuracy=scored[SystemPathway.BASE_ONLY][1],
+        ))
+        print(f"    delta (Vanilla - Base-only): macro-F1 "
+              f"{results[-1].macro_f1_delta:+.4f}  acc {results[-1].accuracy_delta:+.4f}")
+
+    diagnostic = PairedDiagnostic(learning_rate=frozen, results=tuple(results))
+    report = diagnostic.to_dict()
+    report["repository_head"] = args.repository_head
+    report["tuning_provenance"] = {
+        "repository_head": artifact.get("repository_head"),
+        "selected_learning_rate": artifact["selection"]["selected_learning_rate"],
+        "selection_rule": artifact["selection"].get("rule"),
+        "official_validation_used_during_tuning": artifact.get("official_validation_used"),
+    }
+    report["representations"] = {name: key.to_dict() for name, key in keys.items()}
+    report["boundaries"] = {
+        "official_test_used": False,
+        "official_validation_role": "measurement only; never selection",
+        "raw_text_persisted": False,
+        "encoder_trained": False,
+    }
+
+    output_dir.mkdir(parents=True)
+    (output_dir / "measurement.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    delta = report["delta_vanilla_minus_base_only"]
+    print(f"\nVanilla   mean macro-F1 {report['vanilla']['mean_macro_f1']:.4f} "
+          f"(sd {report['vanilla']['sample_stdev_macro_f1']:.4f})")
+    print(f"Base-only mean macro-F1 {report['base_only']['mean_macro_f1']:.4f} "
+          f"(sd {report['base_only']['sample_stdev_macro_f1']:.4f})")
+    print(f"Delta     mean macro-F1 {delta['mean_macro_f1']:+.4f} "
+          f"(sd {delta['sample_stdev_macro_f1']:.4f})")
+    print(f"\nWrote {output_dir / 'measurement.json'}")
+    print("\nThis is a DESCRIPTIVE burden measurement. It defines no threshold, "
+          "computes no p-value, and does not test UNMARK.")
     return 0
 
 
@@ -449,13 +643,28 @@ def main(argv=None) -> int:
     )
     measure.add_argument(
         "--frozen-lr", required=True, type=float,
-        help="the LR a completed VANILLA tuning run selected; must be in the grid",
+        help="the LR a completed VANILLA tuning run selected; must be in the grid "
+             "AND equal the tuning artifact's selected_learning_rate",
+    )
+    measure.add_argument(
+        "--tuning-artifact", required=True,
+        help="tuning.json from the completed VANILLA sweep; the frozen LR is "
+             "verified against it, not taken on trust",
+    )
+    measure.add_argument(
+        "--revision", default=ENCODER_REVISION,
+        help="encoder revision; defaults to the pinned probe revision and is "
+             "validated against it",
+    )
+    measure.add_argument(
+        "--repository-head", default=None,
+        help="commit sha recorded as provenance in the measurement artifact",
     )
 
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "tune" and args.revision != ENCODER_REVISION:
+        if args.revision != ENCODER_REVISION:
             raise EvaluationContractViolation(
                 f"--revision must be the pinned diagnostic revision {ENCODER_REVISION}, "
                 f"got {args.revision}. D-B3B0-002 is OPEN; a different backbone needs "

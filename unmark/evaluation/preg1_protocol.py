@@ -105,6 +105,22 @@ DERIVED_TRAIN_LABEL_COUNTS: dict[str, int] = {
 the group conflicting. `neutral` is unchanged, so the 4% minority class the
 metric choice depends on is not affected."""
 
+DERIVED_VALIDATION_CSV_SHA256 = (
+    "9c475c8998871c0c7317ee200b3e7db827128cd2dfec9de5c689aca299acc8d0"
+)
+"""SHA-256 of the derived official-validation csv.
+
+**Not a new decision.** The value was established by the D-PREG1-011
+reproduction recipe and re-verified by C24-5B-R1 (Audit 024 §S.8); it is
+recorded here so the measurement runner can gate on it instead of trusting a
+filename. Its row count and label counts are **not** restated -- they come from
+`PUBLISHED_SPLIT_SIZES["validation"]` and
+`PUBLISHED_LABEL_COUNTS["validation"]`, which already carry them.
+
+Official validation is measurement-only (D-PREG1-004b): reading it is permitted
+**after** the learning rate is frozen, and never for selection.
+"""
+
 DERIVED_TRAIN_CSV_SHA256 = (
     "a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301"
 )
