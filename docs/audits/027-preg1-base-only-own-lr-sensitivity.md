@@ -8,6 +8,7 @@
 | **Scope** | Wire the **precommitted** SECONDARY own-LR sensitivity as a `sensitivity` subcommand. **Run nothing.** |
 | **Predecessor** | [026](026-preg1-paired-measurement-runner.md) — the primary paired measurement |
 | **Type** | Wiring + tests. No protocol change, no model, no data, no training, no score |
+| **Runtime Review** | **2026-08-22** — real Colab execution attempted at `b751c3a`; **stopped before training** with `ImportError`. Packaging defect, not a scientific one. Repaired; see §M. |
 
 ---
 
@@ -15,7 +16,11 @@
 
 **IMPLEMENTATION PASS — SECONDARY SENSITIVITY WIRED; NOT RUN**
 
-**2 383 local tests pass, 91 skip** (2 353 / 91 before — **+30**).
+At creation: **2 383 local tests passed, 91 skipped** (2 353 / 91 before — **+30**).
+
+After the Runtime Review (§M): **2 395 pass, 91 skip, and 2 deliberately FAIL**
+— the new committed-tree regression test, which stays red until the omitted
+file is committed. That red is the repair signal, not a defect in the wiring.
 
 No scientific constant changed. **No new scientific decision.** The analysis
 wired here was precommitted in `preg1_protocol` *before any primary result
@@ -250,6 +255,11 @@ sweep, no Phase B measurement, no artifact written. There is **no Base-only
 own-LR result in this repository**, and this audit reports none. Every check
 above is structural or local-fixture based.
 
+One execution was **attempted** on Colab at `b751c3a` and stopped at import time,
+before the encoder loaded and before any head was trained (§M). An attempt that
+fails during module import produces no science; the statement above is unchanged
+by it.
+
 The local `.venv` remains ML-free. Nothing was downloaded, trained or scored.
 
 ---
@@ -306,14 +316,143 @@ The local `.venv` remains ML-free. Nothing was downloaded, trained or scored.
 
 ## L. NEXT ACTION
 
-**Colab execution of the secondary sensitivity**, at a reviewed commit, with the
-persisted primary `tuning.json` and `measurement.json` supplied as inputs. The
+**First: commit `unmark/evaluation/preg1_protocol.py`** — the committed tree is
+unimportable without it (§M), and the new contract test stays red until it lands.
+
+**Then: Colab execution of the secondary sensitivity**, at that reviewed commit,
+with the persisted primary `tuning.json` and `measurement.json` as inputs. The
 result is reported *alongside* the primary shared-LR burden, never in place of
 it.
 
 ---
 
+## M. RUNTIME REVIEW — 2026-08-22
+
+### M.1 What was attempted
+
+Real Colab execution of the `sensitivity` subcommand at HEAD
+`b751c3a368f6ed3ff320bb7918866d4b2ccb45c8`.
+
+**It stopped during module import.** The encoder was never loaded, no
+representation was extracted, no head was trained, no checkpoint selected, no
+score computed, no artifact written. Execution never reached Phase A.
+
+```
+ImportError: cannot import name 'SECONDARY_ANALYSIS_LABEL'
+from 'unmark.evaluation.preg1_protocol'
+```
+
+### M.2 Root cause — a packaging defect, not a scientific one
+
+Commit `b751c3a` contains **five** of the six paths this work touched:
+
+| Path | In `b751c3a`? |
+|---|---|
+| `scripts/preg1_head_diagnostic.py` | yes |
+| `unmark/evaluation/preg1_head.py` | yes |
+| `tests/test_preg1_head.py` | yes |
+| `tests/test_preg1_runner.py` | yes |
+| `docs/audits/027-…md` | yes |
+| **`unmark/evaluation/preg1_protocol.py`** | **NO — still unstaged** |
+
+The two importers were committed; the file **defining** what they import was
+not. Reading the committed tree directly confirms the exact breakage:
+
+| Committed importer | Unresolvable protocol symbols |
+|---|---|
+| `unmark/evaluation/preg1_head.py` | `SECONDARY_ANALYSIS_LABEL` |
+| `scripts/preg1_head_diagnostic.py` | `PRIMARY_ANALYSIS_LABEL`, `SECONDARY_ANALYSIS_LABEL` |
+
+**Why the local suite passed.** The suite imports the **working tree**, where
+the constants have existed and been correct throughout. Colab does not run the
+working tree — it runs `git clone`, i.e. the **committed** tree. Nothing in the
+suite compared the two, so a file omitted from a commit was invisible locally
+and fatal remotely. That gap, not the sensitivity logic, is the defect.
+
+### M.3 The repair
+
+Of the two candidate fixes, **option 1 is correct and was already implemented**:
+the label is single-sourced in `preg1_protocol`. Option 2 was checked and is not
+available — no existing constant carries the short human-readable label.
+`SECONDARY_SENSITIVITY` is the long precommitment prose and `PRIMARY_LR_CAVEAT`
+is the upper-bound disclaimer; reusing either, or inlining the string at each
+call site, would duplicate or dilute the semantics the constant exists to fix.
+
+So **no source change was required**. The uncommitted diff is exactly:
+
+```
++SECONDARY_ANALYSIS_LABEL = "SECONDARY OWN-LR SENSITIVITY"
++PRIMARY_ANALYSIS_LABEL   = "PRIMARY SHARED-LR"
+```
+
+plus their docstrings — **11 added lines, 0 removed, 0 scientific values
+touched**. All 13 locked constants (`LR_GRID`, `TUNING_SEEDS`,
+`MEASUREMENT_SEEDS`, `EPOCHS`, `BATCH_SIZE`, `MAX_LENGTH`, `PADDING`,
+`TRUNCATION`, `ENCODER_CHECKPOINT`, `ENCODER_REVISION`, the two derived-CSV
+digests, `PREG1_PROTOCOL_VERSION`) were compared between `HEAD` and the working
+tree and are **byte-identical**.
+
+**The repair is therefore an act of committing, not of coding:**
+`unmark/evaluation/preg1_protocol.py` must be included in the commit. Simulating
+that commit — HEAD's importers against the working tree's protocol — resolves
+all six importers, so that one file is the entire fix. Per this project's
+standing rule the file is left **unstaged** for the researcher.
+
+### M.4 Regression test
+
+`tests/test_preg1_import_contract.py` (new, ML-free, 14 cases).
+
+The test that matters is `test_committed_tree_resolves_every_protocol_symbol`:
+it reads the importers **and** the protocol from the *same* commit and asserts
+every imported symbol is defined there. Because both sides come from one commit,
+it checks that commit's internal consistency and never compares HEAD against the
+working tree — so the project's standing "leave everything unstaged" workflow
+does not trip it. It fails only when a commit is itself unimportable.
+
+Run against `b751c3a` it **fails now**, naming exactly the two importers and
+three symbols above — it reproduces the Colab `ImportError` locally, in
+milliseconds, without torch. **These two failures are expected and are the
+regression proof.** They turn green the moment the omitted file is committed;
+they must not be silenced.
+
+Supporting cases: the working-tree equivalent, an importer-list completeness
+check so a new importer cannot slip past the contract, and a single-source check
+that the label is defined exactly once repository-wide and hard-coded nowhere.
+
+### M.5 Scientific status — unchanged
+
+**The secondary own-LR sensitivity remains NOT RUN.** No Phase A sweep, no
+Phase B measurement, **no Base-only own-LR result exists** and none is reported
+here. The primary shared-LR result is untouched: not recomputed, not adjusted,
+not replaced. No scientific constant, seed, split, role, trainer, checkpoint
+rule, metric or protocol changed in this review.
+
+### M.6 Self-audit for this review
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Root cause identified from the repository, not guessed | **yes** — committed blobs read directly |
+| 2 | Smallest correct change | **yes** — no source edit; the constants were already right |
+| 3 | Option 1 vs option 2 actually evaluated | **yes** — §M.3 |
+| 4 | No duplicated constant with the same meaning | **yes** — one definition, asserted by test |
+| 5 | Label text unchanged | **yes** — `SECONDARY OWN-LR SENSITIVITY` |
+| 6 | Primary result untouched | **yes** |
+| 7 | LR grid, tuning seeds, measurement seeds unchanged | **yes** — byte-compared vs HEAD |
+| 8 | Datasets, roles, trainer, checkpoint rule, metrics unchanged | **yes** |
+| 9 | Regression test added and proven to catch the exact bug | **yes** — currently red at `b751c3a` |
+| 10 | Test is ML-free | **yes** — `ast` + `git show`; no torch |
+| 11 | Focused and lightweight suites run | **yes** — 2 395 pass, 91 skip, 2 intended failures |
+| 12 | No Audit 028 created | **yes** — 027 revised in place |
+| 13 | No Base-only own-LR result claimed | **yes** |
+| 14 | Everything unstaged; no prohibited git operation | **yes** |
+
+---
+
 **STATUS: IMPLEMENTATION PASS — SECONDARY OWN-LR SENSITIVITY WIRED; NOT RUN**
+**RUNTIME REVIEW: COLAB RUN AT `b751c3a` STOPPED AT IMPORT, BEFORE TRAINING**
+**ROOT CAUSE: `preg1_protocol.py` OMITTED FROM THE COMMIT — PACKAGING, NOT SCIENCE**
+**REPAIR: COMMIT THAT FILE; NO SOURCE CHANGE WAS REQUIRED**
+**SECONDARY SCIENTIFIC EXECUTION: NOT RUN — NO BASE-ONLY OWN-LR RESULT EXISTS**
 **PRIMARY SHARED-LR RESULT: UNCHANGED**
 **NO NEW SCIENTIFIC DECISION**
 **ALL CHANGES UNSTAGED**

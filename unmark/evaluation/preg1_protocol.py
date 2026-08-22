@@ -468,6 +468,17 @@ SECONDARY_SENSITIVITY = (
     "headline primary shared-LR result."
 )
 
+SECONDARY_ANALYSIS_LABEL = "SECONDARY OWN-LR SENSITIVITY"
+"""How the secondary analysis names itself, everywhere it is reported.
+
+Single-sourced so an artifact, a console banner and a test cannot drift into
+calling it something softer. It is not an upper bound, not a lower bound, not a
+significance result, and not a corrected primary result.
+"""
+
+PRIMARY_ANALYSIS_LABEL = "PRIMARY SHARED-LR"
+"""The headline burden result: both arms at the LR Vanilla tuning selected."""
+
 
 # ---------------------------------------------------------------------------
 # Seeds and reporting
