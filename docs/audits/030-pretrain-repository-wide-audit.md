@@ -19,15 +19,33 @@
 | **Revision 9 — fourth real smoke** | 2026-08-23 — the **fourth real Colab no-update smoke** ran at `6bd6452`. All corpus, inventory and preparation gates passed (14 + 31 + 30 + 17). It stopped at the **test gate**: the §X real-seam tests reached `evaluate` and hit `Expected all tensors to be on the same device`. A **true positive** — the tool moved the encoder to CUDA and left every batch on the CPU, so real PhoBERT would have failed identically. Repaired in the shared layer, not the fixture. **The real validation command was never run.** See **§Y** |
 | **Revision 10 — fifth smoke probe** | 2026-08-23 — the fifth smoke reached the **device runtime gate** at `9651610` and **the device contract passed on real CUDA: 7 passed, 0 failed, 0 skipped**. The run stopped only because the orchestrator expected the string `"8 passed"`, a **prose miscount in §Y.6** — the file has always held **7** tests, and all nine claimed semantic assertions are present across them. **No code or test was at fault; none was changed.** See **§Z** |
 | **Revision 11 — first full real validation** | 2026-08-23 — at `a5da538` the **full four-condition real validation PASSED**: 11 443 dev chunks, **810 forward passes**, CUDA, fp32, adapter 3 551 232 frozen-encoder split, **0 backward / 0 steps / 0 updates**, parameters hash-identical before and after. The subsequent `stage1_runner.py smoke` then failed at **0.09 s** with `AttributeError: 'Namespace' object has no attribute 'completion_dir'` — a **parser omission** (`smoke` never declared an option its handler reads). Repaired; the validation surface is byte-unchanged. See **§AA** |
+| **Revision 12 — no-update smoke CLOSED** | 2026-08-23 — the §AA CLI repair was committed and the **corrected real runner smoke PASSED** at `2363e33`: return code 0, 24.36 s, real encoder frozen (`encoder_trainable_parameters 0`, adapter 3 551 232), prepared corpus verified against its Drive `COMPLETE.json`, real forward `loss 0.6354566812515259`, and `backward_called false` / `optimizer_constructed false` / `parameters_updated 0`. With §AA.1 this closes the **PRE-TRAIN no-update smoke gate**. AA.1 was reused, not rerun. See **§AB** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN RUNNER-SMOKE CLI REPAIR PASS — READY TO COMMIT AND RERUN SMOKE ONLY**
+**PRE-TRAIN NO-UPDATE SMOKE GATE PASS — TRAINING DEVICE CONTRACT REMAINS**
 
-> **§AA is the current verdict, and it carries this audit's largest positive
+> **§AB is the current verdict. The PRE-TRAIN no-update smoke gate is CLOSED.**
+> The corrected real runner smoke passed at `2363e335` — real encoder frozen, real
+> prepared corpus verified against its Drive `COMPLETE.json`, a real forward, and
+> `backward_called false` / `optimizer_constructed false` / `parameters_updated 0`
+> — which together with §AA.1's full four-condition validation (810 forwards on
+> CUDA, parameters hash-identical before and after) is everything §N asked for.
+>
+> **This does NOT authorise training.** One known implementation blocker remains,
+> and it is the only one Audit 030 has identified: **`execute_stage` performs no
+> accelerator placement, so the training-device operational contract is unchosen**
+> (§Y.3). A dedicated review must close it. Note that the runner smoke reports no
+> device of its own — the CUDA evidence is §AA.1 and §Z, not §AB.
+>
+> §T–§AA are preserved verbatim.
+
+~~**PRE-TRAIN RUNNER-SMOKE CLI REPAIR PASS — READY TO COMMIT AND RERUN SMOKE ONLY**~~ **— superseded by §AB**
+
+> **§AA was the previous verdict, and it carries this audit's largest positive
 > result: the first full four-condition real validation PASSED** — 11 443 dev
 > chunks, 810 forward passes on real PhoBERT under CUDA/fp32, with the no-update
 > boundary held by parameter-hash equality before and after (0 backward, 0
@@ -2567,3 +2585,176 @@ for it.
 **FULL-VALIDATION EXECUTABLE SURFACE BYTE-UNCHANGED — NO RE-RUN NEEDED**
 **TRAINING DEVICE PLACEMENT REMAINS A SEPARATE UNRESOLVED OPERATIONAL ITEM**
 **ONE CORRECTED REAL RUNNER SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM ONE PASSED**
+
+---
+
+## AB. FIFTH REAL NO-UPDATE SMOKE CLOSED — CORRECTED RUNNER SMOKE PASS
+
+**Revision 12.** The §AA repair was committed and the corrected runner smoke was
+run against the real model and the real prepared corpus. **It passed.** With
+§AA.1's full validation already established, the **PRE-TRAIN no-update smoke gate
+is closed**.
+
+This section is documentation only: no production code, test or constant changed.
+
+### AB.1 Continuation boundary — why AA.1 was reused, not rerun
+
+A still-live runtime that had completed the successful full validation at
+`a5da53805498a12ed64ffa28a6a13232dc8e4b1b` was switched to exact committed HEAD
+`2363e33588c4ee70402ea0074f26baf93cdc88d7`, clean repository.
+
+The diff between the two consisted **exactly** of:
+
+```
+docs/audits/030-pretrain-repository-wide-audit.md
+scripts/stage1_runner.py
+tests/test_stage1_runner_cli_contract.py
+```
+
+The full-validation **executable surface was independently checked byte-identical**
+to `a5da5380` — the measurement tool, validation, data, objective, modeling,
+preflight, protocol, contracts, checkpoint, chunking, orthography, linguistics,
+`configs/` and `docs/spec/decisions.md`. One audit file, one CLI file, one new
+test file: nothing the validation runs.
+
+> **AA.1's evidence therefore remains valid and was NOT rerun.** The 1 918 s
+> validation stands on its own HEAD, and this continuation neither repeats nor
+> weakens it.
+
+Retained runtime inputs were re-verified before the smoke:
+
+| | |
+|---|---|
+| Inventory bytes | **116 290** |
+| Inventory sha256 | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| Prepared membership digest | `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6` |
+| `tests/test_stage1_runner_cli_contract.py` | **19 passed** |
+
+The public smoke CLI now exposes exactly `--prepared-corpus`, `--completion-dir`,
+`--revision`, `--repository-head` — the contract §AA repaired.
+
+### AB.2 The corrected real runner smoke
+
+```
+python -u scripts/stage1_runner.py smoke \
+  --prepared-corpus /content/unmark-stage1-prepared-aa49785eadcb \
+  --completion-dir  /content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb \
+  --revision        01daacda68afe13d83023d16ec647239e344a1e6 \
+  --repository-head 2363e33588c4ee70402ea0074f26baf93cdc88d7
+```
+
+**Completed successfully. Return code 0, wall time 24.36 s.**
+
+This is the invocation shape §AA.2 Attempt 1 tried and argparse rejected: two
+roots, payload on local disk and `COMPLETE.json` on Drive. It now works, which is
+the point of the repair.
+
+**Gates, in the order they ran:**
+
+| Gate | Evidence |
+|---|---|
+| Scientific inputs preflight | **VERIFIED** — eligibility `VIETNAMESE_SYLLABLE_INVENTORY` |
+| Inventory identity | sha256 `78eeb840…` |
+| Prepared corpus | **VERIFIED against** `/content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb/COMPLETE.json` |
+| Chunk membership digest | `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6` |
+| Loaded | train **2 621 624**, dev **11 443** chunks in **12.9 s** |
+| Process RSS after load | **3.78 GB** |
+
+Both preflights ran **before** the model, as §W and F1 require, and the
+`--completion-dir` the smoke was given is the marker it actually verified against.
+
+**Real forward result** (`batch_size` 8, `lambda_align` 1.0, `lambda_clean` 1.0):
+
+| | |
+|---|---|
+| `loss` | **0.6354566812515259** |
+| `loss_align` / `mean_distance_align` | **0.31667956709861755** |
+| `loss_clean` / `mean_distance_clean` | **0.3187771439552307** |
+
+**Model contract:**
+
+| | |
+|---|---|
+| `encoder_trainable_parameters` | **0** |
+| `encoder_training_mode` | **false** |
+| `hidden_size` | **768** |
+| `precision` | **fp32** |
+| `trainable_parameters` | **3 551 232** |
+| `trainable_tensors` | **8** |
+
+**No-update evidence:**
+
+| | |
+|---|---|
+| `smoke` | **`STAGE1_NO_UPDATE_FORWARD_ONLY`** |
+| `backward_called` | **false** |
+| `optimizer_constructed` | **false** |
+| `parameters_updated` | **0** |
+| `repository_head` | `2363e33588c4ee70402ea0074f26baf93cdc88d7` |
+
+### AB.3 The runner smoke's device is NOT claimed
+
+**The runner-smoke report contains no device field** — its keys are `smoke`,
+`repository_head`, `model_contract`, `losses`, `optimizer_constructed`,
+`backward_called`, `parameters_updated`. **This audit therefore does not describe
+it as a CUDA runner smoke.** Nothing about the accelerator is asserted from it.
+
+The repository's CUDA evidence comes from elsewhere and is unaffected:
+
+* **§AA.1** — the full four-condition real validation, explicitly on CUDA (RTX PRO
+  6000 Blackwell, torch 2.11.0+cu128, CUDA 12.8), 810 forward passes;
+* **§Z** — the device-contract runtime tests, **7 passed, 0 failed, 0 skipped** on
+  a real CUDA host.
+
+That distinction matters because of what remains open in AB.5.
+
+### AB.4 PRE-TRAIN NO-UPDATE SMOKE GATE: **PASS**
+
+Taken with §AA.1, the no-update gate this audit has been driving toward since §N
+is closed:
+
+* the **real encoder** loaded at the pinned revision, frozen, `encoder_trainable_parameters 0`;
+* the **real prepared corpus** verified against its own `COMPLETE.json` before model load;
+* the **real inventory** verified, eligibility resolved on the scientific path;
+* a **real forward** producing real losses on the real objective;
+* and **zero** optimizers, **zero** backward calls, **zero** parameter updates —
+  in AA.1 additionally proved by parameter-hash equality before and after.
+
+**This is NOT a statement that training is authorised.**
+
+### AB.5 The one remaining known blocker
+
+> **`execute_stage` performs no accelerator placement.** The training path never
+> moves the model to a device, so Stage-1 training as wired would run on the CPU.
+> Which device training uses, and how it is selected, is an **operational contract
+> nobody has chosen** — first recorded in **§Y.3** and deliberately left unresolved
+> in §AA and here.
+
+This is now the **only known pre-training implementation blocker identified by
+Audit 030**, subject to the forthcoming dedicated training-device review. It is
+**not resolved in this task**, and the note in AB.3 is why: the runner smoke's
+silence about its device is precisely the gap that review must close.
+
+### AB.6 Preserved
+
+§T through §AA are preserved verbatim. Unchanged and re-verified at this HEAD:
+`vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6`, transformers
+4.57.6, fp32, `MAX_LENGTH` 256 with `ON_OVERFLOW FAIL` and truncation not offered,
+batch 128, eval every 500, checkpoint cadence 500, validation seed 19225,
+corruption seed 35422, `PI_STRIP` 0.25, dev documents 5000, 20 000 → 40 000
+continuation, best + last, adapter 3 551 232 trainable parameters, the LR grid and
+the r grid, the inventory identity, the prepared corpus, Stage 6, and the official
+UIT-VSFC TEST seal.
+
+`docs/spec/decisions.md` is unchanged. No Audit 031. No executable or test diff.
+
+**STATUS: PRE-TRAIN NO-UPDATE SMOKE GATE PASS — TRAINING DEVICE CONTRACT REMAINS**
+**THE CORRECTED REAL RUNNER SMOKE COMPLETED: RETURN CODE 0, 24.36 s, REAL MODEL, REAL CORPUS**
+**`STAGE1_NO_UPDATE_FORWARD_ONLY` — backward false, optimizer false, parameters_updated 0**
+**PREPARED CORPUS VERIFIED AGAINST ITS DRIVE `COMPLETE.json`; MEMBERSHIP DIGEST `250859a5…78413d6`**
+**§AA's `--completion-dir` REPAIR CONFIRMED BY THE VERY INVOCATION ARGPARSE ONCE REJECTED**
+**AA.1's FULL VALIDATION REUSED, NOT RERUN — EXECUTABLE SURFACE BYTE-IDENTICAL TO `a5da5380`**
+**THE RUNNER SMOKE REPORTS NO DEVICE; IT IS NOT CLAIMED AS A CUDA RUN (CUDA EVIDENCE: §AA.1, §Z)**
+**DOCUMENTATION ONLY — NO PRODUCTION CODE, NO TEST, NO CONSTANT, NO DECISION CHANGED**
+**ONE KNOWN BLOCKER REMAINS: THE TRAINING-DEVICE OPERATIONAL CONTRACT (§Y.3)**
+**THIS DOES NOT AUTHORISE TRAINING**
