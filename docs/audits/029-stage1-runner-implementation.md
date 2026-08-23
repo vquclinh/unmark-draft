@@ -4,17 +4,18 @@
 |---|---|
 | **Audit id** | 029 |
 | **Created (UTC)** | 2026-08-22 |
-| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), then the performance-regression investigation and ordered parallel compute (§Y) |
+| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), the performance investigation and ordered parallel compute (§Y), then the source-coordinate chunking repair (§Z) |
 | **Original baseline HEAD** | `5b07430` (`docs: lock Stage-1 scientific configuration`) — the state at creation |
-| **Current baseline HEAD** | `cc2b710` (`fix: repair resumable corpus preparation wiring`) |
+| **Current baseline HEAD** | `2f6d024` (`perf: add ordered parallel Stage-1 preparation`) |
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Scope — as created** | *(historical, superseded)* "Implement the complete pre-training Stage-1 execution stack from the locked Audit 028 configuration. **Execute none of it.**" That was true on 2026-08-22 and is **no longer** the state: the stack has since been run repeatedly against the real pinned corpus. |
-| **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. Stages 1-5 execute and pass on the real corpus; Stage 6 is implemented, streamed and resumable but **has never completed and has never committed one checkpoint interval**. Stage-1 *training* is implemented but unexecuted and out of scope here. |
-| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§Y each record a defect, or an investigation of one, that surfaced only against the real corpus or the real pinned tokenizer, not in the local suite. §Y is the exception that proves the discipline: the reported regression was **not** reproducible from the code. |
-| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1); at `f9c23fe` it **crashed at document 0** on runner wiring (§W); at `cc2b710` it ran to **500 documents / 9 862 chunks in 119.2 s (4.2 docs/s)** and was **stopped deliberately** before the first checkpoint (§Y). |
-| **What has NOT run** | **No completed Stage-6 prepare. No Stage-6 checkpoint interval ever committed. No real Drive resume. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
-| **Next step** | The real pinned-tokenizer **multicore Drive probe** (§A): benchmark **workers 1/2/4/8** → read the §Y.4 timing breakdown for the compute/writer/checkpoint shares → reach a committed **5 000-document checkpoint** → **deliberate kill** → **cold-process RESUME** → next committed checkpoint. **16 workers only if 8 still scales strongly and memory is safe.** Not the full corpus run, and not training — **neither is authorised by this audit**. |
+| **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. Stages 1-5 execute and pass on the real corpus; Stage 6 is implemented, streamed and durably resumable, and **real Drive checkpointing and a cold-process RESUME are demonstrated**: `2f6d024` committed **847 848 documents across 170 verified shards** before failing closed. **Stage 6 has never completed**, and that prefix is now **forensic-only**, because the source-boundary semantics changed under it (§Z.12). Stage-1 *training* is implemented but unexecuted and out of scope here. |
+| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§Z each record a defect, or an investigation of one, that surfaced only against the real corpus or the real pinned tokenizer, not in the local suite. §Y is the exception that proves the discipline: the reported regression was **not** reproducible from the code. |
+| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1); at `f9c23fe` it **crashed at document 0** on runner wiring (§W); at `cc2b710` it ran to **500 documents** and was stopped deliberately (§Y); at `2f6d024`, with 16 workers, it ran durably to **847 848 documents / 170 verified shards** — **surviving a deliberate kill and a cold-process RESUME** — before **failing closed** on one 604-character region (§Z). Real worker sweep on the real tokenizer at 1 000 documents: **18.87 / 34.97 / 58.82 / 86.21 / 136.99 docs/s** at 1 / 2 / 4 / 8 / 16, all producing the same 17 219 chunks. |
+| **What has NOT run** | **No completed Stage-6 prepare.** The repaired chunker has **never been run against the real blocker document**, so it is **not claimed fixed**. The `2f6d024` prefix is unusable by design after the boundary-semantics change, so Stage 6 must **restart from document 0**. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
+| **Next step** | The **real blocker reprobe**: run the repaired chunker against the real `Chincha_Alta` region and confirm it now subdivides, then restart Stage 6 **from document 0 in a new checkpoint directory**. Not the full corpus run, and not training — **neither is authorised by this audit**. |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after a completed real prepare, a demonstrated real Drive resume, the proposal/PDF synchronisation, and a no-update real-model smoke available for review |
+| **Revision 3c source-coordinate chunking repair** | **2026-08-23** — real Stage 6 reached **847 848 documents / 170 shards** with durable Drive checkpointing, a deliberate kill and a cold-process RESUME all demonstrated, then **failed closed** on a 604-character region carrying **108 punctuation/separator/symbol positions** — many candidate source-boundary locations, against **zero** cuts from the old implementation. A global `canonical_text != text` guard turned a **two-character** tone-placement difference into total indivisibility. Safe cuts are now computed in **source coordinates**. The 847 848-document checkpoint is forensic evidence, not a resume point. See §Z. |
 | **Revision 3c performance repair** | **2026-08-23** — a real run at `cc2b710` reported Stage 6 at **4.2 docs/s** against 29.46 at `4c72639`. Measured A/B: the streaming writer is **~0.5 %** of Stage-6 time and the two `lengths.py` versions are algorithmically identical, so **the regression is not attributed to the Revision-3c code and no root cause is claimed**. Added the Stage-6 timing breakdown and an optional ordered parallel compute path. See §Y. |
 | **Revision 3c runner-wiring repair** | **2026-08-23** — the real Colab probe crashed at `[6/6]`: `prepare-corpus` read `args.repository_head`, a flag it never defined. HEAD is now derived from the executing tree; a second latent crash (`RAW_BASE_POLICY` unimported) was found by the new real-parser end-to-end test. See §W. |
 | **Revision 3c hardening** | **2026-08-23** — pre-commit review: the direct-BPE fast path **bypassed the wrapper's added-token split** and would have miscounted any run containing e.g. `<mask>`. Removed. Composition additionally gated on the tokenizer's own added tokens. Verdict/metadata consistency repaired. See §V. |
@@ -30,7 +31,7 @@
 
 ## A. VERDICT — CURRENT
 
-**REVISION 3C PERFORMANCE REPAIR PASS — READY FOR REAL MULTICORE DRIVE PROBE**
+**REVISION 3C SOURCE-COORDINATE CHUNKING REPAIR PASS — READY FOR REAL BLOCKER REPROBE**
 
 Stage 6 is streamed and durably resumable; the direct-BPE fast path is
 **removed** as unsafe (§V) and the real tokenizer probe confirms it; the
@@ -40,18 +41,26 @@ and superseded.
 
 **What has actually happened on real data:** the corpus pin, schema,
 contamination screen and document split all pass on all **1 118 224** documents,
-and the pinned-tokenizer probe passes. Stage 6 has been entered **three times**,
-and the three events must not be conflated — **none of them produced a
-checkpoint**:
+and the pinned-tokenizer probe passes. Stage 6 has been entered at **four**
+commits, and the four must not be conflated — only the last one committed a
+checkpoint:
 
 | Commit | Runner | What happened | Checkpoint |
 |---|---|---|---|
 | `4c72639` | **before** checkpointing existed | timing run chunked **5 000 documents**, ~26.47 docs/s overall and **29.46 docs/s warm** (§U.1) — a measurement, **not a prepared artifact** | **none** — the code could not write one |
 | `f9c23fe` | checkpoint-capable | **crashed at document 0** on `repository_head` wiring, before any heartbeat (§W) | **none** — nothing was created |
 | `cc2b710` | checkpoint-capable, wiring repaired | ran to **500 documents / 9 862 chunks in 119.2 s = 4.2 docs/s**, then **stopped deliberately** before the first 5 000-document interval (§Y) | **none** — stopped short of the first commit |
+| `2f6d024` | + ordered parallel compute, **16 workers** | ran durably to **847 848 documents**, surviving a **deliberate kill** and a **cold-process RESUME**, then **failed closed** on one 604-character region (§Z) | **170 committed shards** — preserved as forensic evidence |
 
-So **no checkpoint interval has ever been committed**, and Stage 6 has **never
-completed**.
+**Real durable checkpointing, a deliberate kill and a cold resume are now
+demonstrated on real data** (§Z.1), and so is the parallel path: **136.99
+docs/s** at 16 workers against 18.87 at one, on the **real tokenizer**, all
+worker counts producing the same 17 219 chunks at 1 000 documents.
+
+Stage 6 has still **never completed**. And because the source-coordinate repair
+changes chunk boundaries for non-canonical documents, the 847 848-document
+prefix is **not a resume point**: Stage 6 must restart from document 0 in a new
+checkpoint directory (§Z.12).
 
 **What §Y concluded about the `cc2b710` slowdown, stated exactly:**
 
@@ -73,27 +82,25 @@ completed**.
 **What remains true:**
 
 * **no successful full Stage-6 prepare** — and this audit does not authorise one;
-* **no committed Stage-6 checkpoint, and no real Drive resume demonstrated**;
-* **no recovered real throughput** — that requires Colab and is not claimed here;
+* **the real blocker document has not been rechunked** — the repair is not
+  claimed to have fixed it until a real run shows that it does;
+* **worker 16 is an operational choice for the Colab runtime that ran, not a
+  production constant** — the sweep below is real-tokenizer evidence at 1 000
+  documents, on one machine;
 * **no encoder training, no optimizer step, no forward pass**;
 * **no downstream scientific Stage-1 run**;
 * **official UIT-VSFC TEST sealed** and structurally unreachable;
 * **compiled proposal PDF STALE**.
 
-**The next step is the real pinned-tokenizer multicore Drive probe**, in this
-order:
+**The next step is the real blocker reprobe**:
 
-1. benchmark **workers 1 / 2 / 4 / 8** on the real tokenizer;
-2. read the **§Y.4 instrumentation** to see the actual compute / writer /
-   checkpoint shares, instead of inferring them;
-3. reach a real **committed 5 000-document checkpoint**;
-4. **deliberate kill**;
-5. **cold-process RESUME**;
-6. reach the **next committed checkpoint**.
+1. run the **repaired** chunker against the real `Chincha_Alta` region and
+   confirm it subdivides — §Z is a repair of the *mechanism*, and the document
+   itself has **not** been rechunked;
+2. then restart Stage 6 **from document 0, in a new checkpoint directory**,
+   because the committed prefix was built under the old boundary semantics.
 
-**16 workers may be tested only if 8 still scales strongly and memory remains
-safe.** This probe is **not** the full 1 118 224-document run and **not**
-training — neither is authorised here.
+Neither the full 1 118 224-document run nor training is authorised here.
 
 ---
 
@@ -316,7 +323,7 @@ chunk set.
 | 2 | No extra normalization | AST-asserted: the chunker calls no `canon`, `decompose`, `corrupt`, `normalize`, `lower` |
 | 3 | Stable ids | `{document_id}#{chunk_index}`, re-derived and asserted in `PreparedChunk.__post_init__` |
 | 4 | Fits **both** paths | reference and base length functions both checked; the test's mock base path is deliberately *longer* |
-| 5 | Never split a syllable | **CORRECTED in Revision 1** — was "cuts land only on whitespace boundaries", which is a stronger rule than the science requires and could not prepare the real corpus. Now: cuts land on offsets that `decompose` reports as outside every `SyllableSpan`. See §P |
+| 5 | Never split a syllable | **CORRECTED in Revision 1, then again in §Z.** Revision 1 replaced "cuts land only on whitespace boundaries" (too strong; could not prepare the real corpus) with "offsets `decompose` reports as outside every `SyllableSpan`" — but those are *canonical* offsets, which do not address a non-canonically spelled source, and the resulting global guard made a real 604-character region indivisible. **CURRENT:** a safe cut is an **ORIGINAL-SOURCE character-unit boundary** that is not strictly inside a **source-side protected alphabetic run**, both obtained from the **same shared orthography unitisation primitives** (`split_units_with_offsets`, `source_letter_runs`). No second parser; no cut inside a combining sequence; **no normalisation or rewriting of source text**; exact tiling and no truncation unchanged. See §P and §Z |
 | 6 | Runs after the split | partition is an argument |
 | 7 | Inherits parent partition | copied, never assigned |
 
@@ -2824,7 +2831,400 @@ optional ordered parallel path that scaled 3.2x at 4 workers on a double.
 
 ---
 
-**STATUS: REVISION 3C PERFORMANCE REPAIR PASS — READY FOR REAL MULTICORE DRIVE PROBE**
+## Z. SOURCE-COORDINATE CHUNKING REPAIR — A LOCAL SPELLING DIFFERENCE MADE 604 CHARACTERS INDIVISIBLE
+
+**Date:** 2026-08-23 **Baseline commit:** `2f6d024192df034648bd7d4a7b23e173a5424160`
+
+### Z.1 What the real run achieved before it stopped
+
+This is the first revision with **real durable-checkpoint evidence**, and it is
+substantial. Environment: Transformers 4.57.6, `vinai/phobert-base` @
+`01daacda…`, `--prepare-workers 16`.
+
+* the real pinned-tokenizer probe **PASSed**;
+* the real worker sweep, on the **real tokenizer**, at 1 000 real documents —
+  all five worker counts producing the **same 17 219 chunks**:
+
+  | Workers | 1 | 2 | 4 | 8 | 16 |
+  |---|---|---|---|---|---|
+  | docs/s | 18.87 | 34.97 | 58.82 | 86.21 | **136.99** |
+
+  **16 workers** was selected operationally for the real run;
+* **real durable Drive checkpointing was demonstrated** — the first deliberate
+  kill after 5 000 documents, then a **cold-process RESUME** that succeeded;
+* a notebook **observer** bug did **not** kill the runner, which continued
+  durably to **775 000** documents;
+* a later full resume **started from 775 000 and re-verified 155 shards**
+  (1 535 606 chunks) before continuing.
+
+So §Y's open questions are now answered on real data: resume works, the parallel
+path works, and 16 workers is ~7.3x single-worker **on the real tokenizer**.
+
+### Z.2 Where it stopped, and what was preserved
+
+Stage 6 then **failed closed**:
+
+| | |
+|---|---|
+| document id | `Chincha_Alta` |
+| source shard | `train.parquet` |
+| source row | **847 848** |
+| document characters | 1 999 |
+| failing source range | **[259, 863)** — 604 characters |
+| runner reference length | **282** |
+| runner base length | **281** |
+| `max_length` | 256 |
+| error | `indivisible orthographic region does not fit` / `no safe interior cut point produced a fitting chunk` |
+
+**The durable committed prefix was preserved at 847 848 documents / 170 shards.**
+No truncation, no dropped text, no training. The fail-closed contract did
+exactly what it was built to do — it just fired on a document that was in fact
+divisible.
+
+### Z.3 The forensic evidence
+
+Reported for the exact failing 604-character region. **No raw corpus text is
+reproduced here or in any test** — counts, categories and a digest only.
+
+| Property | Value |
+|---|---|
+| region sha256 | `732d292d…9024843e` |
+| whitespace characters | **0** |
+| alphabetic / digits / combining marks | 486 / 10 / **0** |
+| ASCII characters | 601 |
+| Unicode categories | `Ll` 470, `Lu` 16, `Nd` 10, `Pc` 42, `Pd` 2, `Po` 4, `Sm` 60 |
+| maximal non-whitespace runs | **1** |
+| **alphabetic runs** | **85** |
+| punctuation / separator / symbol positions | **108** |
+| **largest alphabetic run** | **11 characters** |
+| `safe_cut_offsets(region)` under `2f6d024` | **0 interior cuts** |
+
+The region is one whitespace-free run built from separators such as
+`|` `_` `=` `-` `.` `/`. Those **108 punctuation/separator/symbol positions**
+demonstrate that the region contains **many candidate source-boundary
+locations**, despite the old implementation returning **zero** cuts, and its
+longest protected span is only 11 characters. **How many of those positions the
+repaired implementation actually accepts on the real region is unverified** —
+the diagnostic counted character categories, it did not run the repaired
+`safe_cut_offsets`. That is the reprobe (§Z.16.1).
+
+**And the canonical difference is two characters wide:**
+
+```
+canon(region) == region : False
+len(region) 604   len(canon(region)) 604
+source[602] U+1ECD -> canonical[602] U+006F
+source[603] U+0061 -> canonical[603] U+1EA1
+```
+
+That is UNMARK's own tone relocation: `…ọa` → `…oạ`. Reproduced here on a
+constructed three-character fixture of the same shape, `"hoọa"` → `"họoa"`.
+
+### Z.4 Root cause — confirmed from the code
+
+`safe_cut_offsets` opened with a **global** guard:
+
+```python
+parts = decompose(text, eligibility_classifier=classifier)
+if parts.canonical_text != text:
+    return frozenset()          # <- every boundary discarded
+```
+
+The guard's *premise* was right. `decompose` canonicalises **before** it
+unitises (`canonical_text = canon(text)`, then `nfd`, then `split_units`), so
+every offset it reports — `unit.canonical_start`, `span.canonical_start/end` —
+addresses the **canonical** string. Applying those to a non-canonical source
+would cut in the wrong place, and refusing them was correct.
+
+The *conclusion* was wrong. "These particular offsets do not address the source"
+became "the source has no safe boundaries", so a **two-character** difference at
+positions 602-603 discarded **every** candidate boundary in front of them —
+whatever their exact number, the returned set was empty. That is the defect: a
+local spelling difference converted into total indivisibility.
+
+### Z.5 Task A — what the orthography layer already had
+
+Inspected before changing anything:
+
+| # | Question | Finding |
+|---|---|---|
+| 1 | How do source codepoints become units? | `units.split_units(text_nfd)` groups `(base codepoint, combining marks)` on `unicodedata.combining` |
+| 2 | Where is canonical tone placement applied? | `decompose` line 1: `canonical_text = canon(text, placement)`, **before** unitisation |
+| 3 | Do units retain source offsets? | **No.** `CharacterUnit` carries `canonical_start/end` and `base_start/end` only |
+| 4 | Can source-side alphabetic runs use the same `unit.is_letter`? | **Yes** — the predicate is the NFD base codepoint, `d`-stroke resolved, answering `str.isalpha` |
+| 5 | Is there an existing source↔canonical offset map? | **No.** None exists anywhere in the repository |
+
+So the coordinates had to be exposed, not invented.
+
+### Z.6 Task B — the repair
+
+**The smallest possible orthography-layer refactor.** `units.py` gains
+`split_units_with_offsets(text)` returning `OffsetUnit(start, end, text)`, and
+**`split_units` is reimplemented as a one-line projection of it**:
+
+```python
+def split_units(text_nfd):
+    return [(unit.base, unit.marks) for unit in split_units_with_offsets(text_nfd)]
+```
+
+One grouping rule, two views — they cannot drift apart, which is precisely how
+this class of defect arises. All 887 existing orthography tests pass unchanged.
+
+`decompose.py` gains `source_letter_runs(text)`: the same segmentation
+`_segment_syllables` performs (split the unit stream on `unit.is_letter`) but
+over the string **as given**. It applies the identical predicate on the
+identical normalised base — NFD the unit, take its base codepoint, resolve
+`đ/Đ` via `D_STROKE`, ask `isalpha`. Reading the letter test off the
+precomposed source character would have been a *second* rule, and two rules is
+how this happened in the first place.
+
+`safe_cut_offsets` then becomes, with the global guard gone:
+
+```python
+unsafe = {o for start, end in source_letter_runs(text) for o in range(start + 1, end)}
+candidates = {unit.start for unit in split_units_with_offsets(text)} | {0, len(text)}
+return frozenset(candidates - unsafe)
+```
+
+**No second Vietnamese parser**: no regex syllable recognition, no hard-coded
+character tables, no vowel/consonant rules, no BPE. AST-asserted that
+`source_letter_runs` calls `split_units_with_offsets` and no matching/compiling
+primitive. **No normalisation**: the corpus is never rewritten, and `canon`
+remains analysis-only.
+
+**No length assumption.** The source is measured directly, never inferred
+through its canonical form. The real blocker happened to be 604 → 604, and
+correctness does not rest on that (§Z.9).
+
+### Z.7 Task C — canonical input is byte-for-byte unchanged
+
+The `2f6d024` implementation is retained **as a test oracle only**. Over a
+deterministic fixture set — Vietnamese, underscored titles, URLs, `Müller`,
+`Đường`, CJK, Greek, emoji, whitespace forms, NFC and NFD variants, plus 2 000
+seeded random strings:
+
+| Population | Result |
+|---|---|
+| canonical fixtures compared | **> 500** (1 526 in the wider sweep) |
+| offset-set mismatches old vs new | **0** |
+| canonical chunk boundaries | unchanged, exact reconstruction |
+
+`source_letter_runs(text)` is additionally asserted **equal to**
+`[(s.canonical_start, s.canonical_end) for s in decompose(text).syllables]` on
+every canonical fixture — the two segmentations are the same rule.
+
+### Z.8 Tasks D, E — the non-canonical contract
+
+A fixture built to the **reported shape** (84 short alphabetic runs, `| _ = - . /`
+separators, no whitespace, a non-canonical `base + combining mark` tail):
+
+| | Old | New |
+|---|---|---|
+| interior safe cuts | **0** | **360** |
+| cuts inside an alphabetic run | — | **0** |
+| cuts not at a unit boundary | — | **0** |
+
+and then, on the chunked document: exact source reconstruction, exact range
+tiling of `[0, len(text))`, source bytes unchanged, both reference **and**
+RAW_BASE lengths ≤ `max_length`, stable ids `doc-0#i`, identical output across
+three repeated runs, and identical output regardless of document order.
+
+**Non-canonical does not mean splittable.** An oversized non-canonical string
+that is *one* contiguous alphabetic run with no legal separator **still fails
+closed** with `indivisible` — asserted.
+
+**Combining sequences** (Task E): across 7 parametrised fixtures — NFD
+Vietnamese, a stray leading combining mark, stacked marks, and the blocker shape
+— every returned offset is a unit boundary and no offset ever lands on a
+codepoint with non-zero combining class, whether or not the source is canonical.
+
+### Z.9 Task F — canonicalisation CAN change codepoint count
+
+Answered from the code and pinned by test rather than assumed: `canon` is NFC
+plus tone placement, and **NFC composition shortens NFD input** —
+`len(nfd("é")) == 2`, `len(canon(nfd("é"))) == 1`. In the wider fixture sweep
+**1 041** fixtures had `len(canon(t)) != len(t)`.
+
+A dedicated regression chunks a length-changing non-canonical fixture end to end
+and asserts exact reconstruction, so correctness does not depend on the real
+blocker's accidental 604 → 604.
+
+### Z.10 Task G — the 282 vs 283 discrepancy, explained
+
+**The two calls measure different quantities, both intended. Neither is a
+defect, and tokenizer semantics were not touched.**
+
+From the code (`lengths.build_length_functions`):
+
+```python
+def reference_length(text): return reference_runs.length(transforms.canonical(text))
+def base_length(text):      return base_runs.length(transforms.base(text))
+```
+
+The runner's reference length is the authoritative length of **`canon(x)`** —
+the Stage-1 reference pathway is *canonical* text (and the base pathway is
+`base(canon(x))`). The diagnostic called `tokenizer(x, add_special_tokens=True)`
+on the **raw source**.
+
+For this region `canon(x) != x`: the tail `…ọa` becomes `…oạ`. Relocating a tone
+mark changes the codepoint sequence, so BPE can segment it into a different
+number of pieces — which is exactly a one-token difference. **282 is the length
+of the canonical text; 283 is the length of the raw source.** Both exceed 256,
+so neither caused the blocker.
+
+Pinned by a regression using a greedy longest-match subword double, where the
+same characters in a different order genuinely segment differently: the source
+yields **3** tokens and its canonical form **2**. The test asserts
+`reference_length(x) == authoritative_length(canon(x))`,
+`base_length(x) == authoritative_length(base(canon(x)))`, and that the raw-source
+measurement **differs** — so the distinction cannot be silently collapsed later.
+
+### Z.11 Tasks H, J — length path and parallelism unchanged
+
+The split search still calls the **same injected reference/base length
+functions** Stage 6 uses. No approximate tokenizer, no new chunking authority,
+and **direct BPE remains absent** (no `.bpe(` call in `unmark/stage1` or
+`scripts`). `lengths.py` is **byte-unchanged**.
+
+The ordered parallel path is untouched — `parallel.py` **byte-unchanged**, and
+its 18 tests pass: worker computes one document, main process serialises and
+checkpoints, strict document-order emission, bounded in-flight work, contiguous
+committed prefix, worker-failure propagation, and byte-identical payloads for
+workers **1 / 2 / 4 / 8**.
+
+### Z.12 Task I — the existing checkpoint must NOT be resumed
+
+**This repair changes chunk boundaries for non-canonical documents**, including
+documents already inside the committed prefix. The `2f6d024` checkpoint —
+847 848 documents, 170 shards — is therefore **forensic evidence, not a resume
+point**. It is not mutated, not deleted, and **not made compatible**.
+
+No compatibility override was added. The existing repository-HEAD identity field
+already refuses it: the checkpoint records `2f6d024`, the repaired code runs
+under a different HEAD, and `CheckpointIdentity.require_match` fails closed.
+Retained tests: `test_a_checkpoint_from_another_head_cannot_resume` and the 13
+parametrised identity-mismatch cases.
+
+**After this repair is committed, Stage 6 must START FROM DOCUMENT 0 in a NEW
+checkpoint directory.**
+
+### Z.13 Files changed
+
+| File | Change |
+|---|---|
+| `unmark/orthography/units.py` | **+`OffsetUnit`, +`split_units_with_offsets`**; `split_units` reimplemented as a projection of it |
+| `unmark/orthography/decompose.py` | **+`source_letter_runs`** — the same `is_letter` segmentation in source coordinates. `decompose` itself unchanged |
+| `unmark/stage1/chunking.py` | `safe_cut_offsets` rewritten in source coordinates; the global `canonical_text != text` guard removed |
+| `tests/test_stage1_chunking.py` | 2 tests **replaced, not weakened** (§Z.14) |
+| `tests/test_stage1_source_coordinates.py` | **new** — 24 tests |
+| `docs/spec/decisions.md` | **D-S1B-012** |
+
+**Byte-unchanged:** `protocol.py`, `corpus.py`, `lengths.py`, `manifest.py`,
+`checkpoint.py`, `parallel.py`, `canonical.py`, `placement.py`, the corpus pin.
+21 scientific constants re-compared against `2f6d024`: **NONE changed**.
+
+### Z.14 Two tests replaced, not weakened
+
+`test_non_canonical_text_yields_no_interior_boundaries` asserted
+`safe_cut_offsets(nfd) == frozenset()` — **it asserted the defect**. It is
+replaced by a test of the repaired contract: a non-canonical string keeps its
+boundaries, every offset indexes the source, none splits a combining sequence,
+and none lands inside an alphabetic run.
+
+`test_the_chunker_normalises_nothing` required `"decompose" in called`. The
+chunker no longer calls `decompose` — **`decompose` canonicalises before its own
+canonical-coordinate analysis, which is why its offsets cannot address a
+non-canonical source.** The repaired chunker **does not canonicalise and does not
+rewrite source text**; it queries `source_letter_runs` and
+`split_units_with_offsets` over the string as given. The assertion now requires
+`{"source_letter_runs", "split_units_with_offsets"}`. Every
+forbidden-rewriting assertion — `canon`, `corrupt`, `normalize`, `lower`,
+`upper`, `strip_to_base`, `recompose`, `replace`, `sub` — is unchanged.
+
+### Z.15 Tests
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_source_coordinates.py` | **24 passed** (new) |
+| `tests/test_stage1_chunking.py` | 35 passed |
+| `tests/test_stage1_lengths.py` | 325 passed |
+| `tests/test_stage1_checkpoint.py` | 41 passed |
+| `tests/test_stage1_parallel.py` | 18 passed |
+| `tests/test_stage1_prepare_cli.py` | 17 passed |
+| `tests/test_stage1_runner_contract.py` | 43 passed |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed |
+| orthography suites | 887 passed, unchanged |
+| **Full repository** | **3 251 passed, 97 skipped** (was 3 227 / 97) |
+
+### Z.16 Limitations
+
+1. **The repaired chunker has NOT been run against the real blocker document.**
+   The 604-character region is not available here and was not downloaded; every
+   fixture is constructed to its reported shape. **Whether `Chincha_Alta` now
+   chunks is unverified** — that is the next probe.
+2. **No full Stage-6 prepare has completed.** 847 848 documents is the furthest
+   Stage 6 has ever reached, and that prefix is now unusable by design.
+3. **Other documents may still fail closed**, correctly or otherwise. Stage 6
+   reached **847 848 of 1 118 224** documents, so **270 376** remain unseen by
+   any run. (1 113 224 is the *train partition*, not the Stage-6 total.)
+4. The 282-vs-283 explanation is established from the **code** plus a double;
+   the specific real token counts were not recomputed here.
+5. The real worker sweep (§Z.1) is real-tokenizer evidence at **1 000**
+   documents, not across the corpus.
+6. Restarting from document 0 means the **847 848-document / 170-shard prefix
+   must be recomputed**. **No figure is claimed for the discarded wall time**:
+   the earlier ~10 h projection was a single-worker estimate and is not the
+   measured elapsed time of this 16-worker run. Recomputation is the honest cost
+   of a boundary-semantics change; the alternative — resuming a prefix built
+   under different semantics — would corrupt the dataset.
+
+### Z.17 Self-audit
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Root cause established from code and evidence | **yes** — §Z.4, the guard read directly |
+| 2 | No raw corpus text committed | **yes** — counts, categories, digest only; fixtures constructed |
+| 3 | Non-canonical no longer implies zero cuts globally | **yes** — 0 → 360 on the shape fixture |
+| 4 | Offsets address the ORIGINAL source | **yes** — asserted |
+| 5 | No source/canonical length assumption | **yes** — 1 041 length-changing fixtures; dedicated regression |
+| 6-7 | Existing unitisation reused; no second parser | **yes** — `split_units` is now a projection; AST-asserted |
+| 8 | Canonical safe cuts byte-for-byte unchanged | **yes** — 0 mismatches, oracle comparison |
+| 9-10 | No cut inside a protected span or a combining sequence | **yes** — both, canonical and not |
+| 11-14 | Exact tiling; no normalisation, truncation or dropped document | **yes** |
+| 15 | Both reference and RAW_BASE limits enforced | **yes** |
+| 16 | 282-vs-283 explained | **yes** — different quantities by design (§Z.10) |
+| 17 | Direct BPE absent | **yes** |
+| 18-19 | Parallel semantics unchanged; workers 1/2/4/8 equivalent | **yes** — `parallel.py` byte-unchanged, 18 tests |
+| 20-21 | Old checkpoint not made compatible; foreign HEAD fails closed | **yes** — no override added |
+| 22-23 | No scientific constant changed; TEST sealed | **yes** — 21 compared |
+| 24-27 | No encoder, forward, optimizer, training | **yes** |
+| 28-29 | Focused and full suites pass | **yes** — 790 focused, 3 251 full |
+| 30-31 | `git diff --check` clean; nothing staged | **yes** |
+| 32-33 | Audit 029 revised in place; decision log updated | **yes** — §Z, D-S1B-012 |
+| 34 | Real blocker document claimed fixed? | **NO — unverified until the reprobe** |
+
+---
+
+**STATUS: REVISION 3C SOURCE-COORDINATE CHUNKING REPAIR PASS — READY FOR REAL BLOCKER REPROBE**
+**REAL DURABLE DRIVE CHECKPOINTING, KILL AND COLD RESUME ALL DEMONSTRATED (§Z.1)**
+**REAL WORKER SWEEP ON THE REAL TOKENIZER: 18.87/34.97/58.82/86.21/136.99 docs/s AT 1/2/4/8/16**
+**STAGE 6 REACHED 847 848 DOCUMENTS / 170 SHARDS, THEN FAILED CLOSED — PREFIX PRESERVED**
+**ROOT CAUSE: A GLOBAL `canonical_text != text` GUARD TURNED A 2-CHARACTER SPELLING**
+**DIFFERENCE INTO TOTAL INDIVISIBILITY OF A 604-CHAR REGION WITH 108 LEGAL BOUNDARIES**
+**SAFE CUTS NOW COMPUTED IN SOURCE COORDINATES FROM THE SAME ORTHOGRAPHY PRIMITIVES**
+**CANONICAL INPUT BYTE-FOR-BYTE UNCHANGED — 0 MISMATCHES VS THE PRE-REPAIR ORACLE**
+**INDIVISIBLE NON-CANONICAL REGIONS STILL FAIL CLOSED; NO NORMALISATION, NO TRUNCATION**
+**282 vs 283 EXPLAINED: THE RUNNER MEASURES canon(x), THE DIAGNOSTIC MEASURED x (§Z.10)**
+**THE 847 848-DOCUMENT CHECKPOINT IS FORENSIC EVIDENCE — STAGE 6 MUST RESTART FROM 0**
+**THE REAL BLOCKER DOCUMENT HAS NOT BEEN RECHUNKED — NOT CLAIMED FIXED**
+
+~~**STATUS: REVISION 3C PERFORMANCE REPAIR PASS — READY FOR REAL MULTICORE DRIVE PROBE**~~ **— superseded by §Z**
+
+> **HISTORICAL — the state as of `cc2b710`.** Every line in this block was true
+> when written. Two are **no longer current** and are annotated inline; they are
+> preserved rather than edited, because what was known when is part of the
+> record. **§A and §Z are the current state.**
+
 **THE 3.8x REGRESSION IS NOT REPRODUCIBLE FROM THE REVISION-3C DIFF — NO ROOT CAUSE CLAIMED (§Y.2)**
 **MEASURED: STREAMING WRITER ~0.5% OF STAGE 6; `lengths.py` VERSIONS ALGORITHMICALLY IDENTICAL**
 **NO PER-CHUNK FSYNC, HASH, OPEN OR DRIVE WRITE — COUNTED AS 0 IN TEST BEFORE THE FIRST COMMIT**
@@ -2832,8 +3232,8 @@ optional ordered parallel path that scaled 3.2x at 4 workers on a double.
 **STAGE-6 TIMING BREAKDOWN ADDED SO THE NEXT REAL RUN LOCALISES THIS IN ONE RUN**
 **ORDERED PARALLEL COMPUTE ADDED (`--prepare-workers`, DEFAULT 1); WORKERS COMPUTE ONLY**
 **PAYLOAD BYTE-IDENTICAL FOR 1/2/4/8 WORKERS; 3.2x AT 4 WORKERS ON A TOKENIZER DOUBLE**
-**NO REAL-TOKENIZER SPEEDUP CLAIMED; NO PRODUCTION WORKER COUNT CHOSEN**
-**STAGE 6 STILL NEVER COMPLETED, STILL NEVER COMMITTED ONE CHECKPOINT INTERVAL**
+~~**NO REAL-TOKENIZER SPEEDUP CLAIMED; NO PRODUCTION WORKER COUNT CHOSEN**~~ **— SUPERSEDED BY §Z.1: a real-tokenizer sweep now exists (18.87 → 136.99 docs/s at 1 → 16 workers), and 16 was selected operationally for the Colab runtime that ran. Still no *production* worker constant.**
+~~**STAGE 6 STILL NEVER COMPLETED, STILL NEVER COMMITTED ONE CHECKPOINT INTERVAL**~~ **— SUPERSEDED BY §Z: `2f6d024` committed 170 shards / 847 848 documents and survived a kill and a cold RESUME. Stage 6 has still never *completed*.**
 
 ~~**STATUS: AUDIT 029 CONSISTENCY CLEANUP PASS — READY TO COMMIT RUNNER-WIRING REPAIR**~~ **— superseded by §Y**
 **VERDICT UNCHANGED: REVISION 3C RUNNER-WIRING REPAIR PASS — READY FOR REAL DRIVE RESUME PROBE**

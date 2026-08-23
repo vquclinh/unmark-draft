@@ -17,6 +17,7 @@ import pathlib
 import pytest
 
 from unmark.orthography import decompose
+from unmark.orthography.decompose import source_letter_runs
 from unmark.stage1.chunking import (
     ChunkingViolation,
     PreparedChunk,
@@ -148,14 +149,34 @@ def test_a_genuinely_atomic_vietnamese_span_still_fails_closed():
     assert "does not truncate and does not drop text" in message
 
 
-def test_non_canonical_text_yields_no_interior_boundaries():
-    """`decompose` reports canonical offsets; for non-canonical input they do not
-    address the original, so the chunker must not use them."""
+def test_non_canonical_text_still_offers_safe_source_boundaries():
+    """REPLACED, not weakened (Audit 029 §Z).
+
+    This test previously asserted `safe_cut_offsets(nfd) == frozenset()` -- i.e.
+    it asserted the defect. `decompose` does report canonical offsets, and using
+    those on a non-canonical source really would cut in the wrong place; the old
+    code was right to refuse *them*. It was wrong to conclude that the source has
+    no safe boundaries, and that conclusion stopped Stage 6 at document 847 848.
+
+    Offsets are now computed in source coordinates, so a non-canonical string
+    keeps the boundaries it visibly has -- and they still address the original.
+    """
     import unicodedata
 
     nfd = unicodedata.normalize("NFD", "Tôi đã đọc")
     assert nfd != unicodedata.normalize("NFC", nfd)
-    assert safe_cut_offsets(nfd) == frozenset()
+
+    offsets = safe_cut_offsets(nfd)
+    interior = offsets - {0, len(nfd)}
+    assert interior, "a non-canonical string must not become globally indivisible"
+    # Every offset indexes the SOURCE, and none splits a base from its marks.
+    for offset in offsets:
+        assert 0 <= offset <= len(nfd)
+        if 0 < offset < len(nfd):
+            assert unicodedata.combining(nfd[offset]) == 0
+    # And no offset lands inside an alphabetic run.
+    for start, end in source_letter_runs(nfd):
+        assert not any(start < o < end for o in offsets)
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +357,12 @@ def test_the_chunker_normalises_nothing():
     for forbidden in ("canon", "corrupt", "normalize", "lower", "upper", "strip_to_base",
                       "recompose", "replace", "sub"):
         assert forbidden not in called, f"the chunker must not call {forbidden}()"
-    assert "decompose" in called, "safe boundaries must come from the orthography module"
+    # Boundaries must still come from the orthography layer. After the
+    # source-coordinate repair the primitives are the offset-carrying ones;
+    # `decompose` itself is no longer called, because it canonicalises first.
+    assert {"source_letter_runs", "split_units_with_offsets"} <= called, (
+        "safe boundaries must come from the orthography module"
+    )
 
 
 def test_max_length_default_is_the_locked_256():

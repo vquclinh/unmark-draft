@@ -43,7 +43,7 @@ from unmark.orthography.marks import (
     Tone,
 )
 from unmark.orthography.models import CharacterUnit, DecomposedText, SyllableSpan
-from unmark.orthography.units import split_units
+from unmark.orthography.units import split_units, split_units_with_offsets
 
 _TONE_MARK_SET = frozenset(TONE_MARK_TO_OBSERVED)
 _LETTER_MARK_SET = frozenset(LETTER_MARK_TO_STATE)
@@ -162,6 +162,48 @@ def decompose(
         source_is_clean=source_is_clean,
         metadata={"placement": placement.name},
     )
+
+
+def source_letter_runs(text: str) -> list[tuple[int, int]]:
+    """Maximal alphabetic runs of `text`, in **source** coordinates.
+
+    The same segmentation `_segment_syllables` performs -- split the character
+    unit stream on `unit.is_letter` -- but over the string **as given**, so the
+    ranges address the original rather than its canonical form.
+
+    Why this exists: `decompose` canonicalises before it unitises, so every
+    offset it reports is a canonical offset. For a non-canonically spelled
+    source those offsets do not address the original, and Stage-1 chunking must
+    never rewrite the corpus to make them fit (Audit 029 §Z). This reuses the
+    **existing** unitisation (`split_units_with_offsets`) and the **existing**
+    letter predicate (the NFD base codepoint, with a `d`-stroke resolved,
+    answering `str.isalpha`). It is not a second Vietnamese parser: it makes no
+    tone, eligibility or syllable-identity claim, and is used only to decide
+    which offsets a cut must avoid.
+
+    Returns half-open `(start, end)` ranges over `text`, in order.
+    """
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    end = 0
+    for unit in split_units_with_offsets(text):
+        # Exactly the predicate `decompose` applies, on the same normalised
+        # base: NFD the unit, take its base codepoint, resolve d-stroke, ask
+        # `isalpha`. Reading it off the precomposed source character would be a
+        # second rule, and two rules is how the original defect happened.
+        base_nfd = nfd(unit.text)
+        base_cp = base_nfd[0] if base_nfd else ""
+        base_letter = D_STROKE.get(base_cp, base_cp)
+        if base_letter.isalpha():
+            if start is None:
+                start = unit.start
+            end = unit.end
+        elif start is not None:
+            runs.append((start, end))
+            start = None
+    if start is not None:
+        runs.append((start, end))
+    return runs
 
 
 def _segment_syllables(

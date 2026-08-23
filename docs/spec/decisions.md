@@ -38,6 +38,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-PREG1-015 (pre-G1 CLOSED — primary and secondary), D-S1B-001 (UIT-VSFC excluded from Stage-1 selection), D-B3B0-007 (main backbone locked) |
 | **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock), D-S1B-005 … D-S1B-008 (seed roles, metric unit, FP32, pipeline/resume) |
 | **RESOLVED DECISION** (cont.) | D-S1B-009 — **implementation correction**: chunk boundaries are orthographically-safe offsets, not whitespace only. Found by real-corpus evidence after commit `0a34083` |
+| **RESOLVED DECISION** (cont.) | D-S1B-012 — **implementation correction**: those safe boundaries are computed in **original source coordinates**, so a non-canonically spelled source is no longer globally indivisible. Found by the real Stage-6 failure at source row 847 848 |
 | **RESOLVED DECISION** (cont.) | D-S1B-010 — Stage-6 corpus preparation is **streamed and durably resumable**; token lengths use the **public tokenizer wrapper** only (operational, no scientific change) |
 | **RESOLVED DECISION** (cont.) | D-S1B-011 — Stage-6 **compute** may fan out across processes (`--prepare-workers`, default 1); **order, serialisation, membership and checkpoint durability stay with the single main process**. Output byte-identical for 1/2/4/8 workers (operational, no scientific change) |
 | **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
@@ -4318,3 +4319,93 @@ Stage-1 training has occurred.
 | | |
 |---|---|
 | **Proposal updated** | **NO, and none is required.** Execution parallelism is operational, not scientific: the proposal prescribes what is computed, not how many processes compute it, and no scientific value changed. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-S1B-012 — safe chunk boundaries are computed in ORIGINAL SOURCE coordinates
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation correction) |
+| **Owner** | Stage-1B |
+| **Date** | 2026-08-23 |
+| **Clarifies** | [D-S1B-009](#d-s1b-009--chunk-boundaries-are-orthographically-safe-offsets-not-whitespace) — the *rule* is unchanged; the *coordinate system* it is expressed in is corrected |
+| **Found by** | Real Stage-6 run at `2f6d024`, which failed closed at source row 847 848 after 847 848 durably committed documents ([Audit 029 §Z](../audits/029-stage1-runner-implementation.md)) |
+
+**What the proposal says.** `unmark-proposal.md` states the higher-level
+contract — split before chunking, no truncation, preserve the text, never split
+the protected orthographic unit — and is **silent on which coordinate system a
+safe boundary is expressed in**. That silence is correct: it is an
+implementation concern. This entry therefore records an implementation
+correction, not a scientific change.
+
+**Previous implementation decision.** Safe boundaries were expressed in
+**canonical** offsets, taken from `decompose`, which canonicalises before it
+unitises. Because those offsets do not address a non-canonically spelled source,
+`safe_cut_offsets` returned the **empty set** for any such text:
+
+```python
+if parts.canonical_text != text:
+    return frozenset()
+```
+
+**Why that was wrong.** The premise was right and the conclusion was not.
+Refusing *those particular offsets* was correct; concluding that the **source**
+has no safe boundaries was not. On the real corpus a 604-character,
+whitespace-free region containing **85 alphabetic runs** (longest 11 characters)
+and **108** structurally legal separator positions differed from its canonical
+form at exactly **two** of its 604 positions — a tone relocation, `…ọa` → `…oạ`.
+Every one of the ~600 boundaries in front of those two characters was discarded,
+the region was declared indivisible, and Stage 6 stopped. A **local** spelling
+difference had been converted into **total** indivisibility.
+
+**New implementation decision.**
+
+| # | Decision | Reason |
+|---|---|---|
+| 1 | Safe boundaries are computed in **original source coordinates** | The chunker slices the source, so the offsets it uses must address the source |
+| 2 | They come from the **existing** unitisation: `units.split_units_with_offsets` | `split_units` is now a one-line projection of it, so the two views of the grouping rule **cannot** diverge — divergence between two rules is how this defect arose |
+| 3 | Protected spans come from `decompose.source_letter_runs` — the **same** `_segment_syllables` rule (split the unit stream on `unit.is_letter`), applied to the string as given | No second Vietnamese parser: no regex syllable recognition, no character tables, no vowel/consonant rules, no BPE. AST-asserted |
+| 4 | The letter test uses the **NFD base codepoint** with `đ/Đ` resolved via `D_STROKE`, exactly as `decompose` does | Reading it off the precomposed source character would be a second rule |
+| 5 | **No relation between `len(text)` and `len(canon(text))` is assumed** | Canonicalisation can change codepoint count (NFC composition shortens NFD input); the real blocker's 604 → 604 was accidental |
+| 6 | Canonicalisation stays **analysis-only** and never rewrites the corpus | Normalising the source to make offsets fit would silently alter the dataset |
+| 7 | A genuinely indivisible region **still fails closed** | "Non-canonical" must not come to mean "splittable anywhere" |
+
+**Scientific values unchanged.** `max_length = 256`, `RAW_BASE`, the corpus pin,
+the split, `dev = 5 000`, seeds, `pi_strip`, the objective, the adapter, the
+optimizer, both grids, the validation grid, the budget and the sealed-TEST
+policy. 21 scientific constants re-compared against `2f6d024`: **none changed**.
+Text preservation, exact source tiling, stable chunk ids, chunk ordering,
+split-before-chunk and the no-truncation contract are all unchanged. Direct BPE
+remains forbidden (D-S1B-010 row 5).
+
+**Canonical input is byte-for-byte unchanged**, proven differentially against
+the pre-repair implementation retained as a test oracle: **0** mismatches across
+a deterministic fixture set of 500+ canonical strings, and `source_letter_runs`
+asserted equal to `decompose(...).syllables` on every one of them.
+
+**Consequence for the existing checkpoint.** This decision **changes chunk
+boundaries for non-canonical documents**, including documents inside the
+already-committed prefix. The `2f6d024` checkpoint — 847 848 documents, 170
+shards — is therefore **forensic evidence, not a resume point**. It is not
+mutated, not deleted, and **no compatibility override was added**: the existing
+repository-HEAD identity field refuses it by construction. **Stage 6 must
+restart from document 0 in a new checkpoint directory.**
+
+**Affected files.** `unmark/orthography/units.py` (`OffsetUnit`,
+`split_units_with_offsets`; `split_units` reimplemented as a projection),
+`unmark/orthography/decompose.py` (`source_letter_runs`; `decompose` itself
+unchanged), `unmark/stage1/chunking.py` (`safe_cut_offsets`),
+`tests/test_stage1_source_coordinates.py` (new),
+`tests/test_stage1_chunking.py` (two tests **replaced, not weakened** — one had
+asserted the defect). `protocol.py`, `corpus.py`, `lengths.py`, `manifest.py`,
+`checkpoint.py`, `parallel.py`, `canonical.py` and `placement.py` are **not**
+modified.
+
+**Affected experiments.** No completed experiment. The `2f6d024` Stage-6 prefix
+(847 848 documents) is discarded as a *resume point* and retained as evidence.
+No Stage-1 training has occurred.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO, and none is required.** The proposal already states the no-truncation, text-preservation and protected-unit contract, and is **silent on coordinate systems** — which is the right level for it. No scientific value changed. PDF stale: **YES** (unchanged) |

@@ -29,13 +29,22 @@ implication: the corpus contains maximal **non-whitespace** units far larger tha
 `max_length` (observed up to 1 707 tokens), typically underscored article titles.
 Whitespace-only cutting therefore could not prepare the locked corpus at all.
 
-The authoritative definition lives in `unmark.orthography`: `decompose`
-segments text into **maximal alphabetic runs** (`SyllableSpan`), and it is those
-runs -- not whitespace-delimited words -- that must not be bisected. An
-underscore, hyphen or comma inside a long title is a span *boundary*, so cutting
-there is orthographically safe. `safe_cut_offsets` below is a pure **query** over
-`decompose`'s own output: it introduces no second syllable parser and no new
-linguistic rule.
+The authoritative definition lives in `unmark.orthography`: text is segmented
+into **maximal alphabetic runs**, and it is those runs -- not whitespace-
+delimited words -- that must not be bisected. An underscore, hyphen or comma
+inside a long title is a run *boundary*, so cutting there is orthographically
+safe. `safe_cut_offsets` below is a pure **query** over the orthography layer's
+own primitives: it introduces no second syllable parser and no new linguistic
+rule.
+
+Those offsets are computed in **source coordinates** (`split_units_with_offsets`
+and `source_letter_runs`). `decompose` canonicalises before it unitises, so its
+offsets address the canonical string; using them on a non-canonically spelled
+source would cut in the wrong place, and the earlier code correctly refused to.
+It refused *globally* for a *local* difference, which is what made a real
+punctuation-rich 604-character region indivisible and stopped Stage 6 at
+document 847 848 (Audit 029 §Z). The source is now measured directly, and no
+relation between `len(text)` and `len(canon(text))` is assumed.
 
 **No truncation, ever.** A region that genuinely cannot be subdivided raises
 `ChunkingViolation` with enough provenance to diagnose it. Text is never dropped.
@@ -51,7 +60,8 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Sequence
 
-from unmark.orthography import decompose
+from unmark.orthography.decompose import source_letter_runs
+from unmark.orthography.units import split_units_with_offsets
 from unmark.stage1.corpus import CorpusContractViolation, CorpusDocument
 from unmark.stage1.protocol import CHUNK_ID_TEMPLATE, CHUNK_SCHEMA_VERSION, MAX_LENGTH
 
@@ -121,21 +131,41 @@ def safe_cut_offsets(text: str, classifier: Callable[[str], Any] | None = None) 
     * offsets strictly inside a `SyllableSpan` -- a maximal alphabetic run --
       are removed, so a Vietnamese candidate is never bisected.
 
-    Returns the empty set when `canon(text) != text`. `decompose` reports offsets
-    into the *canonical* string, so for non-canonically-spelled input those
-    offsets do not address the original, and using them would cut in the wrong
-    place. The chunker treats an empty result as "no safe interior boundary
-    here" and stays fail-closed rather than normalising the corpus.
+    **Offsets address `text` itself, canonical or not** (Audit 029 §Z).
+
+    Until the source-coordinate repair this returned the empty set whenever
+    `canon(text) != text`, because `decompose` canonicalises before it unitises
+    and its offsets therefore address the canonical string. That guard was
+    globally fail-closed for a *local* reason: the real blocker was a
+    604-character, punctuation-rich source region containing **85** alphabetic
+    runs whose longest was 11 characters, which differed from its canonical form
+    at exactly **two** of its 604 positions -- and every one of the ~600 legal
+    interior boundaries before them was discarded. The document could not be
+    chunked and Stage 6 failed closed on it.
+
+    The offsets are now derived in source coordinates from the **same**
+    orthography primitives: `split_units_with_offsets` for unit boundaries (so a
+    cut can never land between a base codepoint and its combining marks) and
+    `source_letter_runs` for maximal alphabetic runs (so a candidate span is
+    never bisected). Nothing is normalised, nothing is rewritten, and no
+    relationship between `len(text)` and `len(canon(text))` is assumed --
+    the source is measured directly, never inferred through its canonical form.
+
+    A genuinely indivisible region -- one contiguous alphabetic run with no
+    legal interior boundary -- still yields no interior cut and still fails
+    closed in the caller. Non-canonical does not mean splittable.
+
+    `classifier` is accepted for signature compatibility and **does not affect
+    the result**. It never did: eligibility is a property `decompose` attaches
+    to a span, while run *boundaries* come from `unit.is_letter` alone. Where a
+    cut may land is an orthographic question, not a lexical one.
     """
     if not text:
         return frozenset()
-    parts = decompose(text, eligibility_classifier=classifier)
-    if parts.canonical_text != text:
-        return frozenset()
     unsafe: set[int] = set()
-    for span in parts.syllables:
-        unsafe.update(range(span.canonical_start + 1, span.canonical_end))
-    candidates = {unit.canonical_start for unit in parts.units}
+    for start, end in source_letter_runs(text):
+        unsafe.update(range(start + 1, end))
+    candidates = {unit.start for unit in split_units_with_offsets(text)}
     candidates.update((0, len(text)))
     return frozenset(candidates - unsafe)
 
