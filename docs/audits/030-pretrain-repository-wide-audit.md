@@ -20,15 +20,53 @@
 | **Revision 10 — fifth smoke probe** | 2026-08-23 — the fifth smoke reached the **device runtime gate** at `9651610` and **the device contract passed on real CUDA: 7 passed, 0 failed, 0 skipped**. The run stopped only because the orchestrator expected the string `"8 passed"`, a **prose miscount in §Y.6** — the file has always held **7** tests, and all nine claimed semantic assertions are present across them. **No code or test was at fault; none was changed.** See **§Z** |
 | **Revision 11 — first full real validation** | 2026-08-23 — at `a5da538` the **full four-condition real validation PASSED**: 11 443 dev chunks, **810 forward passes**, CUDA, fp32, adapter 3 551 232 frozen-encoder split, **0 backward / 0 steps / 0 updates**, parameters hash-identical before and after. The subsequent `stage1_runner.py smoke` then failed at **0.09 s** with `AttributeError: 'Namespace' object has no attribute 'completion_dir'` — a **parser omission** (`smoke` never declared an option its handler reads). Repaired; the validation surface is byte-unchanged. See **§AA** |
 | **Revision 12 — no-update smoke CLOSED** | 2026-08-23 — the §AA CLI repair was committed and the **corrected real runner smoke PASSED** at `2363e33`: return code 0, 24.36 s, real encoder frozen (`encoder_trainable_parameters 0`, adapter 3 551 232), prepared corpus verified against its Drive `COMPLETE.json`, real forward `loss 0.6354566812515259`, and `backward_called false` / `optimizer_constructed false` / `parameters_updated 0`. With §AA.1 this closes the **PRE-TRAIN no-update smoke gate**. AA.1 was reused, not rerun. See **§AB** |
+| **Revision 13 — final device audit** | 2026-08-23 — the dedicated phase-boundary **training-device audit** at `0588b72`. Confirms training would run **silently end-to-end on CPU** (no placement anywhere in `execute_stage`/`train_run`, recorded in no artifact) and finds a **second, scientific blocker**: the adapter is initialised from an **unseeded** global RNG — `run_seed` drives only data order, so a published seed cannot reproduce its run. **Two decision entries required, neither written.** Audit only. See **§AC** |
+| **Revision 14 — cross-candidate leakage** | 2026-08-23 — the positive nominal-run-independence gate found a **scientific defect**: `build_objective` is called **once, outside** the run loop, so every nominal run in a stage shares one `UnmarkEncoder` and candidates 2..N inherit the previous candidate's **trained** adapter. `lr-pilot` would be one trajectory with two LR changes; the three `final-main` seeds would not be independent replicates. **Implementation stopped; nothing implemented.** No campaign has run, so no result is contaminated. See **§AD** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN NO-UPDATE SMOKE GATE PASS — TRAINING DEVICE CONTRACT REMAINS**
+**PRE-TRAIN CROSS-CANDIDATE LEAKAGE RECORDED — THREE DECISIONS AWAIT IMPLEMENTATION**
 
-> **§AB is the current verdict. The PRE-TRAIN no-update smoke gate is CLOSED.**
+> **§AD is the current verdict, and it records the most serious finding in this
+> audit.** `build_objective` is called **once, before** the nominal-run loop, and
+> `Stage1Objective` stores the encoder **by reference**, so all runs in a stage
+> command share one adapter and the optimizer mutates it in place. Candidates
+> 2..N therefore begin from the previous candidate's **trained** weights:
+> `lr-pilot` would be a single trajectory with two LR changes, and the three
+> `final-main` seeds would not be independent replicates at all.
+>
+> This is **distinct from §AC.7** — runs 2..N get **no** fresh initialisation,
+> not merely an unseeded one. **No scientific campaign has ever run, so no result
+> is contaminated**, and the single-run validation and smoke passes (§AA, §AB)
+> stand: they could not have contradicted this.
+>
+> **Three decisions now await implementation — D-S1B-015 (CUDA execution and
+> numerics), D-S1B-016 (deterministic CPU-first adapter init), and D-S1B-017
+> (nominal-run independence) — and none is written.** §T–§AC are preserved
+> verbatim. **Training remains forbidden.**
+
+~~**PRE-TRAIN DEVICE CONTRACT AUDIT FOUND ADDITIONAL BLOCKERS — DO NOT IMPLEMENT YET**~~ **— superseded by §AD**
+
+> **§AC was the previous verdict.** The no-update smoke gate closed in §AB **stands**
+> — nothing here reopens it. The dedicated device audit then confirmed the known
+> blocker (training would run **silently on CPU**, recorded in no artifact) and
+> found a **second, scientific one**: the adapter is initialised from an
+> **unseeded** global RNG, so `run_seed` identifies a run it does not determine
+> (§11 requires publishable per-seed reproducibility).
+>
+> **Two decision entries are required — D-S1B-015 (device) and D-S1B-016
+> (initialisation seed) — and this audit wrote neither**, because the second is a
+> genuine scientific choice. Five further findings are classified in §AC.17, and
+> two zero-update fresh-runtime probes are specified in §AC.15.
+>
+> §T–§AB are preserved verbatim. **Training remains unauthorised.**
+
+~~**PRE-TRAIN NO-UPDATE SMOKE GATE PASS — TRAINING DEVICE CONTRACT REMAINS**~~ **— superseded by §AC**
+
+> **§AB was the previous verdict. The PRE-TRAIN no-update smoke gate is CLOSED.**
 > The corrected real runner smoke passed at `2363e335` — real encoder frozen, real
 > prepared corpus verified against its Drive `COMPLETE.json`, a real forward, and
 > `backward_called false` / `optimizer_constructed false` / `parameters_updated 0`
@@ -2758,3 +2796,757 @@ UIT-VSFC TEST seal.
 **DOCUMENTATION ONLY — NO PRODUCTION CODE, NO TEST, NO CONSTANT, NO DECISION CHANGED**
 **ONE KNOWN BLOCKER REMAINS: THE TRAINING-DEVICE OPERATIONAL CONTRACT (§Y.3)**
 **THIS DOES NOT AUTHORISE TRAINING**
+
+---
+
+## AC. FINAL PRE-TRAIN TRAINING-DEVICE CONTRACT AUDIT
+
+**Revision 13.** The dedicated phase-boundary review §AB deferred, at HEAD
+`0588b722c7c5e34bf6bda8f5703cfda80f7939be`. **Audit only — no production code,
+test, constant or decision changed.**
+
+It did not stop at the known device issue. **It found a second blocker.**
+
+### AC.1 What the proposal and specs actually say
+
+| Constraint | Source | Kind |
+|---|---|---|
+| **FP32** | proposal §5.1.1 optimizer row — "AdamW … accumulation 1, no clipping initially, **FP32**" | **SCIENTIFIC PROTOCOL** |
+| **"One GPU."** Stage 1 is "a few hours"; "Colab or Kaggle is sufficient" | proposal **§8.4 Compute** | **OPERATIONAL** — a resourcing statement |
+| G0 is "Day 1, **no GPU**" | proposal §7 | implies later stages *do* use a GPU |
+| Deterministic corruption, keyed by `(schema, seed, sample_id, text identity, unit index)` | proposal §6 / D-B2-001… | **SCIENTIFIC** |
+| "Public repository with code, configs, **and seeds**"; "raw **per-seed** numbers, not only aggregates" | proposal **§11** | **SCIENTIFIC** (reproducibility) |
+| "**Seeds.** At least three per configuration; report mean and standard deviation. If the improvement is within seed variance, there is no result" | proposal §7 | **SCIENTIFIC** |
+| 20k → one continuation → 40k, batch 128, eval every 500, best+last | §5.1.1 / D-S1B-004 | **SCIENTIFIC** |
+
+> **The proposal states "One GPU" as a compute expectation and never specifies a
+> device-selection mechanism, a fail-closed rule, a device index, or a
+> CPU-fallback policy. Those are unstated.** It does *not* say Stage-1 may run on
+> CPU either; "a few hours" is only true on an accelerator.
+
+`docs/spec/decisions.md` contains **no** device entry (verified: zero matches for
+device/cuda/GPU).
+
+### AC.2 The complete Stage-1 training call graph
+
+```
+stage1_runner.py  {lr-pilot | r-phase1 | final-main}
+  └─ _verified_corpus(args)          verify_prepared_corpus  ← F1, before model
+  └─ _execute(args, schedule, stage, verified)
+      └─ execute_stage(...)                                  unmark/stage1/execute.py:97
+          ├─ verify_scientific_inputs()                      ← §W preflight, before model
+          ├─ load_prepared_chunks(prepared_corpus)           train/dev text  (CPU, python)
+          ├─ build_objective(revision)                       execute.py:71
+          │    ├─ AutoTokenizer.from_pretrained
+          │    ├─ AutoModel.from_pretrained  ─────────────►  ★ CPU  (no device_map)
+          │    ├─ requires_grad_(False) on every encoder param;  encoder.eval()
+          │    ├─ OrthographyInputAdapter(...)  ───────────►  ★ CPU, RANDOM INIT (see AC.7)
+          │    └─ UnmarkEncoder(encoder, adapter)
+          ├─ ★ NO .to(device) ANYWHERE
+          ├─ classifier = make_classifier(try_load_inventory())
+          ├─ prepared_by_condition = {c: prepare_condition_batch(...)}   ← built ONCE
+          ├─ RunProvenance(... inventory=inputs.inventory)               ← §V/§W identity
+          └─ train_run(...)                                  unmark/stage1/trainer.py:463
+              ├─ verify_model_contract(objective.unmark_encoder)
+              ├─ build_optimizer(trainable named_parameters, lr)  ★ optimizer over CPU params
+              ├─ DeterministicSampler(sorted(chunks), seed=provenance.run_seed)
+              ├─ if resume:  verify_checkpoint → load_state_dict(adapter_state, strict=False)
+              │              → optimizer.load_state_dict → sampler.from_state → global_update
+              ├─ evaluate_fn(0)                              ← update-0 point before any step
+              ├─ objective.train(True)                       ← UnmarkEncoder.train override
+              └─ while global_update < cap:
+                   ├─ sampler.next_batch(BATCH_SIZE)
+                   ├─ prepare_example(...) × 128             ← CPU
+                   ├─ collate_stage1_batch(...)  ──────────►  ★ CPU tensors
+                   ├─ batch_to_device(batch, module_device(objective))   ← §Y boundary
+                   ├─ objective(batch) → Stage1LossResult
+                   ├─ optimizer.zero_grad → loss.backward() → optimizer.step()
+                   ├─ every 500: evaluate_fn(u) → validation.evaluate → objective.eval()
+                   │             then objective.train(True)   ← trainer.py:577, restored
+                   └─ every 500: save_training_checkpoint(best + last)
+```
+
+### AC.3 Device-operation inventory (complete, whole repository)
+
+| Location | Operation | Classification |
+|---|---|---|
+| `stage1/data.py:499` | `torch.device("cpu")` — `module_device` fallback | **production, training + validation** |
+| `stage1/data.py:510` | `batch_to_device` — `value.to(device)` | **production, training + validation + smoke** |
+| `stage1/trainer.py:411` | `torch.load(..., map_location="cpu", weights_only=False)` | **production, resume** |
+| `modeling/adapter.py:621` | `supplied.to(derived.device)` | production, *comparison convenience only* |
+| `modeling/pooling.py:81-82`, `adapter.py:168/186/190` | `.to(dtype)` | **dtype, not device** |
+| `scripts/stage1_pretrain_measurements.py:394,401,409,435,456,506-509` | device select, `unmark_encoder.to(device)`, CUDA sync/memory | **measurement-only** |
+| `scripts/g_minus1_restore_smoke.py`, `b4b_phobert_adapter_probe.py`, `evaluation/preg1_head.py` | device select / `.to(device)` / `manual_seed` | **other phases, unrelated to Stage-1 training** |
+
+> **`unmark/stage1/` contains no `torch.cuda`, no `is_available`, no model
+> `.to(device)`, no `autocast`, no `GradScaler`, no AMP, no `set_default_device`,
+> no TF32 flag, and no `manual_seed`.** The only device code on the training path
+> is the batch-following boundary added in §Y.
+
+### AC.4 Fresh-run device contract at this HEAD — proven
+
+| # | Question | Answer (from code) |
+|---|---|---|
+| 1 | Where is the model instantiated? | `build_objective`, `execute.py:86` — `AutoModel.from_pretrained` |
+| 2 | Device immediately after construction? | **CPU** — no `device_map`, no `.to()` |
+| 3 | Is it explicitly moved? | **No.** `execute.py` has no device op outside `smoke_check` |
+| 4 | Optimizer constructed when? | `trainer.py:508`, before any (non-existent) movement |
+| 5 | Prepared batches initially on? | **CPU** — `collate_stage1_batch` → `torch.tensor(...)` |
+| 6 | Where are batches moved? | `trainer.py:550`, `batch_to_device(..., module_device(objective))` |
+| 7 | Does that use the real module device? | **Yes** — `next(module.parameters()).device` |
+| 8 | Does training run end-to-end on CPU? | **YES.** Every tensor and parameter stays on CPU |
+| 9 | Could one part be CUDA and another CPU? | **No** — the batch follows the model, so it self-corrects |
+| 10 | Crash, silent CPU, or environment-dependent? | **Silent CPU, identically on every machine.** No warning, no record |
+
+**The run would not fail. It would quietly take a scale of time §8.4 never
+contemplated, and no artifact would say so** — the runner smoke report has **no
+device field** (§AB.3), and `RunProvenance` records no device either.
+
+### AC.5 Validation during training — device-safe
+
+Traced from `execute_stage`'s `evaluate_fn` closure:
+
+| Question | Finding |
+|---|---|
+| Same model object being trained? | **Yes** — the closure binds `_obj=objective`, the identical instance |
+| Device inferred from that module? | **Yes** — `evaluate` computes `module_device(objective)` (§Y) |
+| All tensors moved consistently? | **Yes** — one `batch_to_device` per batch, covering reference, base, and every channel |
+| eval/train mode correct? | `evaluate` calls `objective.eval()`; **`trainer.py:577` restores `objective.train(True)` immediately after every `evaluate_fn`** |
+| Frozen encoder ever in train mode? | **No.** `UnmarkEncoder.train()` is overridden to force `self.encoder.eval()` after `super().train(mode)` — so the encoder's dropout can never reactivate, in either mode |
+| Gradients disabled? | `evaluate` wraps everything in `torch.no_grad()`; `reference_representation` adds its own |
+| Could validation alter training behaviour? | **No** — it moves batches, never parameters; the model is not moved |
+| Reference path same device? | **Yes** — same batch, same transfer |
+| Hidden CPU-only tensors/buffers in the objective? | **None found.** `ObjectiveWeights` are Python floats; position ids are derived from `input_ids` on its device; no registered buffer is created outside the modules `.to()` moves |
+
+**VERIFIED / NO ISSUE.** The standalone validation success in §AA.1 is *not* what
+proves this — the call graph is.
+
+### AC.6 Optimizer construction order
+
+Current order in `train_run`: `verify_model_contract` → **`build_optimizer`** →
+sampler → (resume: `load_state_dict` → `optimizer.load_state_dict`).
+
+There is no model movement anywhere, so ordering is inert **today** and becomes
+load-bearing the moment placement is added. The correct invariant for this
+implementation is:
+
+```
+construct model → PLACE MODEL → construct optimizer → load model state → load optimizer state
+```
+
+Two points, both checked against how this repository actually restores state:
+
+* **Placement after optimizer construction would not corrupt parameter
+  references.** `nn.Module.to()` mutates `param.data` in place and keeps the same
+  `Parameter` objects, so the optimizer's `param_groups` stay valid. This is a
+  real PyTorch guarantee, not luck — but it is *incidental* to the repository,
+  which documents no dependency on it.
+* **Optimizer state placement is entirely dependent on parameter device at load
+  time.** `Optimizer.load_state_dict` casts loaded state to each parameter's
+  current device/dtype. Because `load_training_checkpoint` uses
+  `map_location="cpu"`, **the checkpoint always arrives on CPU**, and the state
+  lands wherever the parameters already are. **If the model were placed *after*
+  `optimizer.load_state_dict`, Adam's exponential-moving-average state would stay
+  on CPU while the parameters moved to CUDA** — a cross-device optimizer step.
+
+**SHOULD FIX (documentation + test):** the ordering requirement is currently
+unwritten and untested.
+
+### AC.7 ★ NEW BLOCKER — adapter initialisation is not seeded
+
+**Evidence.** `run_seed` is consumed at exactly one place:
+`trainer.py:512`, `DeterministicSampler(..., seed=provenance.run_seed)` — **data
+order only**. There is **no `torch.manual_seed` anywhere in `unmark/stage1/` or
+`scripts/stage1_runner.py`**. The adapter's trainable parameters —
+`nn.Embedding` ×2 (tone, letter), `nn.Linear` ×2 (fusion, gate), `nn.LayerNorm` —
+are created in `OrthographyInputAdapter.__init__` and initialised by PyTorch's
+**global default RNG, unseeded**.
+
+**Consequences.**
+
+1. **Re-running the same run is not reproducible.** `final-main seed=36930`
+   executed twice yields different initial adapter weights and therefore
+   different results.
+2. **`RunProvenance.run_seed` is recorded as run identity but does not determine
+   the run.** This is exactly the defect class §V closed for `lambda_align` and
+   §W closed for the inventory: an identity that does not identify.
+3. **Proposal §11 requires publishing "code, configs, **and seeds**" and "raw
+   per-seed numbers".** A published seed that cannot reproduce its number does not
+   satisfy that.
+4. Resume equivalence is **unaffected** — `adapter_state` is restored from the
+   checkpoint — so §V's and F3's evidence stands. The gap is *fresh-run* identity.
+
+**Why it never surfaced.** Nothing before this point ever ran two training runs;
+every gate so far was single-shot or state-restoring.
+
+**Classification: MUST DECIDE BEFORE TRAINING — scientific (reproducibility).**
+The audit does **not** choose the mechanism. The open question is what seeds
+initialisation: `run_seed` itself, or a separately derived
+`SEED_ROOT_TAG|init|i` stream domain-separated from data order in the same style
+as `CORRUPTION_SEED_TAG` / `SPLIT_SEED_TAG`. Both are defensible; the repository's
+established pattern favours the latter, and either needs a decision entry.
+
+### AC.8 Checkpoint / resume / continuation device semantics
+
+| # | Question | Finding |
+|---|---|---|
+| 1 | Device of saved checkpoint tensors? | Whatever the parameters are on — CUDA tensors are saved as CUDA |
+| 2 | Device on load? | **CPU, always** — `map_location="cpu"` |
+| 3 | Is `map_location` explicit? | **Yes**, `trainer.py:411`. Good practice, already correct |
+| 4 | CUDA checkpoint → CPU host? | **Yes**, safe, because of (3) |
+| 5 | CPU checkpoint → CUDA run? | **Yes** — `Module.load_state_dict` copies **into** existing params in place, preserving their device |
+| 6 | Optimizer state device after `load_state_dict`? | The **parameters'** device at that moment (PyTorch casts state to the param) |
+| 7 | Explicit or incidental? | **Incidental** — correct, documented PyTorch behaviour, but nothing in this repository states or tests the dependency |
+| 8 | Safe on torch 2.11.0? | Yes, this is stable documented behaviour — but see the probe in AC.12 |
+| 9 | Relying on framework behaviour? | **Yes**, for (5) and (6). Worth pinning with a test |
+| 10 | Adam state on CPU while params CUDA? | **Only** if placement happened after `optimizer.load_state_dict` — see AC.6 |
+| 11 | Continuation silently switching backend? | **Yes, possible today.** Nothing records or verifies the device, so a 20k leg on CUDA could continue to 40k on CPU (or the reverse) and *every* provenance check would pass |
+| 12 | best vs last restore differ? | Resume always uses **last** (`load_training_checkpoint(run_checkpoints)`); best is written for reporting. Correct per D-S1B-004 |
+| 13 | Same-run continuation identity preserved? | **Yes** — `resume=carried` from the same `run-{label}/_checkpoint`, verified by `verify_checkpoint` against the full provenance including `repository_head` and `inventory` |
+
+**(11) is a real gap:** device is absent from `RunProvenance`, so backend drift
+across a continuation is undetectable.
+
+### AC.9 ★ NEW FINDING — every checkpoint stores the frozen encoder
+
+`trainer.py:594` saves `adapter_state=objective.unmark_encoder.state_dict()` —
+the **whole wrapper**, so every checkpoint contains the complete frozen PhoBERT
+encoder alongside the 3 551 232 trainable parameters.
+
+* Estimated ≈ **540 MB** per file at fp32 for a RoBERTa-base-sized encoder, versus
+  ≈ 14 MB for adapter + Adam state alone. *(Estimate — the exact figure needs the
+  runtime probe in AC.12.)*
+* Written to **best and last**, at **every 500 updates**: ~41 publications per
+  20k leg, each an atomic temp → fsync → replace of ~540 MB, on Google Drive.
+* `load_state_dict(..., strict=False)` means a key mismatch would **silently
+  restore nothing** and continue from random weights without error.
+
+**Correctness is not affected** (frozen weights are re-restored identically), but
+this is a material operational risk for an 11-run campaign on Drive, and the
+`strict=False` silence is a fail-open in an otherwise fail-closed codebase.
+
+**Classification: SHOULD FIX BEFORE TRAINING — operational.** Persisting only
+trainable parameters, and asserting the restored key set, would remove both.
+
+### AC.10 Reproducibility, RNG and backend
+
+| Stream | State | Checkpointed? |
+|---|---|---|
+| Corruption | **Stateless** — keyed `blake2b(schema, seed, sample_id, text identity, unit index)`. No RNG object | N/A — reproducible by construction |
+| Sampler / data order | `DeterministicSampler(seed=run_seed)`, explicit `state_dict` | **Yes** (`sampler_state`) |
+| Validation corruption | fixed seed 19225, fixed visit | N/A |
+| **torch global RNG** | **never seeded** (AC.7) | **No** |
+| Python `random` / NumPy | not used on the Stage-1 path | N/A |
+| CUDA RNG | never seeded; **no consumer** — encoder dropout is forced off by `UnmarkEncoder.train()`, and the adapter has no stochastic layer | N/A |
+
+**What Stage-1 currently promises:** *deterministic data order and deterministic
+corruption*, plus *exact interrupted-vs-uninterrupted continuation* (§V, F3
+evidence). It does **not** promise exact fresh-run numerical reproducibility, and
+because of AC.7 it cannot.
+
+Because there is **no stochastic layer in the training forward**, CUDA introduces
+no *sampling* nondeterminism. It can introduce **floating-point reduction-order
+nondeterminism** (atomics, cuBLAS algorithm selection). Classification of the
+optional hardening flags, per the mission's own scheme:
+
+| Flag | Classification |
+|---|---|
+| `torch.manual_seed` at run start | **REQUIRED** — see AC.7 |
+| `torch.cuda.manual_seed_all` | **OPTIONAL HARDENING** — no CUDA RNG consumer exists today; cheap insurance |
+| `torch.use_deterministic_algorithms(True)` | **OPTIONAL HARDENING.** The proposal never asks for bitwise cross-run equality, and it can cost throughput or raise on unsupported ops |
+| cuDNN deterministic flags | **IRRELEVANT** — no convolutions in a transformer |
+| TF32 flags | see AC.11 |
+
+### AC.11 fp32 must remain fp32
+
+**AMP is absent, verifiably.** Zero occurrences of `autocast`, `GradScaler`,
+`torch.amp`, `fp16`, `bf16` or `half()` anywhere in `unmark/` or the Stage-1
+scripts. `PRECISION = "fp32"` is recorded in the protocol and in every artifact.
+Moving to CUDA changes none of that: `.to(device)` alters device, never dtype.
+
+**TF32 is the one real question.** On Ampere-and-later hardware — which the
+RTX PRO 6000 Blackwell is — cuBLAS may execute `float32` matmuls with TF32
+internal precision (10-bit mantissa) depending on backend flags. Every
+`nn.Linear` in the encoder and the adapter is such a matmul.
+
+* Current PyTorch defaults set `torch.backends.cuda.matmul.allow_tf32 = False`
+  (changed in 1.12), while `torch.backends.cudnn.allow_tf32` defaults to `True`
+  and governs **convolutions**, of which there are none here.
+* So the expected behaviour is **true fp32 matmul**, and the §AA.1 validation ran
+  under exactly these defaults.
+* **But the repository asserts nothing.** A future torch release, a global config,
+  or `torch.set_float32_matmul_precision("high")` set elsewhere would change the
+  arithmetic while every artifact still recorded `precision: fp32`.
+
+**Classification: SHOULD FIX BEFORE TRAINING — operational, protecting a
+scientific constant.** The fix is to *record and assert* the TF32/matmul-precision
+state in provenance rather than to change any numerics. The exact runtime probe is
+in AC.12; I cannot read torch's defaults from this ML-free venv and will not guess
+them as established fact.
+
+### AC.12 Single-GPU / multi-GPU / CPU behaviour
+
+| Environment | Behaviour at this HEAD |
+|---|---|
+| No CUDA | training runs on CPU, silently |
+| Exactly one GPU | training runs on CPU, silently |
+| Multiple GPUs | training runs on CPU, silently |
+| `CUDA_VISIBLE_DEVICES` set | no effect — nothing consults CUDA |
+| Default index ≠ physical GPU 0 | no effect |
+
+Nothing in `unmark/stage1/` hardcodes `cuda:0` or calls `current_device()`. The
+only index literal in the repository is
+`stage1_pretrain_measurements.py:456`, `torch.cuda.get_device_name(0)` —
+**reporting only**, in the measurement tool, and consistent with that tool's
+`torch.device("cuda")` logical default. It names the first *visible* device, which
+is what `CUDA_VISIBLE_DEVICES` is for. Not a defect; `torch.cuda.current_device()`
+would be marginally more precise.
+
+### AC.13 The candidate operational contract, clause by clause
+
+| Clause | Classification |
+|---|---|
+| "Stage-1 scientific training requires CUDA" | **B — operational clarification consistent with the proposal.** §8.4 says "One GPU… a few hours"; it is the natural reading, but the proposal never states it as a requirement, so it must be *recorded*, not assumed |
+| "The entry point fails closed if CUDA is unavailable" | **B.** Consistent with this repository's fail-closed discipline everywhere else (F1, §W, §X). Not stated anywhere yet |
+| "Selects the logical default visible CUDA device without hardcoding a physical GPU ID" | **B, and correct.** `torch.device("cuda")` honours `CUDA_VISIBLE_DEVICES`; hardcoding an index would not |
+| "The complete model/objective is placed on that device **before optimizer construction**" | **B, and necessary** — see AC.6. Should be strengthened to *before optimizer **state** loading* too |
+| "Training and validation batches are moved to the model's actual device" | **A — already required and already implemented** (§Y, `batch_to_device`/`module_device`) |
+| "Checkpoint resume explicitly restores/migrates model and optimizer state to the selected device" | **E — partially correct but incomplete.** Model state already migrates correctly via in-place copy; optimizer state migrates *incidentally* via `Optimizer.load_state_dict`. Making it explicit is right; the clause should say **assert**, not re-implement |
+| "A continuation may not silently change the execution backend" | **B, and it closes AC.8(11)** — but it is unenforceable until the device is recorded in provenance. **Add the device to the run artifact**; whether it joins `RunProvenance.require_match` is the decision to make, since a legitimate crash-resume onto a different GPU model is plausible |
+| "fp32 remains mandatory" | **A — already required** (proposal §5.1.1). Should be *extended* to assert TF32/matmul precision (AC.11) |
+| "No automatic CPU fallback for scientific Stage-1 training" | **B.** Note this must **not** leak into `smoke`, the measurement tool's CPU path, or the test suite, all of which legitimately run on CPU |
+
+**A better contract, precisely.** Adopt the candidate with three amendments:
+
+1. **Place before optimizer *state* load**, not merely before construction:
+   `build → place → construct optimizer → load model state → load optimizer state`.
+2. **Record the resolved device, GPU name, torch/CUDA versions and the effective
+   matmul/TF32 precision in the run artifact**, so a continuation's backend is
+   *evidence* rather than an assumption — and decide separately whether device
+   identity is a resume-blocking field.
+3. **Scope the CUDA requirement to the scientific training entry point only**
+   (`lr-pilot`, `r-phase1`, `final-main`), explicitly exempting `smoke`,
+   measurement and tests.
+
+### AC.14 Decision-log consequence
+
+**Yes — a decision entry is required**, and this audit did not write one. Two
+distinct decisions are needed. Draft content for the next implementation task:
+
+**D-S1B-015 — Stage-1 scientific training requires an explicitly selected CUDA device**
+
+* *Original proposal wording/assumption*: §8.4 "One GPU. Stage 1 is a few hours…
+  Colab or Kaggle is sufficient." No selection mechanism, no fallback policy, no
+  device index is specified anywhere; `docs/spec/decisions.md` has no device entry.
+* *Implemented operational decision*: the scientific training entry points require
+  CUDA and fail closed when it is unavailable; the logical default visible device
+  is selected (`torch.device("cuda")`, honouring `CUDA_VISIBLE_DEVICES`, never a
+  hardcoded index); the objective is placed on it **before optimizer construction
+  and before optimizer-state loading**; batches follow the model's device (already
+  implemented, §Y); the resolved device, GPU name, torch/CUDA versions and
+  effective fp32 matmul precision are recorded in the run artifact; `smoke`,
+  the measurement tool and tests are exempt and may run on CPU.
+* *Reason*: at HEAD, training silently executes end-to-end on CPU (AC.4), which no
+  artifact records; and optimizer state placement depends on ordering (AC.6).
+* *Affected*: `unmark/stage1/execute.py`, `unmark/stage1/trainer.py`,
+  `scripts/stage1_runner.py`, run artifacts, the Stage-1 experiments.
+* *Editable proposal source*: **not required** — §8.4 already assumes one GPU;
+  this names the mechanism. PDF remains stale regardless.
+
+**D-S1B-016 — Stage-1 adapter initialisation must be seeded**
+
+* *Original proposal wording/assumption*: §7 "Seeds. At least three per
+  configuration"; §11 "code, configs, and seeds", "raw per-seed numbers".
+  Reproducibility is assumed; the initialisation RNG is never named.
+* *Implemented decision*: **to be chosen** — `run_seed` directly, or a derived
+  `SEED_ROOT_TAG|init|i` stream domain-separated from data order. **This audit
+  does not choose.**
+* *Reason*: `run_seed` currently controls only data order, so a published seed
+  cannot reproduce its run, and `RunProvenance.run_seed` does not determine the
+  artifact it identifies (AC.7).
+* *Affected*: `unmark/stage1/execute.py` or `trainer.py`, `protocol.py` if a new
+  seed tag is derived, every Stage-1 run.
+* *Editable proposal source*: **not required**.
+
+### AC.15 Required fresh-runtime ZERO-UPDATE probes
+
+The prior runtime was deleted, so both probes below must run on a fresh CUDA
+runtime **after** the repair and **before** any training. Neither may call
+`backward()` or `optimizer.step()`.
+
+**Probe 1 — placement acceptance (zero update).** Must report, and fail closed on
+any mismatch:
+
+1. exact repaired HEAD; clean repository;
+2. prepared corpus restored and verified against its `COMPLETE.json`; membership
+   digest `250859a5…78413d6`;
+3. inventory restored, 116 290 bytes, sha256 `78eeb840…`, counts 17 974 / 17 954 / 2 489;
+4. CUDA **required** and selected; report `torch.cuda.get_device_name`,
+   `torch.version.cuda`, torch version;
+5. **every** parameter's device — trainable **and** frozen — enumerated, plus every
+   registered buffer; assert one device, equal to the selected one;
+6. `torch.backends.cuda.matmul.allow_tf32`, `torch.backends.cudnn.allow_tf32` and
+   `torch.get_float32_matmul_precision()` recorded (AC.11);
+7. a real prepared training batch built through `prepare_example` +
+   `collate_stage1_batch`, asserted **CPU** on creation, then `batch_to_device`,
+   asserted on the model device;
+8. **one real training-entry forward** — `objective(batch)` — under `no_grad`;
+9. loss finite; `loss_align`, `loss_clean` reported;
+10. `backward` **not** called; `optimizer.step` **not** called;
+11. parameter SHA-256, trainable and frozen, **identical before and after**;
+12. exact per-file checkpoint size that *would* be written (settles AC.9).
+
+**Probe 2 — resume placement (zero update).** Optimizer **construction** is
+permitted here; optimizer **execution** is not. The audit states that distinction
+explicitly: constructing an `AdamW` and calling `load_state_dict` performs no
+update, changes no parameter, and is the only way to observe state placement.
+
+1. write a checkpoint from Probe 1's placed model (no training);
+2. fresh process: build → **place** → construct optimizer → `load_state_dict`
+   (model) → `load_state_dict` (optimizer);
+3. assert every optimizer state tensor (`exp_avg`, `exp_avg_sq`, `step`) is on the
+   selected device — this is the AC.6/AC.8(6) claim, verified rather than assumed;
+4. assert `map_location="cpu"` still loads a CUDA-written checkpoint;
+5. assert sampler `visit`/`position`, `global_update`, `points` and full run
+   provenance restore and `verify_checkpoint` passes;
+6. **no `optimizer.step()`, no `backward()`, zero parameter change** — parameter
+   hashes identical before and after the whole probe.
+
+### AC.16 Other pre-train risks reviewed
+
+| Item | Status |
+|---|---|
+| LR/r run mapping | **VERIFIED** — `LR_PILOT_GRID (1e-4, 3e-4, 1e-3)`, `R_PHASE1_GRID (0.25, 0.5, 1.0, 2.0, 4.0)`, both asserted against the locked grids in `selection.py` |
+| Seed selection | `TRAIN_SEEDS (36930, 7309, 5993)`, domain-separated, collision-checked at import — **but see AC.7** |
+| Continuation counted as a new candidate | **VERIFIED / NO ISSUE** — `candidates.append` sits outside the `if result.continued:` block, so one candidate per planned run |
+| Checkpoint overwrite / collision | **VERIFIED** — one namespace per run, `run-{label}/_checkpoint`; artifacts `run-{label}.json` |
+| Resume from wrong run | **VERIFIED** — `verify_checkpoint` compares all identity fields incl. `repository_head` and `inventory` (§V, §W) |
+| best vs last semantics | **VERIFIED** — resume uses last; best chosen by the locked `select_checkpoint` |
+| Budget 20k → 40k | **VERIFIED** — one continuation, then `BUDGET_LIMITED` |
+| Accidental unfreezing / train-eval mistakes | **VERIFIED** — `freeze_encoder` + `UnmarkEncoder.train()` override + `verify_model_contract` (0 encoder trainable, 3 551 232 adapter) |
+| Gradient accumulation / scheduler | **VERIFIED** — accumulation 1, constant LR, no warmup, no scheduler state to persist |
+| Accidental truncation | **VERIFIED** — §X, `TRUNCATION` 256/FAIL on all paths |
+| Corruption redraw semantics | **VERIFIED** — per-visit redraw, locked mixture asserted in `train_run` (`is_locked_mixture`) |
+| Stale override flags | **VERIFIED** — no scientific override flag on any subcommand (§AA tests) |
+| Official TEST access | **VERIFIED** — sealed; no CLI route; screen raises on any unlisted source |
+| Validation / candidate leakage | **VERIFIED** — held-out realisation built once from dev only, fixed seed 19225, no downstream score reachable |
+| Memory-loading risk | **VERIFIED** — 3.78 GB RSS measured after real load (§AB) |
+| Mixed scientific/diagnostic config | **VERIFIED** — `Stage1Purpose.SCIENTIFIC` cannot be constructed with unresolved values |
+| **Frozen encoder in every checkpoint** | **SHOULD FIX** — AC.9 |
+| **`strict=False` on adapter restore** | **SHOULD FIX** — AC.9, fail-open in a fail-closed codebase |
+
+### AC.17 Final blocker table
+
+| # | Finding | Class | Kind |
+|---|---|---|---|
+| 1 | Training silently runs **end-to-end on CPU**; no placement, no record | **MUST FIX BEFORE TRAINING** | operational |
+| 2 | Device contract unstated — CUDA requirement, selection, fallback | **MUST DECIDE BEFORE TRAINING** (D-S1B-015) | operational |
+| 3 | **Adapter initialisation unseeded** — `run_seed` controls data order only | **MUST DECIDE BEFORE TRAINING** (D-S1B-016) | **scientific** (reproducibility) |
+| 4 | Backend drift across a 20k→40k continuation is undetectable | **MUST FIX BEFORE TRAINING** (with #1) | operational |
+| 5 | Model placement / optimizer-state ordering unwritten and untested | **SHOULD FIX BEFORE TRAINING** | operational |
+| 6 | Every checkpoint stores the frozen encoder (~540 MB est.); `strict=False` restore | **SHOULD FIX BEFORE TRAINING** | operational |
+| 7 | TF32 / matmul precision unasserted while artifacts claim `fp32` | **SHOULD FIX BEFORE TRAINING** | operational, guards a scientific constant |
+| 8 | `get_device_name(0)` in the measurement tool | **DOCUMENTATION ONLY** | reporting |
+| 9 | Validation-during-training device safety, mode restoration, no-dropout guarantee | **VERIFIED / NO ISSUE** | — |
+| 10 | Everything in AC.16 marked VERIFIED | **VERIFIED / NO ISSUE** | — |
+
+**STATUS: PRE-TRAIN DEVICE CONTRACT AUDIT FOUND ADDITIONAL BLOCKERS — DO NOT IMPLEMENT YET**
+**THE KNOWN DEVICE BLOCKER IS CONFIRMED: TRAINING WOULD RUN SILENTLY ON CPU, RECORDED NOWHERE**
+**A SECOND, SCIENTIFIC BLOCKER WAS FOUND: ADAPTER INITIALISATION IS NOT SEEDED (AC.7)**
+**`run_seed` DRIVES ONLY DATA ORDER, SO A PUBLISHED SEED CANNOT REPRODUCE ITS RUN (§11)**
+**TWO DECISION ENTRIES ARE REQUIRED — D-S1B-015 (DEVICE) AND D-S1B-016 (INIT SEED); NEITHER WRITTEN HERE**
+**PROPOSAL §8.4 SAYS "ONE GPU" BUT SPECIFIES NO SELECTION, NO FALLBACK, NO INDEX — IT IS UNSTATED**
+**FP32 IS SCIENTIFIC AND INTACT; AMP IS ABSENT; TF32 IS UNASSERTED AND SHOULD BE RECORDED**
+**VALIDATION-DURING-TRAINING IS DEVICE-SAFE AND MODE-SAFE — VERIFIED FROM THE CALL GRAPH**
+**TWO ZERO-UPDATE FRESH-RUNTIME PROBES ARE SPECIFIED IN AC.15 AND MUST RUN BEFORE TRAINING**
+**AUDIT ONLY — NO PRODUCTION CODE, NO TEST, NO CONSTANT, NO DECISION CHANGED**
+**TRAINING REMAINS UNAUTHORISED**
+
+---
+
+## AD. CROSS-CANDIDATE TRAINABLE-STATE LEAKAGE FOUND
+
+**Revision 14.** The positive nominal-run-independence gate that §AC's successor
+task opened found a **real scientific defect**, at HEAD
+`0588b722c7c5e34bf6bda8f5703cfda80f7939be`. Implementation was stopped
+immediately; **nothing was implemented**, and this section records the finding
+only.
+
+**No scientific Stage-1 campaign has ever been run, so no scientific result is
+contaminated.**
+
+### AD.1 The defect, from code
+
+`unmark/stage1/execute.py`:
+
+| Line | Statement | Position |
+|---|---|---|
+| **130** | `tokenizer, unmark_encoder, objective_cls = build_objective(revision)` | **once, BEFORE the loop** |
+| **154** | `for planned in schedule:` | the nominal-run loop |
+| **168** | `objective = objective_cls(unmark_encoder, provenance.weights)` | **inside the loop** |
+
+`Stage1Objective.__init__` stores the argument **by reference** —
+`self.unmark_encoder = unmark_encoder` — with no copy and no `deepcopy`.
+AST-verified: `unmark_encoder` is **never rebound inside the loop**;
+`build_objective` appears exactly twice in the file, at line 130 and at line 321
+in the unrelated `smoke_check`; and there is no `reset_parameters`, no
+`apply(...)` and no re-initialisation anywhere in `execute.py`.
+
+`train_run` then builds its optimizer over
+`objective.unmark_encoder.named_parameters()` (`trainer.py:508`) and calls
+`optimizer.step()` (`trainer.py:571`), which mutates those **shared**
+`nn.Parameter` objects **in place**.
+
+> **Every nominal run within one stage command therefore shares one
+> `UnmarkEncoder` instance, and hence one set of trainable adapter parameters.**
+
+### AD.2 Consequences per stage command
+
+| Command | Nominal runs | Effect |
+|---|---|---|
+| `lr-pilot` | 3 — `lr=0.0001`, `lr=0.0003`, `lr=0.001` | candidate 2 begins from candidate 1's **trained** adapter; candidate 3 from candidate 2's |
+| `r-phase1` | 5 — `r=0.25 … r=4` | the five candidates form a sequential trained-state chain |
+| `final-main` | 3 — `seed=36930`, `seed=7309`, `seed=5993` | seed 7309 begins from the trained 36930 adapter; seed 5993 from the trained 7309 adapter |
+
+The LR pilot is therefore **not three fresh-start LR candidates**. It is
+functionally **one sequential adapter trajectory with the learning rate changed
+twice**, and the r sweep is the same. Worst of all, the three `final-main` runs
+would be one continuously-trained adapter, which **destroys their intended
+interpretation as independent seed replicates** — the very evidence proposal §7
+requires ("If the improvement is within seed variance, there is no result").
+
+### AD.3 This is NOT §AC.7
+
+| | §AC.7 | AD (this finding) |
+|---|---|---|
+| Claim | fresh adapter initialisation **exists** but is uncontrolled by a declared seed | nominal runs 2..N receive **no fresh initialisation at all** — they inherit the previous candidate's **trained** adapter |
+| Severity | reproducibility of a run's starting point | independence of the runs themselves |
+
+**Both blockers are real.** The cross-candidate leakage is the more fundamental
+of the two: while it stands, a fresh-init hash contract cannot be satisfied at
+all, because runs 2..N have no fresh-init state to compare against.
+
+### AD.4 Why the previous real gates did not detect it
+
+**The prior PASS results stand and are not reopened.** The full four-condition
+real validation (§AA.1) and the corrected real runner smoke (§AB) were
+**single-run, no-update** gates: neither executed two nominal candidates through
+one `execute_stage` invocation. They therefore provide **no contradictory
+evidence**, and nothing here weakens them.
+
+Recorded honestly about this audit's own earlier work: **§AC's call graph was
+technically accurate** — it correctly showed `build_objective` occurring before
+`train_run`. §AC was interrogating **device placement**, and it did not ask where
+`build_objective` sat *relative to the nominal-run loop*. The omission was a
+question never posed, not a fact misread. The new **positive** independence gate
+— which demanded a hash-based contract rather than the absence of a suspicious
+call — is what exposed it.
+
+### AD.5 Proposed D-S1B-017 — nominal Stage-1 runs are independent fresh-start experiments
+
+**Not written to `docs/spec/decisions.md` in this audit-only task.** Proposed
+authoritative contract:
+
+1. The pinned frozen PhoBERT encoder **MAY** be loaded once per stage command and
+   reused between nominal runs — it is immutable scientific backbone state.
+2. Reuse is legal **only if**: encoder trainable parameters remain **zero**; the
+   encoder remains **eval**; it receives **no gradient**; and its **full
+   `state_dict` hash is unchanged before and after every nominal run, covering
+   parameters and registered buffers** (see AD.6(A)).
+3. **Every** nominal run **MUST** construct a **new** adapter instance.
+4. **No** trainable `Parameter` object or tensor storage may be shared between
+   nominal runs.
+5. **No** optimizer state and **no** sampler state may be shared between distinct
+   nominal runs.
+6. The adapter is initialised **on CPU** under D-S1B-016, before CUDA placement.
+7. Fresh initialisation is keyed by the **scientific seed**, never by LR, `r`, or
+   candidate execution order.
+8. At **update 0** of every fresh nominal run: *actual adapter hash* **==**
+   *expected fresh-init hash for that run_seed/init_seed*.
+9. The **only** legal trained-state inheritance is the **same** nominal run's
+   20k → 40k continuation.
+10. A continuation **MUST** restore checkpoint adapter state and **MUST NOT**
+    replace it with fresh-init state.
+
+#### AD.5.1 The seed nuance — verified against the real schedule
+
+Inspected at this HEAD:
+
+| Command | `run_seed` carried by each `PlannedRun` |
+|---|---|
+| `lr-pilot` | **21230** for all three (`SELECTION_SEED`) |
+| `r-phase1` | **21230** for all five (`SELECTION_SEED`) |
+| `final-main` | **36930**, **7309**, **5993** (`TRAIN_SEEDS`) |
+
+So the required invariant is **not** eleven distinct hashes. It is:
+
+```
+same run_seed  →  same deterministic init_seed
+               →  same expected fresh-init hash
+               →  INDEPENDENT adapter object / storage
+
+different init_seed → different expected fresh-init hash
+```
+
+Concretely: **all 8 hyperparameter-selection candidates share one expected
+fresh-init hash**, and the 3 `final-main` runs have 3 distinct ones — **two hash
+groups, not eleven**. LR, `r` and candidate label/order **MUST NOT** enter
+init-seed derivation.
+
+#### AD.5.2 Why LR and r must not touch the init seed — the scientific reason
+
+Because all 8 selection candidates share one `run_seed`, they share one
+data-order realization and one initialisation. That makes the LR and `r` sweeps
+**paired comparisons**: changing LR changes *only* LR.
+
+If LR or `r` entered the init-seed derivation, the conclusion *"LR A beats LR B"*
+would be confounded with *"initialisation A happened to be better than
+initialisation B"*, and the sweep would measure a mixture of the two. The
+conceptual contract is therefore:
+
+```
+scientific run_seed
+    ├── domain-separated train-order stream
+    └── domain-separated adapter-init stream
+```
+
+This matters most for the three `final-main` seeds, which remain the **only**
+source of seed-variance evidence.
+
+### AD.6 Requirements added for the future implementation
+
+Recorded here as obligations on the implementation task; **none implemented**.
+
+**(A) Frozen-encoder reuse needs structural *and* runtime guards.**
+The structural guarantee **already exists and is correct**: `UnmarkEncoder.train()`
+is overridden to force `self.encoder.eval()` after `super().train(mode)`, so the
+frozen encoder's dropout cannot reactivate through wrapper mode transitions.
+**This is not a newly discovered defect and must not be reported as one.** Reuse
+across nominal runs must add, as defence in depth:
+
+| Layer | Guarantee |
+|---|---|
+| existing `train()` override | **structural** |
+| `encoder.training is False` asserted immediately before **every** encoder forward | **runtime** — protects against a future direct `encoder.train()` bypassing wrapper discipline |
+| **full `state_dict` hash** unchanged before/after every nominal run | **mutation** — the *full* state dict, not parameters alone, so registered buffers are covered |
+
+Plus: encoder trainable parameter count **== 0**, and encoder gradients remain
+**None**.
+
+**(B) Hash equality does not prove storage independence.** Because the 8
+selection candidates *intentionally* share an init seed, equal hashes are
+**expected** and prove nothing about object identity. A **positive storage
+independence** test is required: build adapters A and B from the **same**
+init_seed, then prove `hash(A) == hash(B)`, `A is not B`, every authoritative
+trainable `Parameter` object in A `is not` its counterpart in B, and no tensor
+storage is shared — then **mutate one trainable tensor of A in place** and prove
+`hash(A)` changes while `hash(B)` is **exactly** unchanged. That mutation is
+**test-only and is not scientific training**. The contract therefore has two
+halves: **value reproducibility** *and* **storage independence**.
+
+**(C) Optimizer parameter identity must be verified on resume.** It is not enough
+that optimizer state values and devices are right. After restore, assert by
+**Python object identity** (`is`, not tensor-value equality) that every
+`Parameter` in `optimizer.param_groups` **is** one of the current authoritative
+adapter parameters, and that every authoritative trainable adapter parameter
+appears **exactly once**. No stale parameter, none from a prior nominal run, none
+missing, none duplicated, and no frozen-encoder parameter. This prevents the
+classic failure where a restored adapter is used for the forward while the
+optimizer still points at an older adapter's parameters.
+
+**(D) Continuation hash contract.** For a fresh nominal run let `H0` be the
+expected deterministic fresh-init adapter hash, and `Hc` the checkpoint adapter
+hash at its continuation point. The 20k → 40k continuation of the **same** run
+must restore **`Hc`**, and must **not** reset to `H0`. A fixture that
+deliberately mutates adapter state so that `Hc != H0` gives positive proof that
+continuation restores trained state rather than fresh initialisation — **with no
+scientific optimizer step**. That same fixture also establishes (C).
+
+### AD.7 Intended architecture — refined
+
+Re-instantiating PhoBERT per candidate is **not** required. The scientific
+isolation boundary is the **trainable adapter state**; the frozen encoder is a
+pinned immutable shared dependency.
+
+```
+per stage command:
+    load pinned tokenizer once
+    load pinned frozen PhoBERT encoder once; verify freeze / eval / identity
+    resolve the scientific CUDA execution contract (D-S1B-015)
+    the immutable encoder MAY REMAIN RESIDENT on the selected device
+        across nominal runs — no CPU↔CUDA shuttling of ~135M parameters
+
+for EACH fresh nominal run:
+    derive scientific run identity
+    derive domain-separated init_seed from run_seed          (D-S1B-016)
+    explicitly seed CPU initialisation
+    construct a NEW OrthographyInputAdapter on CPU
+    establish the expected fresh-init adapter hash on CPU
+    move ONLY the new adapter to the already-selected encoder device
+    construct a NEW wrapper/objective:  SAME immutable encoder + NEW adapter
+    verify:  encoder.training is False
+             adapter fresh hash correct
+             adapter storage independent
+    construct a NEW optimizer bound to THIS adapter
+    execute only this nominal candidate
+```
+
+This preserves **hardware-independent adapter initialisation** while avoiding
+needless transfer or re-instantiation of the ~135M-parameter frozen backbone.
+**The frozen immutable encoder is the only cross-nominal shared model object.
+Trainable adapter state, optimizer state and sampler state are NEVER shared
+between distinct nominal runs.**
+
+### AD.8 Methodological limitation to carry forward
+
+Confirmed by inspection (AD.5.1): all eight hyperparameter-selection candidates
+run under **one** precommitted selection seed, `21230`.
+
+> Hyperparameter candidates use a **single paired development realization**, so
+> that LR and `r` comparisons hold initialisation and data order fixed.
+> Consequently hyperparameter selection itself is optimised on one stochastic
+> realization; seed variability is evaluated separately by the three precommitted
+> `final-main` seeds.
+
+**Classification: DOCUMENTATION / LIMITATION. Not a bug. Not a reason to add
+runs. Not a reason to change the 3 + 5 + 3 protocol.** Run counts and selection
+seeds are unchanged. The repository has no dedicated persistent-limitations
+document, so **the FINAL CONFIGURATION FREEZE and the final repository-wide
+review must carry this limitation forward** into the eventual write-up.
+
+### AD.9 Final blocker table
+
+| # | Finding | Class | Kind |
+|---|---|---|---|
+| 1 | **Cross-candidate trainable-state leakage** — nominal runs share one adapter; candidates 2..N inherit trained weights | **MUST FIX BEFORE TRAINING** | **scientific** |
+| 2 | D-S1B-015 — CUDA execution selection, fail-closed, and deterministic numerical policy | **MUST DECIDE BEFORE TRAINING** | operational |
+| 3 | D-S1B-016 — domain-separated, CPU-first deterministic adapter initialisation | **MUST DECIDE BEFORE TRAINING** | **scientific** (reproducibility) |
+| 4 | **D-S1B-017 — nominal-run independence** (this section) | **MUST DECIDE BEFORE TRAINING** | **scientific** |
+| 5 | Training silently runs end-to-end on CPU; backend recorded nowhere (§AC.4) | **MUST FIX BEFORE TRAINING** | operational |
+| 6 | Backend drift across a 20k→40k continuation undetectable (§AC.8) | **MUST FIX BEFORE TRAINING** | operational |
+| 7 | Placement / optimizer-state ordering unwritten and untested (§AC.6) | **SHOULD FIX BEFORE TRAINING** | operational |
+| 8 | Frozen encoder in every checkpoint (~540 MB est.); `strict=False` restore (§AC.9) | **SHOULD FIX BEFORE TRAINING** | operational |
+| 9 | TF32 / matmul precision unasserted while artifacts claim `fp32` (§AC.11) | **SHOULD FIX BEFORE TRAINING** | operational, guards a scientific constant |
+| 10 | Training-time validation device/mode safety; `UnmarkEncoder.train()` override | **VERIFIED / NO ISSUE** | — |
+| 11 | Everything in §AC.16 marked VERIFIED | **VERIFIED / NO ISSUE** | — |
+
+### AD.10 State of this task
+
+**No implementation occurred.** No production code, no test, and no
+`docs/spec/decisions.md` change. **D-S1B-015, D-S1B-016 and D-S1B-017 are all
+proposed and none is written.** The two fresh-CUDA zero-update probes (§AC.15),
+the separate performance measurement, the **FINAL CONFIGURATION FREEZE**, the
+final repository-wide review, and **human approval** all remain outstanding.
+
+**STATUS: PRE-TRAIN CROSS-CANDIDATE LEAKAGE RECORDED — THREE DECISIONS AWAIT IMPLEMENTATION**
+**NOMINAL RUNS SHARE ONE `UnmarkEncoder`: `build_objective` IS CALLED ONCE, OUTSIDE THE RUN LOOP**
+**`lr-pilot` IS ONE ADAPTER TRAJECTORY WITH TWO LR CHANGES, NOT THREE FRESH-START CANDIDATES**
+**THE THREE `final-main` SEEDS WOULD NOT BE INDEPENDENT REPLICATES — SEED-VARIANCE EVIDENCE IS LOST**
+**DISTINCT FROM §AC.7: RUNS 2..N GET NO FRESH INITIALISATION AT ALL, NOT MERELY AN UNSEEDED ONE**
+**PRIOR VALIDATION AND SMOKE PASSES STAND — THEY WERE SINGLE-RUN GATES AND CANNOT CONTRADICT THIS**
+**§AC's CALL GRAPH WAS ACCURATE; IT ASKED ABOUT DEVICE PLACEMENT, NOT LOOP POSITION**
+**EXPECTED INVARIANT IS TWO HASH GROUPS — 8 SELECTION CANDIDATES SHARE ONE, 3 SEEDS DIFFER**
+**LR AND r MUST NOT ENTER INIT-SEED DERIVATION, OR THE PAIRED COMPARISON IS CONFOUNDED**
+**THE FROZEN ENCODER MAY BE SHARED AND MAY STAY RESIDENT; TRAINABLE STATE NEVER MAY**
+**NO SCIENTIFIC TRAINING HAS OCCURRED — NO RESULT IS CONTAMINATED**
+**AUDIT ONLY — NO CODE, NO TESTS, NO decisions.md; TRAINING REMAINS FORBIDDEN**
