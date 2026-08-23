@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -162,16 +163,23 @@ def run_prepare_corpus(args) -> int:
 
     print("[6/6] deterministic pre-chunking", flush=True)
     tokenizer = _load_tokenizer(args.revision)
-    reference_length, base_length = _length_functions(tokenizer)
+    reference_length, base_length, transforms = _length_functions(tokenizer)
     classifier = make_classifier(try_load_inventory())
 
     total = len(kept)
     every = max(1, total // 100)
+    started = time.monotonic()
+    # Early heartbeat first: at 1% the first line would arrive after ~11 000
+    # documents, which is exactly how a severe slowdown stayed invisible for
+    # 13 minutes. Counts and elapsed time only -- never corpus text.
+    heartbeats = (1, 10, 50, 100, 500, 1_000, 5_000, 10_000)
 
     def report(done: int, chunks_so_far: int) -> None:
-        if done % every == 0 or done == total:
+        if done in heartbeats or done % every == 0 or done == total:
+            elapsed = time.monotonic() - started
+            rate = done / elapsed if elapsed > 0 else 0.0
             print(f"    chunking {done}/{total} documents ({100 * done / total:.1f}%), "
-                  f"{chunks_so_far} chunks", flush=True)
+                  f"{chunks_so_far} chunks, {elapsed:.1f}s, {rate:.0f} docs/s", flush=True)
 
     try:
         chunks = chunk_corpus(
@@ -187,6 +195,11 @@ def run_prepare_corpus(args) -> int:
         raise
     parents = verify_no_parent_spans_partitions(chunks)
     print(f"  chunked AFTER splitting: {len(chunks)} chunks from {parents} documents")
+    counters = transforms.counters
+    print(f"    length queries {counters.length_queries}, incremental extensions "
+          f"{counters.incremental_extensions}, full rescans {counters.full_rescans}, "
+          f"canon calls {counters.canon_calls}, tokenizer calls {counters.tokenizer_calls}, "
+          f"composition verifications {counters.verifications}")
 
     manifest = build_manifest(
         source=source,
@@ -240,19 +253,18 @@ def _load_tokenizer(revision: str):
 
 
 def _length_functions(tokenizer):
-    """Token counts INCLUDING special tokens, for both Stage-1 paths."""
-    from unmark.orthography import canon, decompose
+    """Token counts INCLUDING special tokens, for both Stage-1 paths.
 
-    def reference_length(text: str) -> int:
-        ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(canon(text)))
-        return len(tokenizer.build_inputs_with_special_tokens(list(ids)))
+    Delegates to `unmark.stage1.lengths`, which memoises the orthographic
+    transforms and composes token counts per non-whitespace run. The values are
+    **identical** to canonicalising and tokenizing each candidate whole -- see
+    §R -- and the composition is verified against the whole-string result on the
+    first queries of every run.
+    """
+    from unmark.stage1.lengths import build_length_functions
 
-    def base_length(text: str) -> int:
-        base_text = decompose(canon(text)).base_text
-        ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(base_text))
-        return len(tokenizer.build_inputs_with_special_tokens(list(ids)))
-
-    return reference_length, base_length
+    reference_length, base_length, transforms = build_length_functions(tokenizer)
+    return reference_length, base_length, transforms
 
 
 # ---------------------------------------------------------------------------

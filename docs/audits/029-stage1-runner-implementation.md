@@ -9,6 +9,7 @@
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Revision 3** | **2026-08-23** — **third post-commit real-corpus defect**: stage-6 pre-chunking re-canonicalised every growing prefix (~250x document length) and produced no 1 % line in 13 minutes. Repaired by memoised, composable transforms and per-run token composition; `chunking.py` untouched. See §R. |
 | **Revision 2** | **2026-08-23** — **second post-commit real-corpus defect**: the stage-4 contamination screen applied full `canon()` to all 1 118 224 documents and ran >7 h. Repaired with two proven necessary-condition prefilters; the criterion is unchanged. See §Q. |
 | **Revision 1a** | **2026-08-22** — evidence-accuracy cleanup. Audit-only: §L/§M labelled historical, three overstated §P claims corrected, and the uncaptured original exception recorded. No code, test or decision changed. See §P.11. |
 | **Revision 1** | **2026-08-22** — **post-commit real-corpus defect and repair**, revised in place. The chunker could not prepare the locked corpus: "never split a syllable" had been implemented as "cut only at whitespace", and real UVW-2026 contains oversized **non-whitespace** units. See §P. |
@@ -1068,6 +1069,248 @@ non-canon-invariant transforms — the unsafe directions — **are** caught.
 | 24 | Nothing staged; no prohibited git operation | **yes** |
 
 ---
+
+## R. REVISION 3 — STAGE-6 CHUNKING PERFORMANCE DEFECT
+
+**Date:** 2026-08-23 **Baseline commit:** `55aa7fe50c427949a1b49878979551b978d29400`
+
+### R.1 What the real run showed
+
+Revision 2 was committed and the **full pinned corpus** was run. Stages 1-5 now
+execute correctly against real data:
+
+| Stage | Result |
+|---|---|
+| 1 pin verified | **PASS** |
+| 2 read + concatenate | **PASS** — 1 118 224 documents |
+| 3 schema + duplicate ids | **PASS** — ids unique |
+| 4 contamination screen | **PASS in ~16 s** (was >7 h) |
+| 5 document split | **PASS** — train **1 113 224**, dev **5 000** |
+| 6 pre-chunking | **starts at ~25.6 s, then no 1 % line after ~13 minutes** |
+
+The Revision-2 screen result on real data: **0 excluded**, 296 628 length-guard
+skips, 821 596 placement-insensitive checks, **0 tier-3 candidates**, **0 UVW
+full-canon calls**. Official UIT-VSFC TEST remained sealed.
+
+One percent is ~11 182 documents, so stage 6 had not completed 1 % in 13 minutes.
+
+A 120-second `faulthandler` probe took four samples. Three were in
+`canon`/`decompose` beneath `base_length`, one in the PhoBERT tokenizer beneath
+`reference_length` — **all four inside `fits` → `chunk_document`**:
+
+```
+units.py:27 split_units <- placement.py:156 <- canonical.py:106 canon
+        <- runner.py:251 base_length <- chunking.py:191 fits <- chunk_document
+tokenization_phobert.py:287 _convert_token_to_id
+        <- runner.py:247 reference_length <- chunking.py:191 fits <- chunk_document
+decompose.py:131 decompose <- runner.py:251 base_length <- fits <- chunk_document
+```
+
+**No sample was inside `safe_cut_offsets` or the oversized-unit fallback.** This
+is ordinary `fits` evaluation, not the Revision-1 repair.
+
+### R.2 Root cause — measured, not inferred from the stack
+
+`fits(start, end)` slices `content[start:end]` and calls **both** length
+functions on the *whole growing candidate*. The greedy scan extends one segment
+at a time, so a chunk spanning `k` segments canonicalises prefixes totalling
+`O(k x chunk_length)`.
+
+Instrumented on real-shaped Vietnamese text (`canon`/`decompose` real, tokenizer
+mocked):
+
+| Document | Chunks | `fits` calls | Chars fed to `reference_length` | Chars fed to `base_length` |
+|---|---|---|---|---|
+| 870 | 1 | 400 | 167 565 = **193x** doc | 167 565 = **193x** doc |
+| 3 610 | 4 | 1 606 | 884 926 = **245x** doc | 881 484 = **244x** doc |
+| 14 206 | 13 | 6 424 | 3 576 659 = **252x** doc | 3 563 074 = **251x** doc |
+
+**Every document is pushed through `canon`/`decompose` roughly 250 times its own
+length**, giving ~0.8 K document-chars/s. The answers to Task A:
+
+1. For `S` segments: `S` calls each to `reference_length` and `base_length`,
+   hence `S` calls each to `canon` and `decompose`, and `S` tokenizations.
+2. **Yes** — `fits` recomputes the entire growing candidate from scratch.
+3. **Yes** — every prefix transform is discarded and re-derived.
+4. Not merely `O(total text)`: it is `O(sum of growing candidate lengths)`,
+   i.e. quadratic in segments per chunk.
+5. Not duplicate *identical* queries — each `(start, end)` is asked once. The
+   waste is **repeated prefixes**.
+
+### R.3 The repair — two exact reuse properties
+
+**`chunking.py` is not modified.** Its algorithm, decision order and `fits`
+truth values are untouched; only the cost of each query changes. That is what
+makes boundary identity structural rather than argued.
+
+**Property 1 — transform composability (this repository's own code).** For a
+text split into maximal whitespace / non-whitespace runs `s1 … sn`:
+
+```
+canon(T)                      == "".join(canon(si))
+decompose(canon(T)).base_text == "".join(decompose(canon(si)).base_text)
+```
+
+because NFC never composes across a whitespace starter, `apply_modern_placement`
+moves a tone mark only *within* a maximal alphabetic run (which whitespace
+terminates), and `base_text` is a per-character mapping. Verified on **17 007**
+strings including NFD forms and random combining-mark sequences: **0
+counterexamples**.
+
+**Property 2 — per-chunk tokenization (already audited on the real model).**
+`D-B3B1B-001` established on this exact pinned revision that PhoBERT's fastBPE
+operates over **maximal non-whitespace chunks**: splitting on non-whitespace runs
+and tokenizing each whole chunk reproduced the authoritative token sequence
+**13/13** and token IDs **13/13** across 119 chunks, with zero surface
+reconstruction failures. So
+
+```
+token_len(t) == specials + sum over non-whitespace runs r of len(tokenize(r))
+```
+
+**This is not taken on trust.** Revision 1 was caused by borrowing a B3B fact
+into chunking without rechecking it, so `TokenLengthComposer` computes the first
+**256** distinct queries of every run *both* ways — whole string and composed —
+and raises `Stage1ContractViolation` on any disagreement. The property is a
+**checked precondition of every run**, and a deliberately non-conforming
+tokenizer is used in the tests to prove the check bites.
+
+**No monotonicity is used anywhere.** Nothing assumes token counts grow with
+text length; the composition is over *disjoint runs of one text*. The greedy
+scan still evaluates every candidate in order and still stops at the first
+failure. The oracle suite includes a **non-monotonic tokenizer** specifically to
+prove no such assumption slipped in.
+
+The growing prefix is extended rather than rescanned, and only when the junction
+is provably not inside a run (previous text ends with whitespace, or the delta
+begins with it). Every fast-path candidate satisfies this; the oversized-unit
+fallback cuts inside a run, the condition fails, and the full path runs.
+**Correctness never depends on the shortcut being taken.**
+
+### R.4 Measured effect — identical output
+
+12 documents, 80 415 characters, 72 chunks, mock tokenizer:
+
+| Implementation | Time | Throughput | Speedup |
+|---|---|---|---|
+| committed (`55aa7fe`) | 99.42 s | 0.8 K doc-chars/s | 1x |
+| + transform memo only | 4.63 s | 16.9 K doc-chars/s | 21.5x |
+| + per-run token composition | 1.66 s | 47.1 K doc-chars/s | 59.1x |
+| **+ incremental prefix extension** | **0.10 s** | **753.7 K doc-chars/s** | **956x** |
+
+**Output identical at every step** — chunk ids, source ranges, text, and *both*
+recorded lengths.
+
+Counters on that run: `canon` called on **58 characters** total (0.0007x the
+corpus text, was ~250x); runs examined **72 060**, down from **9 093 300**;
+71 892 incremental extensions vs 288 full rescans.
+
+**This is a synthetic, machine-dependent benchmark with a mock tokenizer.** It is
+not a corpus measurement and not a prediction of Colab wall-clock.
+
+### R.5 Files changed in Revision 3
+
+| File | Change |
+|---|---|
+| `unmark/stage1/lengths.py` | **new** — `ComposedTransforms`, `TokenLengthComposer` (with the runtime verifier), `build_length_functions`, counters |
+| `scripts/stage1_runner.py` | uses `build_length_functions`; **early heartbeat** at 1/10/50/100/500/1 000/5 000/10 000 documents then ~1 %, with elapsed time and docs/s; prints transform counters |
+| `scripts/stage1_tokenizer_probe.py` | **new** — Colab-only real-tokenizer micro-probe (Task E) |
+| `tests/test_stage1_lengths.py` | **new** — 220 tests: lemmas, equivalence oracle, verifier, counters |
+| `docs/audits/029-…md` | this section |
+
+**`unmark/stage1/chunking.py` is UNCHANGED**, as are `corpus.py` (Revision 2),
+`canon()`, the corpus pin, the split, `max_length`, and every scientific value.
+`docs/spec/decisions.md` is **not** changed: no scientific decision moved, and
+D-S1B-009 already states the chunking contract at the level of *boundaries*, not
+of length-function implementation.
+
+### R.6 Tests
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_lengths.py` | **220 passed** |
+| `tests/test_stage1_chunking.py` | 35 passed (unchanged) |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed (Revision 2 untouched) |
+| `tests/test_stage1_runner_contract.py` | 39 passed |
+| Full repository | **3 042 passed, 97 skipped** (was 2 822 / 97) |
+
+The equivalence oracle keeps the pre-optimisation implementation **in test code
+only**. It compares chunk count, text, `source_start`, `source_end`, chunk ids,
+parent ids, partition, order, exact reconstruction, whether `ChunkingViolation`
+is raised, **and the violation message including its provenance** — across
+16 document families x 2 tokenizers x 3 `max_length` values, plus 40 randomised
+documents and both path-asymmetry directions.
+
+### R.7 Colab micro-probe (Task E)
+
+`scripts/stage1_tokenizer_probe.py` validates, on `vinai/phobert-base` @
+`01daacda…`, both properties and old-vs-new boundaries on ~19 strings and 8
+documents. It loads **no encoder**, runs **no forward pass**, constructs **no
+optimizer** — AST-verified — and prints a JSON report with `status: PASS|FAIL`.
+
+**It has not been run.** The ML-free local `.venv` has no transformers, and
+nothing was downloaded.
+
+### R.8 Parallelism (Task F)
+
+**None added.** The algorithmic repair removed the redundant work; multiprocessing
+would have masked it, and worker count must not become a knob. It can be
+reconsidered only if the repaired serial implementation is *measured* to remain a
+blocker on real data.
+
+### R.9 Limitations
+
+1. **The full real corpus has NOT been chunked.** No stage-6 success is claimed.
+   The 766 MB of pinned bytes are not available here and were not downloaded.
+2. **The 956x figure is synthetic**, with a mock tokenizer, on one machine. Real
+   PhoBERT tokenization cost per unique run is not measured here; the per-run
+   memo should make it small after warmup, but that is an expectation.
+3. **The Colab probe has never executed**, so Property 2 is currently supported
+   by D-B3B1B-001's evidence plus the runtime verifier, not by a fresh
+   measurement.
+4. **Real chunk counts, the length distribution and any indivisible-span
+   failures remain unknown** — stage 6 has never completed.
+5. The memo is capped at 500 000 entries per table; eviction costs recomputation
+   and changes no result, but the real vocabulary size is unmeasured.
+6. Revision 1's chunker is still unverified on real data, since stage 6 has never
+   finished.
+
+### R.10 Self-audit for Revision 3
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Audit 029 revised **in place**; no Audit 030 | **yes** |
+| 2 | Optimised output equals the old chunker's output | **yes** — full-field oracle, incl. violation provenance |
+| 3 | No monotonicity assumption | **yes** — non-monotonic tokenizer in the oracle matrix |
+| 4 | No additivity assumed *without proof* | **yes** — D-B3B1B-001 evidence **plus** a runtime verifier that fails closed |
+| 5 | The verifier actually bites | **yes** — non-conforming tokenizer test |
+| 6 | Both paths still checked | **yes** — reference and base, asymmetry tested both directions |
+| 7 | Fallback semantics unchanged | **yes** — `chunking.py` untouched; shortcut declines inside a run |
+| 8 | Exact range tiling unchanged | **yes** — `chunking.py` untouched |
+| 9 | `max_length = 256` unchanged; no max-length check weakened | **yes** |
+| 10 | Tokenizer revision unchanged | **yes** |
+| 11 | No normalisation, truncation, dropping, rewriting or synthetic whitespace | **yes** |
+| 12 | Revision-2 contamination code untouched | **yes** — `corpus.py` not modified |
+| 13 | No official UIT-VSFC TEST route | **yes** |
+| 14 | No raw corpus text in progress output, counters or audit | **yes** |
+| 15 | Early heartbeat added; ~1 % retained | **yes** — counts, elapsed, docs/s only |
+| 16 | No parallelism added | **yes** |
+| 17 | No scientific hyperparameter changed | **yes** |
+| 18 | Focused + full suites run | **yes** — 220 / 3 042 passed |
+| 19 | Real corpus chunked? | **NO** |
+| 20 | Real stage-6 PASS claimed? | **NO** |
+| 21 | Colab probe executed? | **NO** |
+| 22 | Nothing staged; no prohibited git operation | **yes** |
+
+---
+
+**STATUS (Revision 3): CHUNKING PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**
+**DEFECT 3: STAGE-6 RE-CANONICALISED EVERY GROWING PREFIX (~250x DOCUMENT LENGTH) — REPAIRED (§R)**
+**CHUNKING ALGORITHM UNCHANGED — `chunking.py` NOT MODIFIED; ONLY LENGTH-QUERY COST**
+**956x ON A SYNTHETIC BENCHMARK, OUTPUT IDENTICAL INCLUDING VIOLATION PROVENANCE**
+**NO MONOTONICITY ASSUMED; PER-CHUNK TOKENIZATION VERIFIED AT RUNTIME, FAILS CLOSED**
+**STAGES 1-5 NOW PASS ON REAL DATA — STAGE 6 HAS NEVER COMPLETED**
+**COLAB TOKENIZER PROBE WRITTEN BUT NOT RUN**
 
 **STATUS (Revision 2): PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**
 **DEFECT 2: STAGE-4 CONTAMINATION SCREEN CANONICALISED ALL 1 118 224 DOCUMENTS (>7 h) — REPAIRED (§Q)**
