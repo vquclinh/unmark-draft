@@ -117,7 +117,7 @@ def evaluate(
     """
     import torch
 
-    from unmark.stage1.data import collate_stage1_batch
+    from unmark.stage1.data import batch_to_device, collate_stage1_batch, module_device
     from unmark.stage1.objective import representation_distance
 
     missing = [c for c in VALIDATION_CONDITIONS if c not in prepared_by_condition]
@@ -126,13 +126,21 @@ def evaluate(
 
     distances: dict[str, float] = {}
     clean_total: list[float] = []
+    # The batch follows the model. `collate_stage1_batch` builds CPU tensors and
+    # the objective never moves its inputs, so an objective on an accelerator
+    # would otherwise be handed CPU ids (Audit 030 §Y). Derived from the
+    # objective's own parameters; a no-op on CPU.
+    device = module_device(objective)
     objective.eval()
     with torch.no_grad():
         for condition in VALIDATION_CONDITIONS:
             prepared = list(prepared_by_condition[condition])
             per_example: list[float] = []
             for start in range(0, len(prepared), batch_size):
-                batch = collate_stage1_batch(prepared[start : start + batch_size], pad_token_id)
+                batch = batch_to_device(
+                    collate_stage1_batch(prepared[start : start + batch_size], pad_token_id),
+                    device,
+                )
                 reference = objective.reference_representation(
                     batch["reference_input_ids"],
                     batch["reference_attention_mask"],

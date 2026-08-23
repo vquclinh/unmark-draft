@@ -466,3 +466,47 @@ def collate_stage1_batch(
                 value, dtype=torch.bool if key in _BOOL_FIELDS else torch.long
             )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Device ownership -- ONE boundary, shared by training, validation and smoke
+# ---------------------------------------------------------------------------
+# `collate_stage1_batch` builds CPU tensors, and neither `Stage1Objective` nor
+# `UnmarkEncoder` moves its inputs: `reference_representation` and
+# `adapted_representation` hand `input_ids` straight to the encoder. So a caller
+# that puts the model on an accelerator MUST put the batch there too.
+#
+# That was true but written down nowhere, and nothing did it. The measurement
+# tool moved the encoder to CUDA and left the batch on the CPU, which the fourth
+# real smoke caught as "index is on cpu, different from other tensors on cuda:0"
+# (Audit 030 §Y). The two functions below make the boundary explicit, and
+# `evaluate` and `train_run` -- the only two places that assemble a batch --
+# apply it, so every path agrees.
+#
+# The device is always DERIVED from the module. Nothing here hard-codes a
+# device, reads an environment variable, or sets a global default.
+def module_device(module: Any) -> Any:
+    """The device this module's parameters live on.
+
+    Falls back to CPU for a parameterless module, which no real Stage-1
+    objective is, so a test double without parameters still behaves.
+    """
+    import torch
+
+    try:
+        return next(module.parameters()).device
+    except StopIteration:  # pragma: no cover - real objectives have parameters
+        return torch.device("cpu")
+
+
+def batch_to_device(batch: dict[str, Any], device: Any) -> dict[str, Any]:
+    """Move every tensor in a collated batch to `device`. Non-tensors pass through.
+
+    A no-op when the batch is already there, so the CPU path is unchanged.
+    """
+    import torch
+
+    return {
+        key: (value.to(device) if torch.is_tensor(value) else value)
+        for key, value in batch.items()
+    }

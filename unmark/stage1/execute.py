@@ -291,7 +291,13 @@ def smoke_check(
 
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.stage1.checkpoint import verify_prepared_corpus
-    from unmark.stage1.data import Stage1Example, collate_stage1_batch, prepare_example
+    from unmark.stage1.data import (
+        Stage1Example,
+        batch_to_device,
+        collate_stage1_batch,
+        module_device,
+        prepare_example,
+    )
     from unmark.stage1.preflight import verify_scientific_inputs
 
     inputs = verify_scientific_inputs()
@@ -327,7 +333,12 @@ def smoke_check(
         )
         for cid in sample
     ]
-    batch = collate_stage1_batch([p for p in prepared if p is not None], tokenizer.pad_token_id)
+    # The same one boundary `evaluate` and `train_run` use: the batch follows the
+    # model, derived from the objective's own parameters. A no-op on CPU.
+    batch = batch_to_device(
+        collate_stage1_batch([p for p in prepared if p is not None], tokenizer.pad_token_id),
+        module_device(objective),
+    )
     with torch.no_grad():
         result = objective(batch)
     print(json.dumps({

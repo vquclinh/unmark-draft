@@ -16,15 +16,35 @@
 | **Revision 6 — first real smoke** | 2026-08-23 — the **first real Colab pre-train smoke** was run at `8f07842`. It passed every corpus gate (byte-exact restore, manifest, `COMPLETE.json`) and stopped fail-closed at `tests/test_stage1_training_resume.py`: **6 failed, 8 passed**, all six dying in setup on `RunProvenance(**mine.to_dict())`. Traced to a **test-construction bug** — `to_dict()` is artifact serialization, not a constructor round trip — plus one real gap: the derived weights were serialized and never validated on read. **No model was loaded.** See **§V** |
 | **Revision 7 — second real smoke** | 2026-08-23 — the **second real Colab no-update smoke** ran at `b84b4da`. Corpus gates, and the 29 + 17 + 22 provenance/resume/measurement tests, all **passed on real hardware** — confirming §V. It then failed closed in condition preparation with `EligibilityUnresolved`: the pinned syllable inventory is **deliberately not committed** and a fresh runtime had not provisioned it. Classified **A + C** — the artifact was already locked by D-B3A-001, but the check ran *after* model load and the **blocking D-S1A-008 was unimplemented**. **No model forward, no optimizer, no update.** See **§W** |
 | **Revision 8 — third real smoke** | 2026-08-23 — the **third real Colab no-update smoke** ran at `ebbe553`. §W's inventory repair **held completely** (fetch, SHA, shape, `--verify-only`, Drive persistence, preflight before model load), and 31 + 30 + 17 + 22 tests passed on real hardware. Validation then failed closed on `prepare_condition_batch(..., truncation=None, ...)` — `'NoneType' object has no attribute 'check'`. **Measurement-only** (A + D): every production caller passes the authoritative `TRUNCATION`. **PhoBERT was resident but no forward, no optimizer, no update.** See **§X** |
+| **Revision 9 — fourth real smoke** | 2026-08-23 — the **fourth real Colab no-update smoke** ran at `6bd6452`. All corpus, inventory and preparation gates passed (14 + 31 + 30 + 17). It stopped at the **test gate**: the §X real-seam tests reached `evaluate` and hit `Expected all tensors to be on the same device`. A **true positive** — the tool moved the encoder to CUDA and left every batch on the CPU, so real PhoBERT would have failed identically. Repaired in the shared layer, not the fixture. **The real validation command was never run.** See **§Y** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN TRUNCATION-WIRING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**PRE-TRAIN DEVICE-CONTRACT REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
 
-> **§X is the current verdict.** The third real smoke confirmed §W's inventory
+> **§Y is the current verdict.** The fourth real smoke passed every corpus,
+> inventory and preparation gate and then stopped at the validation-measurement
+> **test gate** with a cross-device error. That failure was a **true positive**:
+> the injected fixture mirrors the production objective exactly — neither moves
+> its inputs — so the measurement tool, which put the encoder on CUDA and left
+> every batch on the CPU, would have failed identically against real PhoBERT.
+> Repaired in the **shared layer**: `evaluate`, `train_run` and `smoke_check` now
+> all place the batch on the model's device, derived from the module. No fixture
+> was changed, the CPU path is a no-op, and `objective.py` is byte-unchanged.
+> §T–§X are preserved unchanged.
+>
+> **One open operational item** is recorded, not decided: `execute_stage` performs
+> no device placement at all, so the *training* device remains unchosen.
+>
+> **The real no-update smoke has NOT passed.** The fourth smoke never ran
+> `--validation --require-cuda`: no forward, no optimizer, no update has occurred.
+
+~~**PRE-TRAIN TRUNCATION-WIRING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**~~ **— superseded by §Y**
+
+> **§X was the previous verdict.** The third real smoke confirmed §W's inventory
 > repair end to end on real hardware, then failed closed in condition preparation:
 > the measurement tool passed `truncation=None`, which is not a valid
 > `TruncationPolicy`. **Production training, validation and the smoke were never
@@ -2016,3 +2036,205 @@ smoke is required.
 **PhoBERT WAS RESIDENT ON GPU BUT NO FORWARD, NO OPTIMIZER, NO UPDATE OCCURRED**
 **§W INVENTORY REPAIR INTACT; STAGE 6 UNCHANGED; PREPARED CORPUS AUTHORITATIVE; TEST SEALED**
 **A FOURTH REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM ONE PASSED**
+
+---
+
+## Y. FOURTH REAL NO-UPDATE SMOKE — DEVICE-CONTRACT FAILURE
+
+**Revision 9.** The fourth real smoke ran at the committed §X HEAD. Every corpus,
+inventory and preparation gate passed. It stopped at the **validation-measurement
+test gate**, where the §X real-seam tests — which now genuinely execute the
+preparation and evaluation path — surfaced a cross-device error.
+
+**The test failure was a TRUE POSITIVE.** It is the reason this section is not
+about a broken fixture.
+
+### Y.1 What the real rerun established
+
+| Gate | Result |
+|---|---|
+| HEAD | `6bd6452dabebb266e0c4bb7561dad7687d64ffd2` |
+| Exact HEAD / clean repository | **PASS** |
+| Pinned inventory restore from Drive | **PASS** |
+| Inventory `--verify-only` | **PASS** |
+| Prepared corpus byte-exact restore | **PASS** |
+| `COMPLETE.json` / membership digest | **PASS** |
+| `tests/test_stage1_validation_preparation.py` | **14 passed** |
+| `tests/test_stage1_inventory_preflight.py` | **31 passed** |
+| `tests/test_stage1_provenance_contract.py` | **30 passed** |
+| `tests/test_stage1_training_resume.py` | **17 passed** |
+| `tests/test_stage1_validation_measurement.py` | **2 failed, 23 passed** |
+| Failing tests | `test_validation_timing_runs_the_real_preparation_end_to_end`, `test_the_tool_passes_the_production_truncation_object_at_runtime` |
+| Exact error | `RuntimeError: Expected all tensors to be on the same device, but got index is on cpu, different from other tensors on cuda:0` |
+| Real validation command | **NOT RUN** |
+| Real validation forward | **NOT RUN IN FOURTH SMOKE** |
+| Optimizer | **NONE** |
+| Parameter update | **ZERO** |
+| Training | **NOT STARTED** |
+
+Both failures occurred **after** passing through the §X preparation seam, inside
+`evaluate`. §X's repair therefore held; the new test reached further than any
+previous run and found the next real defect.
+
+### Y.2 The device contract, re-derived
+
+| Question | Answer |
+|---|---|
+| Where are parameters moved to CUDA? | **`scripts/stage1_pretrain_measurements.py:409`** — `unmark_encoder.to(device)`. This was the **only** `.to(device)` in the entire Stage-1 stack |
+| Where are input ids moved? | **Nowhere.** `collate_stage1_batch` builds CPU tensors with no device argument |
+| Where are attention masks moved? | **Nowhere**, same call |
+| Who owns transfer? | **The batch assembler** — by implication, never by statement |
+| Explicit or incidental? | **Incidental.** No decision, spec or docstring named an owner |
+| Do the objective methods move tensors? | **No.** `reference_representation` passes `input_ids` straight to the encoder; `adapted_representation` passes them to `UnmarkEncoder`. AST-verified: no `.to(...)` in either |
+| Does the model wrapper move them? | **No.** `unmark/modeling/adapter.py:621`'s `.to(derived.device)` is a comparison convenience, not input transfer |
+
+So the implemented contract is: **the objective never moves its inputs; whoever
+assembles the batch must place it on the model's device.** Nothing did.
+
+### Y.3 Classification: **B + D**, not A
+
+**Not A (fixture-only).** The injected `_TinyObjective` mirrors the production
+interface *exactly* — it does not move its inputs, because `Stage1Objective`
+does not either. That fidelity is precisely why it reproduced a real failure.
+"Fixing" the fixture with `ids.to("cuda")` would have made the test green and left
+the real `--validation --require-cuda` run failing **identically** on real PhoBERT,
+because `evaluate` would still have handed CPU tensors to a CUDA encoder.
+
+**B — a real measurement/evaluator device-wiring defect.** The tool moved the
+model to CUDA and left every batch on the CPU. On any CUDA host this fails, with
+the tiny model or with real PhoBERT alike.
+
+**D — a contract that existed only by accident.** Three production sites assemble
+batches (`evaluate`, `train_run`, `smoke_check`) and none placed them; nothing
+documented who should.
+
+**Could real production have hit this?** Not as a crash: `execute_stage` never
+moves the model to an accelerator either, so model and batch were consistently on
+the CPU. The cross-device error was reachable only where something *did* move the
+model — the measurement tool.
+
+> **Recorded as an open operational item, not repaired here.** `execute_stage`
+> performs **no device placement at all**, so Stage-1 training as wired today
+> would run on the CPU. That is not a crash and not a scientific question, but
+> selecting a training device is an **operational contract nobody has chosen**
+> (which device, from a flag, auto-detected?). This audit does not choose it. It
+> must be decided before a real training run; it does not block the no-update
+> smoke, which owns its own placement.
+
+### Y.4 Why this survived local review
+
+The §X tests were de-risked locally **without torch**: the preparation path was
+executed for real, but everything downstream of `collate_stage1_batch` was
+unreachable in an ML-free venv. The defect lives strictly in the interaction
+between a **CUDA-resident model** and a **CPU-resident batch**, and neither
+condition can exist on a CPU-only host without torch.
+
+**This is a hardware-gated test-fixture blind spot.** The honest statement is that
+the new fixture's CUDA execution had never been exercised before commit, and the
+audit said so at the time. Recorded so the pattern is visible: CPU reasoning about
+a CUDA-only failure mode proves nothing, and the mitigation is a contract test that
+runs wherever the hardware exists, not a claim that the code looks right.
+
+### Y.5 Repair — the shared layer, not the fixture
+
+**No fixture was changed.** The repair is in the shared authoritative layer, and
+the two failing tests pass because production is now correct.
+
+`unmark/stage1/data.py` gains the boundary, beside the collator that creates the
+tensors:
+
+* `module_device(module)` — the device of the module's parameters, **derived**,
+  with a CPU fallback for a parameterless module;
+* `batch_to_device(batch, device)` — moves every tensor, passes non-tensors
+  (`sample_ids`, `corruption_rates`, `corruption_scopes`) through unchanged, and
+  is a no-op when the batch is already there.
+
+All **three** production batch assemblers now apply it:
+
+| Site | Change |
+|---|---|
+| `validation.evaluate` | `batch_to_device(collate_stage1_batch(...), module_device(objective))` |
+| `trainer.train_run` | same |
+| `execute.smoke_check` | same |
+
+No hard-coded `cuda`, no environment variable, no global default device, no
+test-only branch in production, and **no scientific behaviour change** — on CPU
+every call is a no-op, so the existing CPU path is bit-identical.
+
+`unmark/stage1/objective.py` and `unmark/modeling/` are **byte-unchanged**: the
+objective's "I do not move my inputs" half of the contract is deliberately
+preserved, and is now pinned by a test so a future change to it has to be
+deliberate.
+
+### Y.6 Tests
+
+`tests/test_stage1_device_contract.py` — **torch-free, 6 tests, runs in the
+ML-free venv**: all three assemblers route through `batch_to_device` **and**
+`module_device`; no hard-coded device anywhere in `unmark/stage1`; the objective
+still does not move its own inputs; the measurement tool places the model and does
+not assemble batches.
+
+`tests/test_stage1_device_contract_runtime.py` — **torch-gated, 8 tests**: a
+`RecordingCore` encoder captures the device of every tensor it receives, through
+the **real** `evaluate` over **real** prepared examples. It proves the helpers
+behave, that CPU+CPU works, and that **every** tensor the encoder sees — `input_ids`
+*and* `attention_mask`, on both the reference *and* adapted paths — is on the
+model's device. Two tests are **CUDA-gated**: one asserts a CUDA objective receives
+CUDA tensors from a CPU-prepared batch (the fourth-smoke failure inverted into a
+passing contract), and one proves that test is not vacuous by showing the raw
+cross-device call still raises.
+
+Split into two files deliberately: a module-level `importorskip` would have skipped
+the structural half too, which is how an earlier repair lost its torch-free
+coverage (§V).
+
+### Y.7 §X's seam is intact
+
+The §X arrangement is preserved exactly — **real** `validation_timing` → **real**
+`prepare_condition_batch` → **real** `prepare_with_condition` → **real** `evaluate`.
+Preparation is **not** back to `{condition: list(range(...))}`, and the runtime spy
+proving `truncation is execute.TRUNCATION` remains. Those tests now pass on CPU and
+CUDA alike, unchanged.
+
+### Y.8 No decision required
+
+Device placement changes no scientific value: `MAX_LENGTH`, the conditions, the
+seeds, the grids, the precision and the architecture are untouched, and the CPU
+path is a no-op. The ownership question was *undocumented*, not *contested* — one
+implemented behaviour existed (the objective does not move inputs) and the repair
+states it and completes it. **No decision-log entry was created; `docs/spec/decisions.md`
+is byte-unchanged.** The one genuinely unchosen item — which device *training*
+should use — is recorded in Y.3 as an open operational item rather than decided here.
+
+### Y.9 Preserved
+
+**§V** — `DERIVED_KEYS` intact, derived-lambda consistency, foreign-run rejection,
+checkpoint identity. **§W** — revision `135a4d97…`, sha256 `78eeb840…`,
+116 290 bytes, 17 974 / 17 954 / 2 489, seven-field `InventoryIdentity`,
+parsed-membership digest report-only, preflight before model load, `SELF_CHECK`
+rejected, nothing vendored. **§X** — `execute.TRUNCATION`, `MAX_LENGTH 256`,
+`ON_OVERFLOW FAIL`, no truncation, real preparation integration intact, no
+`truncation=None` on the measurement path.
+
+Stage 6, `protocol.py`, `contracts.py`, `objective.py`, `unmark/modeling/`, the
+prepared corpus and the inventory manifest are all **byte-unchanged**. Official
+UIT-VSFC TEST remains sealed.
+
+### Y.10 What is still NOT established
+
+The fourth smoke **never ran** `scripts/stage1_pretrain_measurements.py --validation
+--require-cuda`; it stopped at the test gate. There is still **no real validation
+forward evidence**, no optimizer, no update, no training. A **fifth** real no-update
+smoke is required.
+
+**STATUS: PRE-TRAIN DEVICE-CONTRACT REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**CLASSIFICATION B + D — A REAL DEVICE-WIRING DEFECT, NOT A BROKEN FIXTURE**
+**THE FAILING TEST WAS A TRUE POSITIVE: THE FIXTURE FAITHFULLY MIRRORS THE PRODUCTION INTERFACE**
+**"FIXING" IT WITH `ids.to("cuda")` WOULD HAVE LEFT REAL PhoBERT VALIDATION FAILING IDENTICALLY**
+**ONE SHARED BOUNDARY: `evaluate`, `train_run` AND `smoke_check` NOW ALL PLACE THE BATCH**
+**DEVICE IS DERIVED FROM THE MODULE — NO HARD-CODED cuda, NO ENV VAR, NO GLOBAL DEFAULT**
+**CPU PATH IS A NO-OP; `objective.py` AND `unmark/modeling/` ARE BYTE-UNCHANGED**
+**OPEN OPERATIONAL ITEM: `execute_stage` PLACES NO MODEL AT ALL — TRAINING DEVICE UNCHOSEN**
+**NO SCIENTIFIC CONSTANT CHANGED; NO NEW DECISION; §V/§W/§X ALL INTACT**
+**NO FORWARD, NO OPTIMIZER, NO UPDATE, NO TRAINING; PREPARED CORPUS AND STAGE 6 UNTOUCHED**
+**A FIFTH REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM ONE PASSED**

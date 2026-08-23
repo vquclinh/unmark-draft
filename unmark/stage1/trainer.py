@@ -487,7 +487,13 @@ def train_run(
     """
     import torch
 
-    from unmark.stage1.data import Stage1Example, collate_stage1_batch, prepare_example
+    from unmark.stage1.data import (
+        Stage1Example,
+        batch_to_device,
+        collate_stage1_batch,
+        module_device,
+        prepare_example,
+    )
     from unmark.stage1.optim import build_optimizer
 
     if not train_chunks:
@@ -545,7 +551,11 @@ def train_run(
             window.letter_channel_differs += int(item.letter_channels_differ)
             prepared.append(item)
 
-        batch = collate_stage1_batch(prepared, pad_token_id)
+        # Same one boundary as `validation.evaluate`: the batch follows the
+        # model, derived from the objective's own parameters. A no-op on CPU.
+        batch = batch_to_device(
+            collate_stage1_batch(prepared, pad_token_id), module_device(objective)
+        )
         loss_result = objective(batch)
 
         optimizer.zero_grad(set_to_none=True)
