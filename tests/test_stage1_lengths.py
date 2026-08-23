@@ -28,7 +28,11 @@ from unmark.orthography import canon, decompose
 from unmark.stage1.chunking import ChunkingViolation, chunk_document
 from unmark.stage1.contracts import Stage1ContractViolation
 from unmark.stage1.corpus import CorpusDocument
-from unmark.stage1.lengths import ComposedTransforms, build_length_functions
+from unmark.stage1.lengths import (
+    DEFAULT_VERIFY_FIRST,
+    ComposedTransforms,
+    build_length_functions,
+)
 
 SEGMENT = re.compile(r"\s+|\S+")
 
@@ -246,26 +250,23 @@ def test_violation_provenance_is_identical_too():
 # ---------------------------------------------------------------------------
 # The runtime verifier
 # ---------------------------------------------------------------------------
-def test_a_non_composing_tokenizer_is_now_HARMLESS():
-    """Revision 3a regression: the falsified per-run token shortcut is gone.
+def test_a_non_composing_tokenizer_now_FAILS_CLOSED():
+    """Revision 3b restores composition, so a non-conforming tokenizer must raise.
 
-    The first real-tokenizer probe produced `composed 5, exact 7` on the pinned
-    PhoBERT, falsifying per-run token composition. That shortcut was removed, so
-    a tokenizer whose whole-string count differs from the sum of its per-run
-    counts is no longer a problem: the length is always taken from the whole
-    transformed string through the authoritative API chain.
+    Replaces the Revision-3a test that asserted such a tokenizer was *harmless*.
+    That was true only because 3a had removed composition entirely; 3b composes
+    over the tokenizer's own run unit, so a tokenizer that does not decompose
+    that way is a contract violation and Stage-1 must refuse to chunk.
     """
-    tokenizer = NonComposingTokenizer()
-    ref, base = old_length_functions(tokenizer)
-    opt_ref, opt_base, _ = build_length_functions(NonComposingTokenizer())
-    for text in ("một hai ba bốn năm", "Tôi đã đọc", "a b c d e f"):
-        assert opt_ref(text) == ref(text), text
-        assert opt_base(text) == base(text), text
+    ref, _, _ = build_length_functions(NonComposingTokenizer())
+    with pytest.raises(Stage1ContractViolation, match="run composition disagreed"):
+        ref("một hai ba bốn năm")
 
 
 def test_the_optimized_length_equals_the_authoritative_length_by_construction():
-    """`optimized_length(x) == authoritative_old_length(x)` -- not a guessed sum."""
-    for tokenizer_cls in (WordTokenizer, NonMonotonicTokenizer, NonComposingTokenizer):
+    """For tokenizers that decompose as `PHOBERT_RUN` describes -- like the
+    pinned one -- the optimised number is the authoritative number."""
+    for tokenizer_cls in (WordTokenizer, PhoBERTShapedTokenizer):
         authoritative_ref, authoritative_base = old_length_functions(tokenizer_cls())
         opt_ref, opt_base, _ = build_length_functions(tokenizer_cls())
         for text in LEMMA_CASES:
@@ -273,34 +274,12 @@ def test_the_optimized_length_equals_the_authoritative_length_by_construction():
             assert opt_base(text) == authoritative_base(text), (tokenizer_cls, text)
 
 
-def test_the_five_versus_seven_regression_fixture():
-    """The exact shape that failed on real PhoBERT: whole > sum of per-run.
-
-    `FiveVersusSeven` returns 5 tokens for the whole three-word string but 1 per
-    word, so the removed shortcut would have computed `2 + 3 = 5` against an
-    exact `2 + 5 = 7` -- the reported failure. The current implementation must
-    return **7**, matching the authoritative pathway.
-    """
-
-    class FiveVersusSeven(WordTokenizer):
-        def tokenize(self, text):
-            words = text.split()
-            if len(words) > 1:
-                return [f"t{i}" for i in range(len(words) + 2)]
-            return [text] if text else []
-
-    tokenizer = FiveVersusSeven()
-    authoritative_ref, _ = old_length_functions(tokenizer)
-    opt_ref, _, _ = build_length_functions(FiveVersusSeven())
-
-    text = "Tôi đã đọc"
-    assert authoritative_ref(text) == 7, "fixture must reproduce the reported exact=7"
-    # what the REMOVED shortcut would have produced
-    specials = 2
-    shortcut = specials + sum(len(tokenizer.tokenize(canon(w))) for w in text.split())
-    assert shortcut == 5, "fixture must reproduce the reported composed=5"
-    # the repaired implementation matches the authoritative number
-    assert opt_ref(text) == 7
+def test_a_non_monotonic_tokenizer_is_still_fine_when_it_composes():
+    """No monotonicity is assumed; only per-run decomposition is used."""
+    authoritative_ref, _ = old_length_functions(NonMonotonicTokenizer())
+    ref, _, _ = build_length_functions(NonMonotonicTokenizer())
+    for text in LEMMA_CASES:
+        assert ref(text) == authoritative_ref(text), repr(text)
 
 
 def test_the_transform_verifier_still_fails_closed():
@@ -367,3 +346,161 @@ def test_counters_carry_no_text():
     _, _, transforms = build_length_functions(WordTokenizer())
     payload = transforms.counters.to_dict()
     assert all(isinstance(v, int) for v in payload.values())
+
+
+# ===========================================================================
+# Revision 3b: composition over the tokenizer's OWN run unit
+# ===========================================================================
+from unmark.stage1.lengths import PHOBERT_RUN, RunLengthComposer  # noqa: E402
+
+NAIVE_RUN = re.compile(r"\S+")
+
+
+class PhoBERTShapedTokenizer:
+    """Faithful to `PhobertTokenizer._tokenize`: runs are ``\\S+\\n?``.
+
+    BPE's end-of-word marker lands on the run's LAST character, so a run that
+    ends in a newline costs more tokens than the same word without it. That is
+    the behaviour that made naive ``\\S+`` composition wrong.
+    """
+
+    VOCAB = {"alpha", "beta", "gamma", "delta", "Tôi", "đã", "đọc", "một", "hai", "ba"}
+
+    def bpe(self, token):
+        if token in self.VOCAB:
+            return token
+        if token.endswith("\n") and token[:-1] in self.VOCAB:
+            return f"{token[:-1]}@@ nl_a nl_b"
+        return " ".join(token[i:i + 4] for i in range(0, len(token), 4)) or token
+
+    def tokenize(self, text):
+        out = []
+        for run in PHOBERT_RUN.findall(text):
+            out.extend(self.bpe(run).split(" "))
+        return out
+
+    def convert_tokens_to_ids(self, tokens):
+        return list(tokens)
+
+    def build_inputs_with_special_tokens(self, ids):
+        return ["<s>", *ids, "</s>"]
+
+
+NEWLINE_CASES = [
+    "Tôi\nđã\nđọc", "Tôi đã đọc\n", "Tôi đã\nđọc", "một\n", "\nmột",
+    "a\tb", "a  b", "a\r\nb", "  lead", "trail  ", "", " ", "\n", "\n\n",
+    "x\n\n\ny", "alpha  beta\tgamma\n\ndelta   ",
+]
+
+
+@pytest.mark.parametrize("text", NEWLINE_CASES)
+def test_the_run_unit_is_the_tokenizers_own_not_naive_non_whitespace(text):
+    """`\\S+\\n?`, never `\\S+`. Token LIST equality, not just counts."""
+    tokenizer = PhoBERTShapedTokenizer()
+    whole = tokenizer.tokenize(text)
+    exact = [t for run in PHOBERT_RUN.findall(text) for t in tokenizer.bpe(run).split(" ")]
+    assert exact == whole, "composition over the tokenizer's own runs must be exact"
+
+
+def test_naive_non_whitespace_composition_is_demonstrably_wrong():
+    """The bb50823 defect, pinned so it cannot be reintroduced."""
+    tokenizer = PhoBERTShapedTokenizer()
+    offenders = []
+    for text in NEWLINE_CASES:
+        whole = tokenizer.tokenize(text)
+        naive = [t for run in NAIVE_RUN.findall(text) for t in tokenizer.bpe(run).split(" ")]
+        if naive != whole:
+            offenders.append(text)
+    assert offenders, "the fixture set must contain cases where naive composition fails"
+    assert any("\n" in text for text in offenders)
+
+
+def test_the_historical_five_versus_seven_is_reproduced_and_repaired():
+    """Audit 029 §T forensics: `composed 5, exact 7` was the `\\S+` defect.
+
+    The prefix is from the historical probe's own "whitespace" fixture.
+    """
+    tokenizer = PhoBERTShapedTokenizer()
+    piece = "alpha  beta\tgamma\n\n"
+    specials = 2
+
+    naive = specials + sum(
+        len(tokenizer.tokenize(run)) for run in NAIVE_RUN.findall(canon(piece))
+    )
+    exact = len(tokenizer.build_inputs_with_special_tokens(
+        list(tokenizer.convert_tokens_to_ids(tokenizer.tokenize(canon(piece))))
+    ))
+    assert (naive, exact) == (5, 7), "must reproduce the reported numbers"
+
+    ref, _, _ = build_length_functions(PhoBERTShapedTokenizer())
+    assert ref(piece) == exact == 7, "the repaired composer must match authoritative"
+
+
+@pytest.mark.parametrize("text", NEWLINE_CASES + LEMMA_CASES)
+def test_optimized_equals_authoritative_on_both_pathways(text):
+    tokenizer = PhoBERTShapedTokenizer()
+    authoritative_ref, authoritative_base = old_length_functions(tokenizer)
+    ref, base, _ = build_length_functions(PhoBERTShapedTokenizer())
+    assert ref(text) == authoritative_ref(text), repr(text)
+    assert base(text) == authoritative_base(text), repr(text)
+
+
+def test_special_tokens_come_from_the_authoritative_api_not_a_constant():
+    class ThreeSpecials(PhoBERTShapedTokenizer):
+        def build_inputs_with_special_tokens(self, ids):
+            return ["<s>", "<x>", *ids, "</s>"]
+
+    ref, _, _ = build_length_functions(ThreeSpecials())
+    authoritative_ref, _ = old_length_functions(ThreeSpecials())
+    for text in ("Tôi đã đọc", "một\n", ""):
+        assert ref(text) == authoritative_ref(text), text
+
+
+def test_incremental_extension_handles_a_run_gaining_a_newline():
+    """`"gamma"` -> `"gamma\\n"` changes the LAST run; it must be recomputed."""
+    tokenizer = PhoBERTShapedTokenizer()
+    authoritative_ref, _ = old_length_functions(tokenizer)
+    ref, _, _ = build_length_functions(PhoBERTShapedTokenizer())
+    growing = "alpha  beta\tgamma\n\ndelta   "
+    for end in range(1, len(growing) + 1):
+        piece = growing[:end]
+        assert ref(piece) == authoritative_ref(piece), repr(piece)
+
+
+def test_the_run_verifier_fails_closed_on_a_corrupted_run_count():
+    """Task E: a deliberately wrong run counter must raise."""
+    composer = RunLengthComposer(
+        PhoBERTShapedTokenizer(), counters=TransformCountersFactory()
+    )
+    original = composer._run_tokens
+    composer._run_tokens = lambda run: original(run) + 1  # corrupt the counter
+    with pytest.raises(Stage1ContractViolation, match="run composition disagreed"):
+        composer.length("Tôi đã đọc")
+
+
+def TransformCountersFactory():
+    from unmark.stage1.lengths import TransformCounters
+
+    return TransformCounters()
+
+
+def test_expensive_run_evaluations_scale_with_runs_not_prefix_lengths():
+    """Task G: the algorithmic claim, asserted with counters not wall-clock."""
+    content = " ".join("Việt Nam là một quốc gia".split() * 400)
+    document = doc("big", content)
+    ref, base, transforms = build_length_functions(PhoBERTShapedTokenizer())
+    chunk_document(document, "train", reference_length=ref, base_length=base,
+                   max_length=256)
+    counters = transforms.counters
+    words = len(content.split())
+
+    assert counters.length_queries > 100, "the fixture must exercise the greedy scan"
+    # BPE is evaluated once per DISTINCT run, not once per growing prefix
+    assert counters.bpe_run_evaluations < words, (
+        f"{counters.bpe_run_evaluations} BPE evaluations for {words} words"
+    )
+    assert counters.run_cache_hits > 10 * counters.run_cache_misses
+    # the growing candidate is appended to, not rescanned
+    assert counters.incremental_appends > 10 * counters.full_fallbacks
+    # authoritative whole-string calls are bounded by the verification window
+    assert counters.authoritative_queries <= 2 * (DEFAULT_VERIFY_FIRST + 1) + 4

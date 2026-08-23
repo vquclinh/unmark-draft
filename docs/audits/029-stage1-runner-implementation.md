@@ -9,6 +9,7 @@
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Revision 3b** | **2026-08-23** — forensics: the historical `composed 5, exact 7` was **the wrong run unit** (`\S+` instead of the tokenizer's `\S+\n?`), reproduced exactly. Revision 3a's "composition falsified" reading is withdrawn. Exact run composition restored; BPE work now scales with distinct runs. See §T. |
 | **Revision 3a** | **2026-08-23** — **Revision 3's own micro-probe FAILED on the real pinned tokenizer** (`composed 5, exact 7`, rc 1). The runtime verifier worked and is kept. Per-run token composition removed; the 956x claim is withdrawn; 192x remains and is exact by construction. See §S. |
 | **Revision 3** | **2026-08-23** — **third post-commit real-corpus defect**: stage-6 pre-chunking re-canonicalised every growing prefix (~250x document length) and produced no 1 % line in 13 minutes. Repaired by memoised, composable transforms and per-run token composition; `chunking.py` untouched. See §R. |
 | **Revision 2** | **2026-08-23** — **second post-commit real-corpus defect**: the stage-4 contamination screen applied full `canon()` to all 1 118 224 documents and ran >7 h. Repaired with two proven necessary-condition prefilters; the criterion is unchanged. See §Q. |
@@ -1362,7 +1363,13 @@ Two **definitional** divergences are visible by inspection:
    marker lands on a different final character than it does for a run cut at
    `\S+`.
 
-### S.3 Why the cause was not guessed
+### S.3 Why the cause was not guessed *(CORRECTED — see §T.2)*
+
+> **SUPERSEDED.** The cause **was** subsequently isolated: bb50823 composed over
+> `\S+` while the pinned tokenizer decomposes with `\S+\n?`. The reasoning below
+> was correct not to guess, but its conclusion — that per-run composition is
+> falsified — is **withdrawn**. §T.2 reproduces `composed 5, exact 7` exactly.
+
 
 `exact - composed = 2` invites "special tokens" as the explanation. **It is not
 adopted here.** The failing fixture is the first probe document, `"Tôi đã đọc"`,
@@ -1380,8 +1387,9 @@ recorded as a special-token accounting slip, because that has not been shown.
 
 ### S.4 The repair (Task D)
 
-**The per-run token-composition shortcut is removed.** Correctness over
-benchmark: the real evidence falsified it, it cannot be validated here, and
+**The per-run token-composition shortcut is removed.** *(Revision 3b restored
+it over the correct run unit — see §T.3.)* Correctness over benchmark: the real
+evidence appeared to falsify it, it cannot be validated here, and
 rescuing it by guessing at arithmetic would be exactly the mistake Revision 1
 already made once.
 
@@ -1515,7 +1523,233 @@ the authoritative pathway.
 
 ---
 
-**STATUS (Revision 3a): REVISION 3A REPAIR PASS — READY FOR REAL TOKENIZER PROBE**
+## T. REVISION 3B — THE 5-vs-7 FORENSICS, AND EXACT RUN COMPOSITION
+
+**Date:** 2026-08-23 **Baseline commit:** `2e12967a3308a9f686c70d841b9c4278d99aee5a`
+
+### T.1 New real evidence
+
+Revision 3a's probe **passed** on the real pinned tokenizer, and the full corpus
+was attempted again.
+
+```
+Transformers 4.57.6   PhobertTokenizer
+vinai/phobert-base @ 01daacda68afe13d83023d16ec647239e344a1e6
+special tokens = 2
+```
+
+**Stages 1-5 still PASS.** **Stage 6 is a confirmed blocker:**
+
+| Progress | Elapsed | Chunks |
+|---|---|---|
+| document 1 | 0.4 s | — |
+| document 10 | 24.6 s | 280 |
+| document 50 | 93.2 s | 1 047 |
+| document 100 | 219.7 s | 2 489 |
+
+≈ **0.45 documents/s**, i.e. **weeks** for 1 118 224 documents. Revision 3a
+removed the composition and therefore still ran the authoritative whole-string
+tokenizer on every growing prefix.
+
+**The pinned tokenizer's own decomposition**, from `PhobertTokenizer._tokenize`:
+it collects `re.findall(r"\S+\n?", text)` and calls `bpe` on each run
+independently. **The trailing newline is part of the run.**
+
+Real UVW sample — 64 documents, 1 920 reference/base slice cases, no corpus text
+printed:
+
+| Composition | Failures |
+|---|---|
+| wrapper `tokenize` vs `_tokenize` | **0** |
+| naive `\S+` | **1 708** |
+| exact `\S+\n?` | **0** |
+
+Real-sample timing over 400 cases: authoritative wrapper 1.709 s; whole
+`_tokenize` 0.310 s (5.52x); naive `\S+\n?` recompose 0.794 s (2.15x). **That
+last benchmark recomputed runs per query and is *not* the Revision-3b
+algorithm.**
+
+### T.2 Forensics — what `composed 5, exact 7` actually was (Task A)
+
+Revision 3a concluded the pinned tokenizer had *falsified* per-run composition,
+and could not isolate a cause. **That conclusion was wrong, and is corrected
+here.**
+
+Read-only inspection of `bb50823:unmark/stage1/lengths.py` shows its run unit:
+
+```python
+_NON_WHITESPACE = re.compile(r"\S+")        # bb50823
+```
+
+against the tokenizer's own `\S+\n?`. The historical probe's document list
+begins `"short"`, `"vietnamese"`, `"whitespace"`, and the third one is
+`'alpha  beta\tgamma\n\ndelta   '`. Replaying every prefix the chunker queries,
+with a tokenizer double faithful to `_tokenize` (runs `\S+\n?`, BPE end-of-word
+marker on the run's last character), the first mismatch is:
+
+```
+piece            'alpha  beta\tgamma\n\n'      pathway: reference
+bb50823 runs     ['alpha', 'beta', 'gamma']     -> composed 5
+PhoBERT runs     ['alpha', 'beta', 'gamma\n']   -> exact    7
+exact \S+\n?    composition                    -> 7  (matches)
+```
+
+**`composed 5, exact 7` is reproduced exactly.** The cause is neither
+special-token accounting, nor a transform difference, nor stale cache, nor
+reference/base confusion: it is the **wrong run unit**. `"gamma\n"` does not BPE
+like `"gamma"`, because the end-of-word marker lands on the newline.
+
+This also explains why the new diagnostic reports a clean length 5 for
+`"Tôi đã đọc"`: that string contains no newline, so `\S+` and `\S+\n?` agree on
+it. **It was never the failing fixture** — the historical traceback showed only
+`chunk_document`, and Revision 3a inferred the first document. That inference is
+withdrawn.
+
+**Honest scope of this reproduction.** The mechanism is confirmed by the real
+sample (1 708 `\S+` failures vs 0 for `\S+\n?`). The specific 5/7 arithmetic is
+reproduced with a faithful-shaped double, because the real tokenizer is not
+available in this ML-free environment. The failed probe itself is preserved in
+§S as historical evidence; only its *interpretation* is corrected.
+
+### T.3 The Revision-3b algorithm (Task B)
+
+`chunking.py` remains **untouched**: same greedy order, same `fits` truth values,
+same boundaries.
+
+| Layer | Behaviour |
+|---|---|
+| Transforms | Revision-3a memoised, incrementally extended `canon` / `base_text` — unchanged |
+| Run unit | **`PHOBERT_RUN = re.compile(r"\S+\n?")`** — the tokenizer's own, never `\S+` |
+| Per-run cost | `len(tokenize(run))` memoised per **exact run string**, including any trailing newline |
+| Specials | `authoritative_length("")` through the tokenizer API — **never a hard-coded `+2`** |
+| Incremental | only the **final** run can change when text is appended (extended, or gaining `\n`), so the total is kept alongside the last run's start offset and only the tail is recomputed |
+| Fallback | any query that does not extend the previous one recomputes fully; the oversized-unit path is unaffected |
+| Verification | first 256 distinct queries per composer also computed through the authoritative chain; mismatch raises `Stage1ContractViolation` |
+
+Correctness rests on a property of the **tokenizer's own implementation** —
+it *is* a per-run composition — not on an assumption about BPE. No monotonicity
+is used: the composition is over disjoint runs of one string.
+
+### T.4 Measured effect (Tasks G, H)
+
+12 documents, 78 351 characters, PhoBERT-shaped double:
+
+| Implementation | Time | Throughput | Speedup |
+|---|---|---|---|
+| old authoritative | 94.74 s | 0.8 K doc-chars/s | 1.0x |
+| Revision 3a | 4.71 s | 16.6 K | 20.1x |
+| **Revision 3b** | **0.39 s** | **202.5 K** | **244.9x** |
+
+**Output identical to the old implementation for both 3a and 3b** — ids, source
+ranges, text, and both recorded lengths.
+
+The algorithmic claim, which matters more than the wall-clock number:
+
+| Counter | Value |
+|---|---|
+| length queries | 72 216 |
+| **authoritative whole-string calls** | **514** — bounded by the verification window |
+| **BPE run evaluations** | **34** |
+| run-cache hits / misses | 215 798 / 34 |
+| incremental appends / full fallbacks | 71 880 / 336 |
+| characters canonicalised | 58 of 78 351 |
+
+Expensive tokenizer work now scales with **distinct runs**, not with the sum of
+growing prefix lengths.
+
+### T.5 Tests (Tasks C, D, E, F, L)
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_lengths.py` | **299 passed** (was 223) |
+| `tests/test_stage1_chunking.py` | 35 passed (unchanged) |
+| `tests/test_stage1_runner_contract.py` | 43 passed |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed (Revision 2 untouched) |
+| Full repository | **3 125 passed, 97 skipped** |
+
+New in Revision 3b:
+
+* **Newline attachment** — 16 fixtures (`"Tôi\nđã\nđọc"`, `"Tôi đã đọc\n"`,
+  `"Tôi đã\nđọc"`, tabs, multiple spaces, CR/LF, leading/trailing, empty, bare
+  newlines) asserting **token LIST** equality, not merely counts, and a test that
+  naive `\S+` **demonstrably fails** on them.
+* **The historical fixture** — `test_the_historical_five_versus_seven_is_reproduced_and_repaired`
+  asserts `(naive, exact) == (5, 7)` on `'alpha  beta\tgamma\n\n'` and that the
+  repaired composer returns **7**.
+* **Authoritative equality** on both pathways across the fixture set.
+* **Specials via the API** — a tokenizer with *three* special tokens still
+  matches, so no `+2` is baked in.
+* **A run gaining a newline mid-growth** — every prefix of the historical
+  document checked one character at a time.
+* **Fail-closed** — a deliberately corrupted run counter raises; a
+  non-conforming tokenizer raises.
+* Three Revision-3a tests that asserted the *absence* of composition were
+  **replaced**, not loosened: with 3b a non-conforming tokenizer must now fail
+  closed rather than be harmless.
+
+The chunk-output oracle keeps the pre-optimisation implementation in test code
+only and still compares every field including violation provenance, across
+non-monotonic and newline-sensitive tokenizers, path asymmetry, oversized
+fallback, safe interior cuts, whitespace forms and randomised documents.
+
+### T.6 Probe (Task I)
+
+`scripts/stage1_tokenizer_probe.py` now also checks `tokenize == _tokenize`,
+exact `\S+\n?` composition, and counts how many naive `\S+` cases fail (expected
+non-zero — recorded as evidence, not as a failure). `--help` remains
+side-effect free and exits 0 without importing transformers. No scientific
+override flags. No encoder, forward pass, optimizer or training.
+
+### T.7 Limitations
+
+1. **Revision 3b has not been run on the real tokenizer.** Every number here is
+   from a faithful-shaped double.
+2. **The real corpus has not been chunked.** Stage 6 has still never completed;
+   no real Stage-6 PASS is claimed.
+3. The 244.9x figure is synthetic and machine-specific. **The algorithmic
+   counters are the claim**; the wall-clock is illustrative.
+4. The 5/7 reproduction uses a double, not the real tokenizer (§T.2).
+5. Real BPE cost per distinct run, and the real run vocabulary size against the
+   500 000-entry memo ceiling, are unmeasured.
+6. Whether ~0.45 docs/s becomes acceptable on real data is **unknown** until
+   Colab runs it.
+
+### T.8 Self-audit for Revision 3b
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Historical 5-vs-7 cause identified, not guessed | **yes** — reproduced exactly, §T.2 |
+| 2 | `\S+` nowhere used as the composition contract | **yes** — `PHOBERT_RUN` is `\S+\n?`; naive form appears only in tests as a counter-example |
+| 3 | Exact newline behaviour covered | **yes** — 16 fixtures, token-list equality |
+| 4 | Special tokens from the authoritative API | **yes** — three-special tokenizer test |
+| 5 | Reference path exact | **yes** |
+| 6 | RAW_BASE path exact | **yes** |
+| 7 | No monotonicity assumption | **yes** — non-monotonic tokenizer still passes |
+| 8 | Runtime verifier fails closed | **yes** — corrupted counter and non-conforming tokenizer both raise |
+| 9 | Old-vs-new chunk oracle passes | **yes** — all fields incl. provenance |
+| 10 | Fallback semantics unchanged | **yes** |
+| 11 | `chunking.py` semantics unchanged | **yes** — not modified |
+| 12 | Revision-2 contamination code untouched | **yes** |
+| 13 | Official UIT-VSFC TEST sealed | **yes** |
+| 14 | No training, no optimizer step | **yes** |
+| 15 | Focused + full suites pass | **yes** — 3 125 passed |
+| 16 | Revision 3a interpretation corrected at its point of origin | **yes** — §S annotated |
+| 17 | Failed probe preserved as historical evidence | **yes** — §S intact |
+| 18 | Real Stage 6 claimed PASS? | **NO** |
+| 19 | PRE-TRAIN claimed ready? | **NO** |
+| 20 | Nothing staged; no prohibited git operation | **yes** |
+
+---
+
+**STATUS (Revision 3b): REVISION 3B REPAIR PASS — READY FOR REAL TOKENIZER/PERFORMANCE PROBE**
+**HISTORICAL `composed 5, exact 7` EXPLAINED: bb50823 COMPOSED OVER `\S+`, NOT THE TOKENIZER'S `\S+\n?`**
+**REVISION 3a's "COMPOSITION FALSIFIED" READING IS WITHDRAWN — THE RUN UNIT WAS WRONG, NOT THE PROPERTY**
+**REAL SAMPLE: `\S+` 1708/1920 FAILURES, `\S+\n?` 0 FAILURES, wrapper vs `_tokenize` 0**
+**STAGE 6 CONFIRMED BLOCKER AT ~0.45 docs/s (WEEKS) — 3b REDUCES BPE WORK TO DISTINCT RUNS**
+**34 BPE EVALUATIONS AND 514 AUTHORITATIVE CALLS FOR 72 216 QUERIES; OUTPUT IDENTICAL**
+**NOT RUN ON THE REAL TOKENIZER; REAL STAGE 6 STILL NEVER COMPLETED**
+
+~~**STATUS (Revision 3a): REVISION 3A REPAIR PASS — READY FOR REAL TOKENIZER PROBE**~~ **— SUPERSEDED by Revision 3b**
 **REVISION 3's REAL PROBE FAILED (rc 1): `composed 5, exact 7` — THE VERIFIER WORKED**
 **PER-RUN TOKEN COMPOSITION FALSIFIED AND REMOVED; 956x CLAIM WITHDRAWN**
 **REMAINING OPTIMISATION NEEDS NO TOKENIZER PROPERTY — 192x, LENGTHS EQUAL BY CONSTRUCTION**

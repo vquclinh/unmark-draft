@@ -32,11 +32,12 @@ run which whitespace terminates, and `base_text` is a per-character mapping.
 Verified exhaustively in `tests/test_stage1_lengths.py`, and re-checked at
 runtime by `ComposedTransforms.verify_remaining`.
 
-**Removed in Revision 3a.** An earlier version also composed *token counts* per
-non-whitespace run, citing D-B3B1B-001. The first real-tokenizer probe
-**falsified** that on the pinned PhoBERT: `composed 5, exact 7`. The runtime
-verifier caught it and refused to run. The shortcut is gone; only the
-tokenizer-independent transform reuse remains. See Audit 029 §S.
+**Revision 3a / 3b history.** Revision 3 composed token counts over ``\\S+``
+runs and failed the real probe with ``composed 5, exact 7``; Revision 3a removed
+the composition entirely, which was correct but left the tokenizer cost intact
+and the real run at ~0.45 docs/s. Revision 3b restores composition over the
+**exact unit the pinned tokenizer itself uses** -- ``\\S+\\n?`` -- which is what
+bb50823 got wrong. See `RunLengthComposer` and Audit 029 §T.
 """
 
 from __future__ import annotations
@@ -76,6 +77,13 @@ class TransformCounters:
     full_rescans: int = 0
     tokenizer_calls: int = 0
     verifications: int = 0
+    authoritative_queries: int = 0
+    run_cache_hits: int = 0
+    run_cache_misses: int = 0
+    bpe_run_evaluations: int = 0
+    incremental_appends: int = 0
+    last_run_recomputations: int = 0
+    full_fallbacks: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return dict(self.__dict__)
@@ -197,6 +205,127 @@ class ComposedTransforms:
         return value
 
 
+PHOBERT_RUN = re.compile(r"\S+\n?")
+r"""**The pinned tokenizer's own decomposition unit.**
+
+`PhobertTokenizer._tokenize` decomposes with ``re.findall`` over this same
+pattern and calls ``bpe`` on each resulting run independently.
+
+The trailing newline is **part of the run**, so ``bpe("gamma\n")`` is not
+``bpe("gamma")`` -- BPE's end-of-word marker lands on a different final
+character. Composing over plain ``\S+`` instead is exactly the defect that
+produced ``composed 5, exact 7`` at bb50823, and it failed 1708 of 1920 real
+slice cases. This regex is the contract; ``\S+`` must never be used for it.
+"""
+
+
+class RunLengthComposer:
+    """Token length as `specials + sum over the tokenizer's own runs`.
+
+    Exact rather than approximate: the runs are `PHOBERT_RUN`, the same
+    decomposition `_tokenize` performs, so the sum of per-run token counts is
+    the whole-string token count by construction of the tokenizer itself.
+
+    **Incremental.** The chunker's greedy scan asks about a growing candidate,
+    so only the *final* run can change: appended characters may extend it, or
+    turn ``"gamma"`` into ``"gamma\n"``. Everything before the last run's start
+    offset is therefore stable, and only the tail is recomputed. That is what
+    makes the work proportional to **new and changed runs** rather than to the
+    sum of all growing prefix lengths.
+
+    **No monotonicity is assumed.** Nothing here says token counts grow with
+    text; the composition is over disjoint runs of one string, and the greedy
+    scan still evaluates every candidate in order.
+
+    Fail-closed: the first `verify_first` distinct queries are also computed
+    through the **authoritative** whole-string chain, and any disagreement
+    raises.
+    """
+
+    def __init__(
+        self,
+        tokenizer: object,
+        *,
+        counters: TransformCounters,
+        verify_first: int = DEFAULT_VERIFY_FIRST,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+    ) -> None:
+        self._tokenizer = tokenizer
+        self._runs: dict[str, int] = {}
+        self._max_entries = max_entries
+        self._verify_remaining = verify_first
+        self.counters = counters
+        # Derived through the authoritative API, never a hard-coded "+2".
+        self._specials = self.authoritative_length("")
+        self._last: tuple[str, int, int] = ("", 0, 0)
+
+    def authoritative_length(self, transformed: str) -> int:
+        """The unchanged pre-optimisation chain. The definition of truth."""
+        self.counters.authoritative_queries += 1
+        ids = self._tokenizer.convert_tokens_to_ids(self._tokenizer.tokenize(transformed))
+        return len(self._tokenizer.build_inputs_with_special_tokens(list(ids)))
+
+    def _run_tokens(self, run: str) -> int:
+        cached = self._runs.get(run)
+        if cached is not None:
+            self.counters.run_cache_hits += 1
+            return cached
+        self.counters.run_cache_misses += 1
+        self.counters.bpe_run_evaluations += 1
+        value = len(self._tokenizer.tokenize(run))
+        if len(self._runs) < self._max_entries:
+            self._runs[run] = value
+        return value
+
+    def _sum_runs(self, transformed: str) -> tuple[int, int]:
+        """`(total tokens, offset where the last run starts)` for `transformed`."""
+        total = 0
+        last_start = len(transformed)
+        for match in PHOBERT_RUN.finditer(transformed):
+            total += self._run_tokens(match.group(0))
+            last_start = match.start()
+        return total, last_start
+
+    def length(self, transformed: str) -> int:
+        """Composed length of an already-transformed string."""
+        previous, previous_total, last_start = self._last
+        if previous and len(transformed) > len(previous) and transformed.startswith(previous):
+            # Only the final run of `previous` can be affected by appended text
+            # -- it may be extended, or gain the trailing newline. Recompute
+            # from its start; everything before it is stable.
+            self.counters.incremental_appends += 1
+            stable = previous_total
+            tail_total = 0
+            new_last = len(transformed)
+            for match in PHOBERT_RUN.finditer(previous[last_start:]):
+                stable -= self._run_tokens(match.group(0))
+                self.counters.last_run_recomputations += 1
+            for match in PHOBERT_RUN.finditer(transformed[last_start:]):
+                tail_total += self._run_tokens(match.group(0))
+                new_last = last_start + match.start()
+            total, last_start = stable + tail_total, new_last
+        else:
+            self.counters.full_fallbacks += 1
+            total, last_start = self._sum_runs(transformed)
+        composed = self._specials + total
+        self._last = (transformed, total, last_start)
+
+        if self._verify_remaining > 0:
+            self._verify_remaining -= 1
+            self.counters.verifications += 1
+            exact = self.authoritative_length(transformed)
+            if exact != composed:
+                raise Stage1ContractViolation(
+                    "run composition disagreed with the authoritative whole-string "
+                    f"length: composed {composed}, exact {exact}, specials "
+                    f"{self._specials}, query length {len(transformed)}, runs "
+                    f"{len(PHOBERT_RUN.findall(transformed))}. The pinned tokenizer "
+                    "does not decompose as PHOBERT_RUN describes, so Stage-1 refuses "
+                    "to chunk rather than emit lengths it cannot justify."
+                )
+        return composed
+
+
 def build_length_functions(
     tokenizer: object, transforms: ComposedTransforms | None = None
 ) -> tuple[Callable[[str], int], Callable[[str], int], ComposedTransforms]:
@@ -213,16 +342,13 @@ def build_length_functions(
     holds **by construction** rather than by argument.
     """
     transforms = transforms or ComposedTransforms()
-
-    def _tokenized_length(transformed: str) -> int:
-        transforms.counters.tokenizer_calls += 1
-        ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(transformed))
-        return len(tokenizer.build_inputs_with_special_tokens(list(ids)))
+    reference_runs = RunLengthComposer(tokenizer, counters=transforms.counters)
+    base_runs = RunLengthComposer(tokenizer, counters=transforms.counters)
 
     def reference_length(text: str) -> int:
-        return _tokenized_length(transforms.canonical(text))
+        return reference_runs.length(transforms.canonical(text))
 
     def base_length(text: str) -> int:
-        return _tokenized_length(transforms.base(text))
+        return base_runs.length(transforms.base(text))
 
     return reference_length, base_length, transforms

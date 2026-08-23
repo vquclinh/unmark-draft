@@ -18,12 +18,13 @@ Run in Colab::
 
 Exit status 0 means every comparison passed.
 
-**History.** The first version of this probe validated a per-run *token*
-composition shortcut and **failed** on real PhoBERT with `composed 5, exact 7`.
-That shortcut has been removed (Audit 029 §S); this probe now checks the
-property that remains -- transform composability -- plus direct equality with
-the authoritative lengths. It reports the first mismatch with a safe diagnostic
-instead of aborting on the internal verifier.
+**History.** The first version failed on real PhoBERT with `composed 5, exact 7`.
+Revision 3a read that as "per-run composition is false" and removed it; the
+forensics in Audit 029 section T show the real cause was composing over the
+plain non-whitespace run rather than the tokenizer's own unit, which also
+absorbs a trailing newline. Revision 3b
+composes over the exact unit, so this probe now also checks the tokenizer's own
+decomposition and the newline regression cases.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ PROBE_STRINGS = [
     "Tôi, đã; đọc: quyển! sách? này. rồi...",
     "VNU-HCM (VAT) Viet-Nam nhien.",
     "alpha  beta\tgamma\n\ndelta", "   padded   ", "a\nb", "một\n",
+    "Tôi\nđã\nđọc", "Tôi đã đọc\n", "Tôi đã\nđọc", "\nmột", "x\n\n\ny",
+    "a\r\nb", "\n", "\n\n", " ",
     TITLE, "_".join([TITLE] * 3),
     "Giảng viên dạy dễ hiểu nhưng đề thi hơi khó",
     "Việt Nam là một quốc gia nằm ở phía đông bán đảo Đông Dương " * 12,
@@ -162,7 +165,32 @@ def main(argv=None) -> int:
                         diagnose(index, text, label, transform, exact, optimized)
                     )
 
-    # --- CHECK 2: transform composability across whitespace segments -------
+    # --- CHECK 2: the tokenizer's OWN decomposition unit --------------------
+    # `tokenize` must equal `_tokenize`, and composing over \S+\n? must be exact
+    # while naive \S+ is expected to fail on newline cases.
+    phobert_run = re.compile(r"\S+\n?")
+    naive_run = re.compile(r"\S+")
+    naive_failures = 0
+    for index, text in enumerate(PROBE_STRINGS):
+        for label, transform in PATHWAYS:
+            transformed = transform(text)
+            whole = tokenizer.tokenize(transformed)
+            private = getattr(tokenizer, "_tokenize", None)
+            if private is not None and list(private(transformed)) != list(whole):
+                failures.append({"check": "wrapper_vs_private_tokenize",
+                                 "fixture_index": index, "pathway": label})
+            exact_runs = [t for run in phobert_run.findall(transformed)
+                          for t in tokenizer.tokenize(run)]
+            if exact_runs != list(whole):
+                failures.append({"check": "phobert_run_composition",
+                                 "fixture_index": index, "pathway": label,
+                                 "whole": len(whole), "composed": len(exact_runs)})
+            naive = [t for run in naive_run.findall(transformed)
+                     for t in tokenizer.tokenize(run)]
+            if naive != list(whole):
+                naive_failures += 1
+
+    # --- CHECK 3: transform composability across whitespace segments -------
     for index, text in enumerate(PROBE_STRINGS):
         parts = [m.group(0) for m in _SEGMENT.finditer(text)]
         if "".join(canon(p) for p in parts) != canon(text):
@@ -170,7 +198,7 @@ def main(argv=None) -> int:
         if "".join(base_transform(p) for p in parts) != base_transform(text):
             failures.append({"check": "base_composability", "fixture_index": index})
 
-    # --- CHECK 3: old vs optimised chunk output, field by field ------------
+    # --- CHECK 4: old vs optimised chunk output, field by field ------------
     boundary_checks = 0
     for name, content in PROBE_DOCUMENTS.items():
         document = CorpusDocument(name, content, "train.parquet", 0)
@@ -198,11 +226,14 @@ def main(argv=None) -> int:
                              "old_status": old[0], "new_status": new[0]})
 
     report = {
-        "probe": "STAGE1_TOKENIZER_LENGTH_EQUIVALENCE",
+        "probe": "STAGE1_TOKENIZER_RUN_COMPOSITION",
+        "run_unit": "\\S+\\n?",
         "checkpoint": ENCODER_CHECKPOINT,
         "revision": ENCODER_REVISION,
         "transformers": __import__("transformers").__version__,
         "special_tokens": specials,
+        "naive_backslash_S_failures": naive_failures,
+        "naive_composition_expected_to_fail": True,
         "probe_strings": len(PROBE_STRINGS),
         "documents_compared": boundary_checks,
         "encoder_loaded": False,
