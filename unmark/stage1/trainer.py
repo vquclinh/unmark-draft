@@ -21,7 +21,7 @@ import os
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, ClassVar, Sequence
 
 from unmark.stage1.contracts import (
     ObjectiveWeights,
@@ -71,12 +71,33 @@ class RunProvenance:
     protocol_version: str = STAGE1_PROTOCOL_VERSION
     precision: str = PRECISION
 
+    DERIVED_KEYS: ClassVar[tuple[str, ...]] = ("lambda_align", "lambda_clean")
+    """Keys `to_dict()` emits that are **not** constructor parameters.
+
+    They are computed from `r` by `lambdas_for_r`, and recorded so an artifact
+    states the weights its objective actually used instead of making a reader
+    recompute them. Because they are derived, `to_dict()` is deliberately not
+    constructor-round-trippable -- see `to_dict`.
+    """
+
     @property
     def weights(self) -> ObjectiveWeights:
         lambda_align, lambda_clean = lambdas_for_r(self.r)
         return ObjectiveWeights(lambda_align=lambda_align, lambda_clean=lambda_clean)
 
     def to_dict(self) -> dict[str, Any]:
+        """The **artifact** form. Deliberately NOT constructor-round-trippable.
+
+        It carries the two `DERIVED_KEYS` on top of the constructor fields, so
+        `RunProvenance(**p.to_dict())` raises `TypeError`. That is the contract,
+        not an oversight: a run's identity comes from its *plan* and its
+        environment, and is never rebuilt from the artifact it is trying to
+        resume -- otherwise a corrupted or foreign checkpoint could define which
+        experiment it belongs to instead of merely failing to match one. The
+        only authoritative direction is `require_match`, which compares a
+        recorded dict against a freshly constructed identity. To derive one
+        provenance from another, use `dataclasses.replace`.
+        """
         return {
             "run_seed": self.run_seed,
             "corruption_seed": self.corruption_seed,
@@ -110,6 +131,27 @@ class RunProvenance:
                     f"checkpoint provenance mismatch on {key!r}: checkpoint has "
                     f"{other.get(key)!r}, this environment has {mine[key]!r}. Resuming "
                     "would silently continue a different experiment."
+                )
+
+        # The recorded weights are DERIVED from `r`, so an honestly written
+        # artifact can never disagree with its own ratio -- but a corrupted,
+        # truncated or hand-edited one can, and nothing anywhere reads these two
+        # keys back. Without this they would be the only scientific quantity a
+        # checkpoint carries that no gate ever checks. `r` is proven equal above,
+        # so `mine` holds exactly what `other`'s own `r` must derive.
+        for key in self.DERIVED_KEYS:
+            if key not in other:
+                raise TrainerContractViolation(
+                    f"checkpoint provenance is missing the derived key {key!r}; it was "
+                    "not written by this repository's serializer and cannot be trusted "
+                    "to describe the objective it was trained under."
+                )
+            if other[key] != mine[key]:
+                raise TrainerContractViolation(
+                    f"checkpoint provenance is internally inconsistent: it records "
+                    f"r={other['r']!r} and {key}={other[key]!r}, but r={other['r']!r} "
+                    f"derives {key}={mine[key]!r} under lambdas_for_r. The artifact "
+                    "misdescribes its own objective; it will not be resumed."
                 )
 
 

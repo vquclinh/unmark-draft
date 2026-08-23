@@ -13,15 +13,29 @@
 | **Revision 3 — addendum** | 2026-08-23 — F3 re-read against the log: it was a **wiring defect**, the cadence and **best + last** semantics were already locked by **D-S1B-004**. The invented D-S1B-014 is **withdrawn**; `best` is now persisted too. Validation-cost concern **measured, not acted on**. See **§S** |
 | **Revision 4 — final consistency check** | 2026-08-23 — **BLOCKER found in §S's own tool**: `--validation` loads the real encoder but runs **no forward pass**, so it does not measure validation wall-clock. Tool and audit corrected to say so; the measurement remains outstanding. Token sampling verified **deterministic**. See **§T** |
 | **Revision 5 — measurement repair** | 2026-08-23 — the §T blocker is **repaired**: `--validation` now runs the authoritative `validation.evaluate` with real forwards, CUDA-synchronised timing, real GPU peak, clean-reference attribution and parameter-hash proof of zero updates. Profile sampling is partition-aware (**all 11 443 dev**). See **§U** |
+| **Revision 6 — first real smoke** | 2026-08-23 — the **first real Colab pre-train smoke** was run at `8f07842`. It passed every corpus gate (byte-exact restore, manifest, `COMPLETE.json`) and stopped fail-closed at `tests/test_stage1_training_resume.py`: **6 failed, 8 passed**, all six dying in setup on `RunProvenance(**mine.to_dict())`. Traced to a **test-construction bug** — `to_dict()` is artifact serialization, not a constructor round trip — plus one real gap: the derived weights were serialized and never validated on read. **No model was loaded.** See **§V** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN HARDENING FINAL PASS — READY TO COMMIT AND RUN REAL NO-UPDATE MODEL SMOKE**
+**PRE-TRAIN REAL-SMOKE BLOCKER REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
 
-> **§U is the current verdict.** §T's blocker — `--validation` loading the real
+> **§V is the current verdict.** The first real Colab smoke passed every corpus
+> gate and then stopped fail-closed at the training-resume gate, before any
+> model was loaded. The cause was a **test-construction bug** — six foreign-run
+> cases died in setup and had never demonstrated rejection — together with one
+> real gap it exposed: the derived `lambda_align`/`lambda_clean` were written
+> into every checkpoint and never validated on read. Both are repaired; §T and
+> §U are preserved above unchanged.
+>
+> **The real no-update smoke has NOT passed.** No PhoBERT load, no forward, no
+> validation, no optimizer, no update has yet occurred.
+
+~~**PRE-TRAIN HARDENING FINAL PASS — READY TO COMMIT AND RUN REAL NO-UPDATE MODEL SMOKE**~~ **— superseded by §V**
+
+> **§U was the previous verdict.** §T's blocker — `--validation` loading the real
 > encoder and running **no forward pass** — is repaired: the tool now
 > instruments the authoritative `validation.evaluate`, and a report cannot claim
 > validation without real forwards, four conditions, and byte-identical
@@ -1323,3 +1337,178 @@ exclusion rule. Every scientific constant re-verified unchanged.
 **CORRUPTION IS STATELESS AND SEED-SEPARATED; VALIDATION CANNOT SEE A TRAINING SEED**
 **NO ENCODER LOADED, NO FORWARD PASS, NO OPTIMIZER, NO UPDATE, NO WEIGHTS DOWNLOADED**
 **A PASS HERE DOES NOT AUTHORISE TRAINING — THE BOUNDED NO-UPDATE SMOKE (§N) IS NEXT**
+
+---
+
+## V. FIRST REAL NO-UPDATE SMOKE — PROVENANCE ROUND-TRIP FAILURE
+
+**Revision 6.** The first real Colab pre-train smoke was run against the
+committed hardening HEAD. It is the first time any of this code has executed on
+the real prepared corpus in a GPU runtime. It **did not reach the model**, and
+this section records that failure rather than replacing it with the repair.
+
+### V.1 What the real smoke established before it stopped
+
+| Gate | Result |
+|---|---|
+| Hardening HEAD | `8f07842a1434b40ec4f4ffa2a2681da499fd1fc6` |
+| Exact-HEAD verification | **PASS** |
+| Clean-repository verification | **PASS** |
+| Prepared artifact | `aa49785eadcb` |
+| Byte-exact prepared restore | **PASS, byte exact** |
+| Persistence manifest verification | **PASS** |
+| `COMPLETE.json` / member digest | **PASS** |
+| `pytest -q tests/test_stage1_training_resume.py` | **6 failed, 8 passed** |
+| Model validation | **NOT RUN** |
+| PhoBERT real forward | **NOT RUN** |
+| Optimizer | **NOT RUN** |
+| Training | **NOT RUN** |
+
+The corpus half of the smoke is therefore **real evidence and it passed**: the
+prepared payload restores byte-exactly in a fresh runtime and verifies against
+its own manifest and completion marker. The failure is downstream of that, in
+the training-resume gate, and it stopped the smoke fail-closed **before** any
+model was loaded — which is the behaviour the gate ordering was designed for.
+
+### V.2 The failure
+
+All six failures were the same construction error inside
+`test_a_foreign_run_cannot_resume`:
+
+```
+mine   = provenance()
+theirs = RunProvenance(**{**mine.to_dict(), field: value})
+TypeError: RunProvenance.__init__() got an unexpected keyword argument 'lambda_align'
+```
+
+The six intended mutations — `run_seed`, `corruption_seed`, `learning_rate`,
+`r`, `corpus_manifest_digest`, `repository_head` — therefore **never reached
+`verify_checkpoint`**. The test that exists to prove foreign runs are rejected
+had never once demonstrated it in a torch-enabled environment.
+
+### V.3 The contract, re-derived
+
+`RunProvenance` (`unmark/stage1/trainer.py`) is a `@dataclass(frozen=True)`.
+
+| | |
+|---|---|
+| **Constructor fields (10)** | `run_seed`, `corruption_seed`, `learning_rate`, `r`, `corpus_manifest_digest`, `repository_head`, `backbone_checkpoint`, `backbone_revision`, `protocol_version`, `precision` |
+| **`to_dict()` keys (12)** | the 10 above **plus** `lambda_align`, `lambda_clean` |
+| **The extra two** | **Derived, not stored.** `weights` is a `@property` computing `lambdas_for_r(self.r)`; `to_dict()` splices in `self.weights.to_dict()` |
+
+`lambda_align` is therefore **not an alias and not a compatibility field**. It is
+a *derived scientific quantity*, recorded so an artifact states the weights its
+objective actually used. Its authoritative definition is `protocol.py:121`:
+
+```
+lambdas_for_r(r) = ( S/(1+r),  S·r/(1+r) )     with S = LAMBDA_SCALE_SUM = 2.0
+```
+
+so `lambda_align + lambda_clean == S` and `lambda_clean / lambda_align == r`.
+`r` and `lambda_align` do have a required mathematical relationship, and it is
+one-directional: `r` is the identity, the lambdas follow from it and cannot be
+set independently.
+
+**`to_dict()` is artifact serialization, not a constructor round trip.** That is
+now stated in its own docstring, and `DERIVED_KEYS` is declared on the class.
+
+### V.4 Is the production path affected? — traced, and no
+
+The decisive question was whether a real persisted checkpoint can ever be
+reconstructed with `RunProvenance(**serialized_dict)`. It cannot. The full
+lifecycle:
+
+| Step | Code | Direction |
+|---|---|---|
+| construct | `execute.py:150` — the **only** production construction site | explicit keyword arguments from the *plan*, never `**dict` |
+| serialize | `checkpoint_payload` → `"provenance": provenance.to_dict()` | object → dict |
+| persist | `save_training_checkpoint` → `_publish` → `torch.save` | dict → disk |
+| load | `load_training_checkpoint` → `torch.load` | disk → **raw dict** |
+| verify | `verify_checkpoint` → `provenance.require_match(payload["provenance"])` | **dict compared against a freshly constructed identity** |
+
+There is **no `from_dict` anywhere in the repository**, and nothing rebuilds a
+`RunProvenance` from an artifact. `scripts/stage1_runner.py:478`
+(`_load_selection`) reads result artifacts as plain dicts and touches only
+scalars. This is not an omission — it is a **stronger** design than round
+tripping: a run's identity comes from its plan and its environment, so a
+corrupted or foreign checkpoint can never define which experiment it belongs to,
+only fail to match one.
+
+**Classification: CASE A — test-construction bug.** No production path had the
+defect. The audit did not assume this from the traceback; it was established by
+tracing every construction, serialization and read site.
+
+### V.5 The one real gap the trace did expose
+
+`require_match` compared all **10** constructor fields — no identity field was
+unguarded — but the **2 derived keys were serialized into every checkpoint and
+never read back by anything**. Under honest production they cannot disagree with
+`r` (same pure function, and `repository_head` is compared, so `lambdas_for_r`
+itself cannot have changed). A corrupted, truncated or hand-edited artifact
+could: it could claim `r = 1.0` while carrying `lambda_align = 99.0`, and no gate
+in the repository would have looked. They were the only scientific quantity a
+checkpoint carried that nothing ever checked.
+
+`require_match` now validates them, after the identity comparison so that a
+foreign `r` is still reported as an `r` mismatch:
+
+* a derived key **missing** → refused;
+* a derived key **inconsistent with the artifact's own `r`** → refused as
+  *"internally inconsistent"*.
+
+**No scientific value changed.** The relationship being enforced is the one
+already locked in `protocol.py`; enforcing a locked formula is not a new
+decision, so **no decision-log entry was created** and `docs/spec/decisions.md`
+is **byte-unchanged**.
+
+### V.6 Repair
+
+| Layer | Change |
+|---|---|
+| `trainer.py` | `DERIVED_KEYS` declared; `to_dict()` docstring states the non-round-trippable contract; `require_match` validates the derived keys fail-closed |
+| `test_stage1_training_resume.py` | `dataclasses.replace` — the authoritative constructor-level derivation — replaces `RunProvenance(**to_dict())` |
+| both resume test files | `pytest.raises(Exception)` → `pytest.raises(TrainerContractViolation)` **plus the mutated field asserted in the message** |
+| `test_stage1_provenance_contract.py` | **new, torch-free**: the contract and the lifecycle round trip, running in the ML-free venv on every run |
+
+The `pytest.raises(Exception)` weakness is the reason this survived: it accepts
+*any* failure, so a setup error is indistinguishable from the rejection under
+test. The torch-free twin in `test_stage1_training_resume_state.py` had the same
+weakness and has been tightened even though its construction was already
+correct.
+
+### V.7 Re-verification evidence (appended, not replacing V.2)
+
+| Check | Result |
+|---|---|
+| All six foreign identities reach `verify_checkpoint` | **6/6**, each rejected on its own field |
+| Every **10** constructor fields gated | **10/10** rejected with the field named |
+| `RunProvenance(**to_dict())` raises `TypeError` | pinned as the **contract** |
+| No production `RunProvenance(**…)` | AST-verified across `unmark/` and `scripts/` |
+| Lifecycle round trip, dict + JSON | every identity field preserved exactly |
+| Lifecycle round trip, real `torch.save`/`torch.load` | added, Colab-gated |
+| Derived-key tamper / omission | refused |
+| Full lightweight suite | **3 475 passed, 99 skipped, 0 failed** |
+
+Because the six repaired cases live in a torch-gated module, they were also
+executed **locally** by running the repaired function body outside that module
+against the real `verify_checkpoint` — they touch no torch API — giving 6/6 here
+in the ML-free venv. The authoritative torch evidence still comes from the next
+Colab rerun.
+
+### V.8 What is still NOT established
+
+The real no-update smoke has **not** passed. It stopped at the resume gate, so
+everything downstream remains unevidenced: **no PhoBERT load, no real forward,
+no validation, no optimizer, no update, no training**. Stage 6 is
+byte-unchanged, the prepared corpus was not touched, and official UIT-VSFC TEST
+remains unreachable.
+
+**STATUS: PRE-TRAIN REAL-SMOKE BLOCKER REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**FIRST REAL SMOKE PASSED EVERY CORPUS GATE AND STOPPED FAIL-CLOSED AT THE RESUME GATE**
+**CASE A — TEST-CONSTRUCTION BUG; NO PRODUCTION PATH RECONSTRUCTS PROVENANCE FROM AN ARTIFACT**
+**`to_dict()` IS ARTIFACT SERIALIZATION, NOT A CONSTRUCTOR ROUND TRIP — NOW STATED AND PINNED**
+**ONE REAL GAP CLOSED: THE DERIVED WEIGHTS WERE SERIALIZED AND NEVER VALIDATED ON READ**
+**ALL SIX FOREIGN IDENTITIES NOW REACH `verify_checkpoint`; ALL TEN FIELDS ARE GATED**
+**NO SCIENTIFIC CONSTANT CHANGED; `decisions.md` BYTE-UNCHANGED; NO NEW DECISION REQUIRED**
+**NO MODEL LOAD, NO FORWARD, NO OPTIMIZER, NO UPDATE, NO TRAINING; TEST STILL SEALED**
+**THE REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM IT PASSED**

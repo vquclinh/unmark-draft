@@ -193,13 +193,22 @@ def test_an_incomplete_checkpoint_is_refused(missing):
     ("repository_head", "b" * 40),
 ])
 def test_a_foreign_experiment_cannot_resume(field, value):
+    """The torch-free half of the six-identity gate, so it runs in this venv.
+
+    `pytest.raises(Exception)` used to accept *any* failure here, which is how
+    its torch-gated twin could die in setup for six releases without anyone
+    noticing (Audit 030 §V). The reason is now asserted.
+    """
     payload = checkpoint_payload(
         provenance=provenance(**{field: value}), adapter_state={},
         optimizer_state={}, global_update=1, sampler_state={}, cap=2,
         budget_limited=False, points=[],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(TrainerContractViolation) as caught:
         verify_checkpoint(payload, provenance())
+    message = str(caught.value)
+    assert "checkpoint provenance mismatch" in message, message
+    assert repr(field) in message, message
 
 
 def test_a_foreign_prepared_corpus_cannot_resume():
@@ -209,8 +218,9 @@ def test_a_foreign_prepared_corpus_cannot_resume():
         optimizer_state={}, global_update=1, sampler_state={}, cap=2,
         budget_limited=False, points=[],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(TrainerContractViolation) as caught:
         verify_checkpoint(payload, provenance())
+    assert "corpus_manifest_digest" in str(caught.value)
 
 
 def test_the_cadence_is_an_update_count_not_wall_clock():

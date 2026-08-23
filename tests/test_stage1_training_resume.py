@@ -16,6 +16,7 @@ at the final update.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import sys
 
@@ -226,14 +227,34 @@ def test_a_payload_without_points_is_refused():
     ("repository_head", "b" * 40),
 ])
 def test_a_foreign_run_cannot_resume(field, value):
+    """The six identities that must never be resumed across.
+
+    Built with `dataclasses.replace`, which goes through the real constructor.
+    The first real Colab smoke found these six dying in **setup** on
+    `RunProvenance(**mine.to_dict())`: `to_dict` also emits the derived
+    `lambda_align`/`lambda_clean`, which are not constructor parameters, so
+    every case raised `TypeError` before `verify_checkpoint` was ever called and
+    none of them had demonstrated anything. Audit 030 §V.
+    """
     mine = provenance()
-    theirs = RunProvenance(**{**mine.to_dict(), field: value})
+    theirs = dataclasses.replace(mine, **{field: value})
+    assert getattr(theirs, field) == value, "the mutation must actually take"
+    assert theirs != mine
+
     payload = checkpoint_payload(
         provenance=theirs, adapter_state={}, optimizer_state={},
         global_update=1, sampler_state={}, cap=2, budget_limited=False, points=[],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(TrainerContractViolation) as caught:
         verify_checkpoint(payload, mine)
+
+    # Not merely "something raised": the rejection must be the identity
+    # violation for THIS field. A setup error, or a mismatch reported on some
+    # other key, no longer passes.
+    message = str(caught.value)
+    assert "checkpoint provenance mismatch" in message, message
+    assert repr(field) in message, message
+    assert repr(value) in message, message
 
 
 # ---------------------------------------------------------------------------
@@ -265,3 +286,57 @@ def test_the_cadence_is_an_update_count_not_wall_clock():
 
     assert CHECKPOINT_EVERY_UPDATES == EVAL_EVERY_UPDATES
     assert isinstance(CHECKPOINT_EVERY_UPDATES, int)
+
+
+# ---------------------------------------------------------------------------
+# Provenance round trip through a REAL torch checkpoint (Audit 030 §V)
+# ---------------------------------------------------------------------------
+def test_provenance_survives_a_real_torch_checkpoint_round_trip(tmp_path):
+    """p -> to_dict -> torch.save -> torch.load -> verify_checkpoint.
+
+    The torch-free half of this lives in `test_stage1_provenance_contract.py`;
+    this is the leg that actually crosses the filesystem, because the recorded
+    identity is only worth anything if it comes back off disk unchanged.
+    """
+    mine = provenance()
+    save_training_checkpoint(tmp_path, checkpoint_payload(
+        provenance=mine, adapter_state={"w": torch.zeros(3)}, optimizer_state={},
+        global_update=9, sampler_state={"cursor": 2, "visit": 0}, cap=20,
+        budget_limited=False, points=[],
+    ))
+    recovered = load_training_checkpoint(tmp_path)
+    assert recovered is not None
+
+    for field in ("run_seed", "corruption_seed", "learning_rate", "r",
+                  "corpus_manifest_digest", "repository_head", "backbone_checkpoint",
+                  "backbone_revision", "protocol_version", "precision"):
+        assert recovered["provenance"][field] == getattr(mine, field), field
+    for key in RunProvenance.DERIVED_KEYS:
+        assert recovered["provenance"][key] == mine.to_dict()[key], key
+
+    verify_checkpoint(recovered, mine)  # the authoritative gate accepts it
+
+
+def test_a_foreign_identity_is_rejected_after_a_real_round_trip(tmp_path):
+    """The rejection must survive serialization, not just live in memory."""
+    mine = provenance()
+    save_training_checkpoint(tmp_path, checkpoint_payload(
+        provenance=dataclasses.replace(mine, repository_head="b" * 40),
+        adapter_state={}, optimizer_state={}, global_update=1,
+        sampler_state={}, cap=2, budget_limited=False, points=[],
+    ))
+    with pytest.raises(TrainerContractViolation) as caught:
+        verify_checkpoint(load_training_checkpoint(tmp_path), mine)
+    assert "repository_head" in str(caught.value)
+
+
+def test_best_and_last_both_carry_the_same_verified_identity(tmp_path):
+    mine = provenance()
+    save_training_checkpoint(tmp_path, checkpoint_payload(
+        provenance=mine, adapter_state={}, optimizer_state={}, global_update=5,
+        sampler_state={}, cap=20, budget_limited=False, points=[],
+    ), is_best=True)
+    for best in (False, True):
+        recovered = load_training_checkpoint(tmp_path, best=best)
+        assert recovered is not None, best
+        verify_checkpoint(recovered, mine)
