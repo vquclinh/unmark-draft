@@ -63,6 +63,7 @@ from unmark.linguistics import make_classifier, try_load_inventory  # noqa: E402
 from unmark.stage1.chunking import chunk_document  # noqa: E402
 from unmark.stage1.checkpoint import (  # noqa: E402
     COMPLETE_NAME,
+    resolve_repository_head,
     CheckpointIdentity,
     PrepareCheckpoint,
     atomic_write_bytes,
@@ -94,6 +95,7 @@ from unmark.stage1.protocol import (  # noqa: E402
     LR_PILOT_R,
     MAX_LENGTH,
     PI_STRIP,
+    RAW_BASE_POLICY,
     R_PHASE1_GRID,
     SELECTION_SEED,
     SPLIT_SEED,
@@ -186,7 +188,9 @@ def run_prepare_corpus(args) -> int:
     classifier = make_classifier(try_load_inventory())
 
     identity = CheckpointIdentity(
-        repository_head=args.repository_head,
+        # The ACTUAL HEAD of the executing tree, never a caller-supplied value:
+        # a checkpoint written by commit A must not resume under commit B.
+        repository_head=resolve_repository_head(),
         protocol_version=STAGE1_PROTOCOL_VERSION,
         chunk_schema_version=CHUNK_SCHEMA_VERSION,
         corpus_dataset=pin.dataset,

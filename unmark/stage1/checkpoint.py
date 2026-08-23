@@ -41,6 +41,7 @@ import hashlib
 import heapq
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -225,6 +226,51 @@ class CheckpointIdentity:
                     f"{theirs[key]!r}, this environment has {mine[key]!r}. Resuming "
                     "would prepare a different document stream."
                 )
+
+
+_SHA1_HEX = re.compile(r"\A[0-9a-f]{40}\Z")
+
+
+def resolve_repository_head(root: Path | None = None) -> str:
+    """The **actual** Git HEAD of the executing source tree. Fails closed.
+
+    Checkpoint identity must record the commit that produced the shards, so
+    this is derived from the repository rather than accepted from the caller.
+    There is deliberately **no CLI flag and no environment override**: a
+    caller-claimed HEAD would let a checkpoint written by commit A resume under
+    commit B while asserting it did not.
+
+    Returns the full 40-character SHA. Raises `CheckpointViolation` when the
+    repository cannot answer, when `git` is unavailable, or when the result is
+    not a full SHA -- never `"unknown"`, never a branch name, never a default.
+    """
+    import subprocess
+
+    root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CheckpointViolation(
+            f"cannot resolve the repository HEAD under {root}: {error}. Stage-6 "
+            "checkpoint identity binds the commit that produced the shards, so "
+            "preparation refuses to run without it."
+        ) from error
+    if completed.returncode != 0:
+        raise CheckpointViolation(
+            f"cannot resolve the repository HEAD under {root}: git exited "
+            f"{completed.returncode} ({completed.stderr.strip()[:200]}). Stage-6 "
+            "checkpoint identity binds the commit that produced the shards."
+        )
+    head = completed.stdout.strip()
+    if not _SHA1_HEX.match(head):
+        raise CheckpointViolation(
+            f"repository HEAD {head!r} is not a full 40-character commit sha. A "
+            "branch name or abbreviated revision is not an identity."
+        )
+    return head
 
 
 def document_sequence_digest(document_ids: Sequence[str]) -> str:

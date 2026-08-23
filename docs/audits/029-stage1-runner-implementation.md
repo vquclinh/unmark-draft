@@ -4,11 +4,18 @@
 |---|---|
 | **Audit id** | 029 |
 | **Created (UTC)** | 2026-08-22 |
-| **Baseline HEAD** | `5b07430` (`docs: lock Stage-1 scientific configuration`) |
-| **Scope** | Implement the complete pre-training Stage-1 execution stack from the locked Audit 028 configuration. **Execute none of it.** |
+| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), then this consistency cleanup (§X) |
+| **Original baseline HEAD** | `5b07430` (`docs: lock Stage-1 scientific configuration`) — the state at creation |
+| **Current baseline HEAD** | `f9c23fe` (`feat: add resumable Stage-1 corpus preparation`) |
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
-| **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
-| **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Scope — as created** | *(historical, superseded)* "Implement the complete pre-training Stage-1 execution stack from the locked Audit 028 configuration. **Execute none of it.**" That was true on 2026-08-22 and is **no longer** the state: the stack has since been run repeatedly against the real pinned corpus. |
+| **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. Stages 1-5 execute and pass on the real corpus; Stage 6 is implemented, streamed and resumable but **has never completed and has never committed one checkpoint interval**. Stage-1 *training* is implemented but unexecuted and out of scope here. |
+| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§W each record a defect that appeared only against the real corpus or the real pinned tokenizer, not in the local suite. |
+| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1), and at `f9c23fe` **crashed at document 0** on runner wiring (§W). |
+| **What has NOT run** | **No completed Stage-6 prepare. No Stage-6 checkpoint interval ever committed. No real Drive resume. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
+| **Next step** | The real Drive **START → checkpoint → kill → RESUME** probe. Not the full corpus run, and not training — **neither is authorised by this audit**. |
+| **NOT** | **This is not the PRE-TRAIN audit.** That happens after a completed real prepare, a demonstrated real Drive resume, the proposal/PDF synchronisation, and a no-update real-model smoke available for review |
+| **Revision 3c runner-wiring repair** | **2026-08-23** — the real Colab probe crashed at `[6/6]`: `prepare-corpus` read `args.repository_head`, a flag it never defined. HEAD is now derived from the executing tree; a second latent crash (`RAW_BASE_POLICY` unimported) was found by the new real-parser end-to-end test. See §W. |
 | **Revision 3c hardening** | **2026-08-23** — pre-commit review: the direct-BPE fast path **bypassed the wrapper's added-token split** and would have miscounted any run containing e.g. `<mask>`. Removed. Composition additionally gated on the tokenizer's own added tokens. Verdict/metadata consistency repaired. See §V. |
 | **Revision 3c** | **2026-08-23** — durable cross-runtime Stage-6 resume (append-only shards, document-boundary commits, failure-atomic state, identity-bound), plus a **second blocker found in inspection**: the pre-3c writer accumulated ~29.9 GB of chunks in RAM. Streaming removes it; output byte-identical. See §U. |
 | **Revision 3b** | **2026-08-23** — forensics: the historical `composed 5, exact 7` was **the wrong run unit** (`\S+` instead of the tokenizer's `\S+\n?`), reproduced exactly. Revision 3a's "composition falsified" reading is withdrawn. Exact run composition restored; BPE work now scales with distinct runs. See §T. |
@@ -22,24 +29,40 @@
 
 ## A. VERDICT — CURRENT
 
-**REVISION 3C (2026-08-23): HARDENING PASS — READY FOR REAL RESUME/PERFORMANCE PROBE**
+**REVISION 3C (2026-08-23): RUNNER-WIRING REPAIR PASS — READY FOR REAL DRIVE RESUME PROBE**
 
-Stage 6 is streamed and durably resumable; the direct-BPE fast path introduced
-earlier in Revision 3c has been **removed** as unsafe (§V). Every prior verdict
-below is **HISTORICAL** and superseded.
+Stage 6 is streamed and durably resumable; the direct-BPE fast path is
+**removed** as unsafe (§V) and the real tokenizer probe confirms it; the
+Stage-6 runner-wiring crash found by the real probe is repaired (§W). Every
+prior verdict below is **HISTORICAL** and superseded.
 
 **What has actually happened on real data:** the corpus pin, schema,
-contamination screen and document split all pass on all **1 118 224** documents;
-the pinned-tokenizer probe passes; Stage 6 has run partially (5 000 documents,
-~29.5 docs/s) but has **never completed**.
+contamination screen and document split all pass on all **1 118 224** documents,
+and the pinned-tokenizer probe passes. Stage 6 has been **entered twice**, and
+the two events must not be conflated:
+
+* at `4c72639`, **before** checkpointing existed, a timing run chunked **5 000
+  documents** at ~29.5 docs/s (§U.1) — a measurement, not a prepared artifact;
+* at `f9c23fe`, **with** checkpointing, it **crashed at document 0** on runner
+  wiring before any heartbeat (§W).
+
+So **no checkpoint interval has ever been committed**, and Stage 6 has **never
+completed**.
 
 **What remains true:**
 
 * **no successful full Stage-6 prepare** — and this audit does not authorise one;
+* **no committed Stage-6 checkpoint, and no real Drive resume demonstrated**;
 * **no encoder training, no optimizer step, no forward pass**;
 * **no downstream scientific Stage-1 run**;
 * **official UIT-VSFC TEST sealed** and structurally unreachable;
 * **compiled proposal PDF STALE**.
+
+**The next step is the real Drive START → checkpoint → kill → RESUME probe** —
+a bounded experiment that must reach at least one committed 5 000-document
+checkpoint, survive a deliberate runtime kill, and resume at the committed
+prefix. It is **not** the full 1 118 224-document run, and it is **not**
+training. Neither is authorised here.
 
 ---
 
@@ -2162,12 +2185,20 @@ Revision 3c's §U.3 said the protocol was untouched. Precisely:
   `RAW_BASE_POLICY = "RAW_BASE"` so the checkpoint can bind the base-pathway
   identity and refuse to resume a stream prepared under a different one. Purely
   additive; no existing line changed.
-* **Scientific constants are unchanged** — 21 of them byte-compared against
-  `4c72639`: `MAX_LENGTH`, `PI_STRIP`, `DEV_DOCUMENTS`, `SPLIT_SEED`, all seeds,
-  both grids, `BATCH_SIZE`, `CORPUS_REVISION`, `ENCODER_REVISION`, `ON_OVERFLOW`,
-  `PRECISION`, `VALIDATION_CONDITIONS`, `ADAPTER_TRAINABLE_PARAMETERS`,
+* **Scientific constants are unchanged** — **21** of them value-compared
+  against **`4c72639`**: `MAX_LENGTH`, `PI_STRIP`, `DEV_DOCUMENTS`, `SPLIT_SEED`,
+  `SELECTION_SEED`, `TRAIN_SEEDS`, `CORRUPTION_SEED`,
+  `VALIDATION_CORRUPTION_SEED`, `LR_PILOT_GRID`, `R_PHASE1_GRID`, `BATCH_SIZE`,
+  `CORPUS_REVISION`, `ENCODER_REVISION`, `ON_OVERFLOW`, `PRECISION`,
+  `VALIDATION_CONDITIONS`, `ADAPTER_TRAINABLE_PARAMETERS`,
   `CONTAMINATION_METHOD`, `CORPUS_SHARD_ORDER`, `STAGE1_PROTOCOL_VERSION`,
-  `CHUNK_SCHEMA_VERSION` — **NONE changed**.
+  `CHUNK_SCHEMA_VERSION` — **NONE changed**. The group labels used in the first
+  draft of this line ("all seeds", "both grids") are expanded above so the count
+  is checkable; it is the **same set**, and it is **21** names, not 22.
+* **`RAW_BASE_POLICY` is deliberately NOT in that 21.** It is the constant this
+  revision **added**, so it has no `4c72639` value to be unchanged against.
+  Counting it would turn a newly-introduced identity constant into evidence of
+  stability, which is the opposite of what the comparison is for. See §X.1.
 
 "scientific protocol unchanged" and "`protocol.py` byte-untouched" are different
 claims; only the first is true.
@@ -2209,7 +2240,7 @@ modified**. All 41 checkpoint/resume tests still pass unchanged.
 | 13 | Top-level verdict is current | **yes** — §A |
 | 14 | Historical verdicts marked | **yes** — §A1, §A2 |
 | 15 | `protocol.py` claims factually accurate | **yes** — §V.6 |
-| 16 | Scientific constants unchanged | **yes** — 21 compared, none changed |
+| 16 | Scientific constants unchanged | **yes** — **21** compared against `4c72639`, none changed; `RAW_BASE_POLICY` excluded as newly added |
 | 17 | Decision log updated | **yes** — D-S1B-010 |
 | 18 | Proposal update necessity assessed | **yes** — not required (§V.6, D-S1B-010) |
 | 19-21 | `chunking.py`, contamination semantics, sealed TEST | **yes** |
@@ -2219,11 +2250,305 @@ modified**. All 41 checkpoint/resume tests still pass unchanged.
 
 ---
 
-**STATUS: REVISION 3C HARDENING PASS — READY FOR REAL RESUME/PERFORMANCE PROBE**
+## W. REVISION 3C RUNNER-WIRING REPAIR — THE REAL PROBE CRASHED AT STAGE 6
+
+**Date:** 2026-08-23 **Baseline commit:** `f9c23fedd4b5dd85b206454886a3e5bade3cfa86`
+
+### W.1 What the real probe showed
+
+Environment: Python 3.13.15, Transformers 4.57.6, HEAD `f9c23fe`.
+
+**The hardened tokenizer probe PASSED** — `direct_bpe_enabled: false`,
+`composition_enabled: true`, `added_tokens: 5`, `wrapper_fixtures: 58`,
+`direct_bpe_mismatches: 0`, `failures: []`, `status: PASS`. No encoder, forward
+pass, optimizer or training. §V's removal of the direct-BPE path is confirmed on
+the real tokenizer.
+
+**Stages 1-5 PASSED on the full pinned corpus**: 1 118 224 documents,
+0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks,
+0 candidates, 0 corpus canon calls, split 1 113 224 / 5 000, official UIT-VSFC
+TEST **SEALED**.
+
+**Stage 6 then crashed immediately**, before any progress heartbeat and before
+any checkpoint interval:
+
+```
+File "scripts/stage1_runner.py", line 189, in run_prepare_corpus
+    repository_head=args.repository_head,
+AttributeError: 'Namespace' object has no attribute 'repository_head'
+```
+
+Wrapper state at the time: `mode START`, `next_document_index 0`. **No
+5 000-document checkpoint was reached, so nothing about Stage-6 throughput or
+resume was measured.**
+
+### W.2 Root cause, from the code
+
+| # | Question | Finding |
+|---|---|---|
+| 1 | Why does `run_prepare_corpus` read `args.repository_head`? | Revision 3c added the `CheckpointIdentity` construction and copied the field from the pattern used by the *other* subcommands |
+| 2 | Which subcommands define it? | `lr-pilot`, `r-phase1`, `final-main` (via `_corpus_consumer`) and `smoke`. **`prepare-corpus` has its own argument block and never defined it** |
+| 3 | Is there an existing repository-identity helper? | **No.** `unmark/alignment/contracts.py` has an `observed_revision` *field* documented as "`git rev-parse HEAD` of the provisioned checkout", but it is a dataclass field, not a resolver |
+| 4 | How do the other commands obtain HEAD? | From `--repository-head`, default `None` — **provenance the caller claims** |
+| 5 | Why did the tests miss it? | Every Stage-1 runner test is **AST-only** (`build_parser` inspected as a tree), and the checkpoint tests construct `CheckpointIdentity` **objects directly**. **No test ever parsed a real `prepare-corpus` command line and entered `run_prepare_corpus`** |
+
+Point 5 is the important one: a regression written as
+`argparse.Namespace(repository_head=...)` would have *supplied the very attribute
+whose absence was the bug*, reproducing the blind spot rather than closing it.
+
+### W.3 The repair
+
+`prepare-corpus` now derives the **actual** HEAD of the executing source tree:
+
+```python
+resolve_repository_head()   # git -C <repo root> rev-parse HEAD
+```
+
+* returns the **full 40-character** SHA, shape-validated;
+* **fails closed** — a missing `git`, a non-zero exit, or a non-SHA result all
+  raise `CheckpointViolation`. Never `"unknown"`, never a branch name, never a
+  default, never a hard-coded commit;
+* reads **no environment variable** — a caller-supplied value is not an identity;
+* **no `--repository-head` flag was added** to `prepare-corpus`. The caller must
+  not be able to claim a HEAD for checkpoint identity.
+
+The flag on the three consuming commands and `smoke` is left as it was: this
+repair fixes the crash, it does not open a new policy question about those.
+
+**HEAD remains a mandatory fail-closed checkpoint identity field.** A checkpoint
+written by commit A still cannot resume under commit B — proven by test.
+
+### W.4 A second latent crash on the same line of code
+
+The new end-to-end test immediately exposed a further defect the AST tests could
+not see: `RAW_BASE_POLICY` was **used in the identity construction but never
+imported**. It would have raised `NameError` on the very next real run, at the
+same point, after the first fix. It is now imported, and a static check confirms
+every name `run_prepare_corpus` loads is bound.
+
+### W.5 Failed-probe artifact safety
+
+Inspected what `run_prepare_corpus` creates before the crash line: the
+`CheckpointIdentity` is constructed at line 190, while the first `mkdir` is at
+line 273 and `checkpoint.begin()` at line 222 — both **after** it.
+
+**The real `f9c23fe` failure therefore left nothing**: no output directory, no
+checkpoint directory, no `state.json`, no shards, no `COMPLETE.json`. Asserted by
+test.
+
+**What the next Colab run should do with the `f9c23fe` probe directories:**
+nothing needs deleting, because nothing was created. If a directory *does* exist
+from some other attempt, the unchanged immutable-output contract applies — a
+directory holding neither `state.json` nor `COMPLETE.json` is **refused**, and
+**no user data is deleted automatically**. Both behaviours are now tested.
+
+### W.6 The regression test that closes the blind spot
+
+`tests/test_stage1_prepare_cli.py` — **17 tests**, ML-free. They go through
+`build_parser()` (the same path `main()` uses), parse a real `prepare-corpus`
+argv, and run the whole pipeline with only the corpus pin, the shard reader and
+the tokenizer injected — chunking, checkpointing, finalisation and the
+completion marker all execute for real.
+
+| Case | Result |
+|---|---|
+| Parsed Namespace has **no** `repository_head` attribute | pass |
+| START runs end to end, no `AttributeError`, document order preserved | pass |
+| Checkpoint records the **real** resolved HEAD, 40 hex | pass |
+| ALREADY_COMPLETE short-circuits and does not alter artifacts | pass |
+| RESUME after simulated death, no skip or repeat | pass |
+| A checkpoint from **another HEAD** cannot resume | pass |
+| Pre-checkpoint failure leaves nothing resembling progress | pass |
+| Stale directory without state/COMPLETE refused; user data untouched | pass |
+| `--help` side-effect free; no `--repository-head` in help | pass |
+| HEAD is a full 40-char SHA matching `git rev-parse` | pass |
+| Non-SHA results (`main`, abbreviated, empty, non-hex) rejected | pass, 4 cases |
+| `git` exit 128, and a missing `git` binary, both fail closed | pass |
+| No `environ`/`getenv`/`"unknown"` in the resolver | pass, AST over the body with the docstring stripped |
+
+The corpus fixture uses **5 200 documents** because `DEV_DOCUMENTS = 5000` is a
+locked scientific constant — the fixture was enlarged rather than the constant
+lowered.
+
+### W.7 What did NOT change
+
+`unmark/stage1/checkpoint.py`'s architecture (only the new resolver was added),
+the streaming writer, immutable shards, document-boundary commits, state
+atomicity, COMPLETE semantics, `lengths.py` composition and wrapper-only run
+counting, **direct BPE remains removed**, `chunking.py`, `corpus.py`, the
+contamination criterion, manifest scientific semantics, `RAW_BASE`,
+`max_length`, seeds, dev count, `pi_strip`. The **same 21** scientific
+constants enumerated in §V.6 were re-compared, here against **`f9c23fe`**:
+**NONE changed**. `unmark/stage1/protocol.py` additionally has **zero diff**
+against `f9c23fe` — this repair did not touch it at all, so `RAW_BASE_POLICY`
+(added at `f9c23fe`) is unchanged too, but it is still excluded from the 21 for
+the reason given in §V.6.
+
+### W.8 Tests
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_prepare_cli.py` | **17 passed** (new) |
+| `tests/test_stage1_checkpoint.py` | 41 passed |
+| `tests/test_stage1_runner_contract.py` | 43 passed |
+| `tests/test_stage1_lengths.py` | 325 passed |
+| `tests/test_stage1_chunking.py` | 35 passed |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed |
+| Full repository | **3 209 passed, 97 skipped** |
+
+### W.9 Limitations
+
+1. **The full prepare is still not complete.** Stage 6 has **never committed a
+   single checkpoint interval** on the real corpus, so nothing about real
+   checkpoint overhead, shard sizes or sustained Stage-6 throughput is measured.
+   The 5 000 documents chunked at `4c72639` (§U.1) were a **pre-checkpoint timing
+   run**: documents were processed, but no shard was ever committed and no state
+   was ever written.
+2. **Real Drive resume has not been demonstrated.** All durability evidence is
+   local-filesystem and stubbed-tokenizer.
+3. The end-to-end regression uses a stub tokenizer; the real tokenizer is
+   exercised only by the separate probe.
+4. No Stage-6 resume PASS is claimed.
+5. Training remains unauthorised, and this audit does not authorise the full run.
+
+### W.10 Self-audit
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Root cause established from code, not the traceback | **yes** — §W.2, five questions answered |
+| 2 | `prepare-corpus` no longer reads a nonexistent field | **yes** — AST-asserted |
+| 3 | Actual repository HEAD derived internally | **yes** — `git rev-parse HEAD` |
+| 4 | No caller-controlled HEAD override added | **yes** — no flag, no env var |
+| 5 | Full 40-char SHA required | **yes** — 4 rejection cases |
+| 6 | Resolution failure fails closed | **yes** — exit 128 and missing binary |
+| 7 | HEAD remains checkpoint identity | **yes** |
+| 8 | A different HEAD cannot resume | **yes** — explicit test |
+| 9-11 | START / RESUME / ALREADY_COMPLETE regressions at the real parser boundary | **yes** |
+| 12 | Failed pre-checkpoint state understood and safe | **yes** — nothing is created before the crash line |
+| 13 | Checkpoint architecture unchanged | **yes** — resolver added only |
+| 14 | Direct BPE remains removed | **yes** — real probe confirms |
+| 15 | Composition hardening unchanged | **yes** |
+| 16 | Scientific constants unchanged | **yes** — the same **21**, compared against `f9c23fe`; `protocol.py` has zero diff |
+| 17-19 | `chunking.py`, contamination, sealed TEST | **yes** |
+| 20-23 | No encoder, forward, optimizer, training | **yes** |
+| 24-25 | Focused and full suites pass | **yes** — 3 209 passed |
+| 26-27 | `git diff --check` clean; nothing staged | **yes** |
+| 28 | Audit 029 revised in place; no Audit 030 | **yes** |
+| 29 | Stage-6 resume claimed PASS? | **NO** |
+
+---
+
+## X. CONSISTENCY CLEANUP — AUDIT-ONLY (2026-08-23)
+
+**Baseline:** `f9c23fedd4b5dd85b206454886a3e5bade3cfa86`.
+**Scope: this audit file only.** No implementation code, no test, no scientific
+configuration and no decision entry was touched. The runner-wiring repair of §W
+is **accepted as it stands**; nothing about it is re-litigated here.
+
+### X.1 The 21-vs-22 constant count, resolved from evidence
+
+The chat report accompanying §W said "**22** scientific constants: NONE
+changed", while the audit itself said **21**. One of them was wrong, and the
+disagreement was resolved by re-running the comparison rather than by picking a
+number.
+
+The enumerated set in §V.6 was expanded from its group labels ("all seeds",
+"both grids") into explicit names and re-compared by value:
+
+| Baseline | Constants compared | Changed |
+|---|---|---|
+| `4c72639` (Revision-3c hardening, §V.6) | **21** | **NONE** |
+| `f9c23fe` (this repair, §W.7) | the **same 21** | **NONE** |
+
+**The audit's 21 is correct; the chat report's 22 was a miscount.** The extra
+name was `RAW_BASE_POLICY`, and it must **not** be counted: it is the constant
+Revision 3c *added* (`protocol.py` is `+6/−0` against `4c72639`), so it has no
+prior value to be stable against. Including it would let a newly-introduced
+operational identity constant pose as evidence that nothing moved.
+
+Both figures now carry their baseline explicitly, because they are genuinely two
+comparisons — a different working tree against a different commit — that happen
+to cover the same 21 names and return the same answer. Additionally,
+`unmark/stage1/protocol.py` has **zero diff** against `f9c23fe`: the
+runner-wiring repair did not touch the file at all.
+
+### X.2 Stale CURRENT metadata corrected
+
+The header still described the audit as it was created on 2026-08-22 —
+"**Execute none of it**", "No real Stage-1 run, no corpus download, no model
+load". Those statements were true then and are **false as current metadata**:
+the corpus has been downloaded and inspected in Colab, the real pinned tokenizer
+probe has passed, and Stages 1-5 pass on all 1 118 224 documents.
+
+The header now separates **Scope — as created** (explicitly labelled historical
+and superseded, wording preserved) from **Scope — CURRENT**, and adds explicit
+**What HAS run on real data** and **What has NOT run** rows plus the current
+baseline HEAD. No historical section was deleted; §L, §M, §A1, §A2 and the
+superseded status blocks remain exactly as they were, still labelled.
+
+### X.3 One evidence conflation removed
+
+§A previously read "Stage 6 has run partially (5 000 documents, ~29.5 docs/s)"
+directly alongside §W's "never reached one checkpoint interval". Both are true
+but they describe **two different runs**, and side by side they read as a
+contradiction. §A now distinguishes them: a pre-checkpoint **timing** run at
+`4c72639` that chunked 5 000 documents and committed nothing, versus the
+`f9c23fe` run that crashed at document 0 with checkpointing present. §W.9
+limitation 1 is sharpened the same way.
+
+### X.4 What this cleanup did NOT do
+
+It did not weaken or strengthen the verdict, did not add any real-data claim,
+and did not remove any limitation. The §W findings stand unchanged: the missing
+`repository_head`, the internally resolved fail-closed 40-character HEAD with no
+caller override, the second latent `RAW_BASE_POLICY` import crash, the failed
+probe having created no artifacts, 17 real-parser tests, and 3 209 passed /
+97 skipped.
+
+### X.5 Self-audit for the cleanup
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Only Audit 029 changed | **yes** — no code, test, config or decision file touched |
+| 2 | Another doc carries the same stale claim? | **no** — grep across `docs/` and `*.md` found the wording only here |
+| 3 | CURRENT metadata no longer says nothing has executed | **yes** — §X.2 |
+| 4 | Historical text still clearly historical | **yes** — original wording preserved and labelled superseded |
+| 5 | 21-vs-22 resolved from an actual re-run, not a preference | **yes** — §X.1 |
+| 6 | Baseline stated for every count | **yes** — `4c72639` and `f9c23fe` named at each site |
+| 7 | `RAW_BASE_POLICY` excluded from the unchanged set | **yes**, with the reason |
+| 8 | Verdict still runner-wiring repair PASS | **yes** — unchanged |
+| 9 | Stage-6 checkpoint / resume claimed PASS? | **NO** |
+| 10 | Full prepare claimed PASS? | **NO** |
+| 11 | PRE-TRAIN readiness claimed? | **NO** |
+| 12 | Training or full-run authorised? | **NO** to both |
+| 13 | Next step stated as the real Drive START → checkpoint → kill → RESUME probe | **yes** — §A and the header |
+| 14 | Real evidence exaggerated anywhere? | **no** — one conflation removed (§X.3) |
+| 15 | `git diff --check` clean; nothing staged | **yes** |
+
+---
+
+**STATUS: AUDIT 029 CONSISTENCY CLEANUP PASS — READY TO COMMIT RUNNER-WIRING REPAIR**
+**VERDICT UNCHANGED: REVISION 3C RUNNER-WIRING REPAIR PASS — READY FOR REAL DRIVE RESUME PROBE**
+**CLEANUP WAS AUDIT-ONLY: NO CODE, NO TEST, NO SCIENTIFIC CONFIG, NO DECISION TOUCHED (§X)**
+**CURRENT METADATA NOW DESCRIBES REALITY; "EXECUTE NONE OF IT" LABELLED HISTORICAL**
+**CONSTANT COUNT RESOLVED: 21, NOT 22 — `RAW_BASE_POLICY` WAS NEWLY ADDED, NOT UNCHANGED**
+**21 COMPARED AGAINST `4c72639` (§V.6) AND THE SAME 21 AGAINST `f9c23fe` (§W.7) — NONE CHANGED**
+**NEXT STEP IS THE REAL DRIVE START -> CHECKPOINT -> KILL -> RESUME PROBE, NOTHING LARGER**
+**NO STAGE-6 CHECKPOINT COMMITTED, NO FULL PREPARE, NO PRE-TRAIN, NO TRAINING AUTHORISED**
+
+**REAL PROBE CRASHED AT STAGE 6: `args.repository_head` NEVER EXISTED ON `prepare-corpus` (§W)**
+**HEAD NOW DERIVED FROM THE EXECUTING TREE VIA `git rev-parse HEAD`, FAIL-CLOSED, NO CLI OVERRIDE**
+**A SECOND LATENT CRASH FOUND BY THE NEW END-TO-END TEST: `RAW_BASE_POLICY` WAS UNIMPORTED**
+**BLIND SPOT CLOSED: 17 TESTS NOW RUN THROUGH THE REAL PARSER INTO `run_prepare_corpus`**
+**FAILED PROBE LEFT NO ARTIFACTS — NOTHING IS CREATED BEFORE THE CRASH LINE**
+**REAL TOKENIZER PROBE PASSED; STAGES 1-5 PASSED ON ALL 1 118 224 DOCUMENTS**
+**STAGE 6 HAS STILL NEVER REACHED ONE CHECKPOINT INTERVAL — NO RESUME PASS CLAIMED**
+
+~~**STATUS: REVISION 3C HARDENING PASS — READY FOR REAL RESUME/PERFORMANCE PROBE**~~ **— superseded by §W**
 **DIRECT-BPE FAST PATH REMOVED: IT BYPASSED THE WRAPPER'S ADDED-TOKEN SPLIT (§V)**
 **COMPOSITION NOW GATED ON THE TOKENIZER'S OWN ADDED TOKENS; UNKNOWN = UNSAFE**
 **WRAPPER-SENSITIVE RUNS EXACT BEFORE AND AFTER THE 256-QUERY WINDOW**
-**`protocol.py` IS +6/-0 ADDITIVE; 21 SCIENTIFIC CONSTANTS COMPARED, NONE CHANGED**
+**`protocol.py` IS +6/-0 ADDITIVE vs `4c72639`; 21 SCIENTIFIC CONSTANTS COMPARED, NONE CHANGED**
 **TOP-LEVEL VERDICT NOW CURRENT; PRIOR VERDICTS MARKED HISTORICAL**
 
 ~~**STATUS (Revision 3c, first pass): REVISION 3C PASS**~~ **— hardened by §V**
@@ -2260,7 +2585,7 @@ modified**. All 41 checkpoint/resume tests still pass unchanged.
 **STAGES 1-5 NOW PASS ON REAL DATA — STAGE 6 HAS NEVER COMPLETED**
 **COLAB TOKENIZER PROBE WRITTEN BUT NOT RUN**
 
-**STATUS (Revision 2): PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**
+~~**STATUS (Revision 2): PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**~~ **— SUPERSEDED by Revision 3**
 **DEFECT 2: STAGE-4 CONTAMINATION SCREEN CANONICALISED ALL 1 118 224 DOCUMENTS (>7 h) — REPAIRED (§Q)**
 **CONTAMINATION CRITERION UNCHANGED: `sha256(canon(x))`, DECIDED ONLY AT TIER 3**
 **PREFILTERS PROVEN NECESSARY CONDITIONS — 360 084 TRIALS, 0 COUNTEREXAMPLES**
@@ -2268,7 +2593,7 @@ modified**. All 41 checkpoint/resume tests still pass unchanged.
 **REAL CORPUS NOT RE-PREPARED — NO PERFORMANCE CLAIM AGAINST IT**
 **CHUNKING STILL UNVERIFIED ON REAL DATA — STAGE 5 WAS NEVER REACHED**
 
-**STATUS (Revision 1): REPAIR PASS — READY FOR REAL CORPUS RE-RUN**
+~~**STATUS (Revision 1): REPAIR PASS — READY FOR REAL CORPUS RE-RUN**~~ **— SUPERSEDED by Revision 2. Every line below is the state as of 2026-08-22, including "NO REAL STAGE-1 SCIENTIFIC EXECUTION OCCURRED", which is no longer current: see the header and §A.**
 **DEFECT: WHITESPACE-ONLY CUTTING COULD NOT PREPARE THE LOCKED CORPUS — REPAIRED (D-S1B-009)**
 **CHUNK BOUNDARIES: ORTHOGRAPHICALLY SAFE OFFSETS FROM `decompose`; SPANS STILL INDIVISIBLE**
 **TEXT PRESERVATION: EXACT RANGE TILING, BYTE-EXACT RECONSTRUCTION**
