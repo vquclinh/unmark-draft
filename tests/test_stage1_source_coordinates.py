@@ -116,12 +116,40 @@ def deterministic_corpus() -> list[str]:
     return corpus
 
 
-def test_canonical_input_is_identical_to_the_pre_repair_implementation():
-    """The repair is about non-canonical sources. Canonical must not move."""
-    canonical = [t for t in deterministic_corpus() if t and canon(t) == t]
+def is_latin_only(text: str) -> bool:
+    """No letter outside the Latin script -- the population §Z's oracle covers."""
+    return all(
+        not ch.isalpha() or unicodedata.name(ch, "").startswith("LATIN ")
+        for ch in unicodedata.normalize("NFD", text)
+    )
+
+
+def test_canonical_latin_input_is_identical_to_the_pre_repair_implementation():
+    """The §Z repair was about non-canonical sources. Canonical Latin must not move.
+
+    Scoped to Latin in Audit 029 §AA. The §AA repair deliberately narrows the
+    protected span from "alphabetic in any script" to "Latin script", so a
+    canonical *Greek* or *CJK* string legitimately gains cuts the old oracle
+    refused. That divergence is the repair; asserting the old equality on it
+    would be asserting the defect. Latin -- and therefore all Vietnamese -- is
+    still required to be byte-for-byte identical.
+    """
+    canonical = [t for t in deterministic_corpus() if t and canon(t) == t and is_latin_only(t)]
     assert len(canonical) > 500, f"weak fixture set: {len(canonical)}"
     mismatches = [t for t in canonical if canonical_coordinate_offsets(t) != safe_cut_offsets(t)]
     assert mismatches == [], mismatches[:3]
+
+
+def test_narrowing_only_ever_adds_cuts_and_never_removes_one():
+    """The §AA change is a *relaxation*: it can offer more boundaries, never fewer.
+
+    Stated as a superset rather than a count, so the property holds whatever the
+    script mix of the fixture happens to be.
+    """
+    for text in deterministic_corpus():
+        if not text or canon(text) != text:
+            continue
+        assert canonical_coordinate_offsets(text) <= safe_cut_offsets(text), repr(text)
 
 
 def test_canonical_chunk_boundaries_are_unchanged():
@@ -295,13 +323,31 @@ def test_offset_units_tile_the_source_exactly():
         assert cursor == len(text)
 
 
-def test_source_letter_runs_agree_with_decompose_on_canonical_text():
-    """The source-side segmentation is the same rule `_segment_syllables` uses."""
+def test_protected_runs_agree_with_decompose_on_canonical_latin_text():
+    """On Latin text the two segmentations are the same rule, as before §AA."""
     for text in deterministic_corpus():
-        if not text or canon(text) != text:
+        if not text or canon(text) != text or not is_latin_only(text):
             continue
         expected = [(s.canonical_start, s.canonical_end) for s in decompose(text).syllables]
         assert source_letter_runs(text) == expected, repr(text)
+
+
+def test_protected_runs_are_contained_in_the_alphabetic_runs():
+    """The general relationship after §AA: protected ⊆ alphabetic, not equal.
+
+    `SyllableSpan` answers "where are the alphabetic runs?" for channel
+    metadata. `source_letter_runs` answers "what may a cut never bisect?" and is
+    narrower. Containment is the invariant that must hold for every script; the
+    Hangul blocker is precisely a case where equality does not.
+    """
+    for text in deterministic_corpus():
+        if not text or canon(text) != text:
+            continue
+        alphabetic = [(s.canonical_start, s.canonical_end) for s in decompose(text).syllables]
+        for start, end in source_letter_runs(text):
+            assert any(a <= start and end <= b for a, b in alphabetic), (
+                f"protected run [{start},{end}) escapes every alphabetic run in {text!r}"
+            )
 
 
 def test_no_second_parser_was_introduced():

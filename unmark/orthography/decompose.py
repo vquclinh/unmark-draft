@@ -43,7 +43,7 @@ from unmark.orthography.marks import (
     Tone,
 )
 from unmark.orthography.models import CharacterUnit, DecomposedText, SyllableSpan
-from unmark.orthography.units import split_units, split_units_with_offsets
+from unmark.orthography.units import split_units_with_offsets
 
 _TONE_MARK_SET = frozenset(TONE_MARK_TO_OBSERVED)
 _LETTER_MARK_SET = frozenset(LETTER_MARK_TO_STATE)
@@ -78,15 +78,31 @@ def decompose(
         A :class:`DecomposedText` from which `recompose` rebuilds `canon(text)`.
     """
     canonical_text = canon(text, placement)
-    text_nfd = nfd(canonical_text)
 
     units: list[CharacterUnit] = []
     base_parts: list[str] = []
     canonical_cursor = 0
     base_cursor = 0
 
-    for unit_index, (base_cp, unit_marks) in enumerate(split_units(text_nfd)):
+    # Units are grouped over the **canonical (NFC) text**, then each unit is
+    # decomposed individually to separate its marks. Grouping over
+    # `nfd(whole text)` instead -- which this did until Audit 029 §AA -- silently
+    # split any precomposed character whose NFD expansion is several
+    # *non-combining* codepoints. Hangul is the real case: NFD turns one syllable
+    # into 2-3 Jamo of combining class 0, so each Jamo became its **own unit**
+    # with its own base, and a 98-character region produced a 269-character base
+    # stream. That is Unicode decomposition leaking into the base rather than
+    # Vietnamese diacritic removal, and proposal §4.2 requires "recomposition of
+    # the base".
+    for unit_index, unit in enumerate(split_units_with_offsets(canonical_text)):
         anomalies: list[Anomaly] = []
+
+        # Decompose THIS unit and keep every non-combining codepoint. For Latin
+        # the skeleton is one character; for Hangul it is the Jamo sequence that
+        # NFC puts back together.
+        unit_nfd = nfd(unit.text)
+        base_cp = "".join(c for c in unit_nfd if not unicodedata.combining(c))
+        unit_marks = tuple(c for c in unit_nfd if unicodedata.combining(c))
 
         tone_marks = [m for m in unit_marks if m in _TONE_MARK_SET]
         letter_marks = [m for m in unit_marks if m in _LETTER_MARK_SET]
@@ -126,7 +142,7 @@ def decompose(
 
         observed = TONE_MARK_TO_OBSERVED[tone_marks[0]] if tone_marks else ObservedTone.UNMARKED
 
-        canonical_unit = nfc(base_cp + "".join(unit_marks))
+        canonical_unit = unit.text
         units.append(
             CharacterUnit(
                 unit_index=unit_index,
@@ -164,12 +180,67 @@ def decompose(
     )
 
 
-def source_letter_runs(text: str) -> list[tuple[int, int]]:
-    """Maximal alphabetic runs of `text`, in **source** coordinates.
+def protects_a_vietnamese_candidate(unit_text: str) -> bool:
+    """Whether a chunk cut may **not** fall inside a run of such units.
 
-    The same segmentation `_segment_syllables` performs -- split the character
-    unit stream on `unit.is_letter` -- but over the string **as given**, so the
-    ranges address the original rather than its canonical form.
+    Vietnamese is written in the **Latin script**, so a character unit can be
+    part of a Vietnamese candidate only if its base letter is a Latin letter.
+    That is the whole predicate, and it is deliberately the *smallest* one that
+    does the job:
+
+    * **Not `str.isalpha()`.** "Alphabetic in any Unicode script" was the rule
+      until Audit 029 §AA, and it made 97 consecutive Hangul syllables one
+      indivisible "Vietnamese candidate span" — a region no Vietnamese reader
+      would recognise as a syllable, whose RAW_BASE length then exceeded
+      `max_length` with no legal cut. Hangul, CJK, Cyrillic and Greek are
+      alphabetic; none of them can spell a Vietnamese syllable.
+
+    * **Not the eligibility classifier.** `classify_candidate` answers
+      *inventory membership*, and returns `NOT_APPLICABLE` for a syllable that
+      is orthographically valid but out of vocabulary. Protecting only what the
+      inventory recognises would therefore permit a cut **inside a genuine
+      Vietnamese syllable** that the pinned inventory happens not to list. This
+      predicate is orthographic and lexicon-free, so an uncommon or OOV
+      Vietnamese candidate is protected exactly as a common one is.
+
+    * **Not a script table.** The test is `unicodedata.name`'s script prefix,
+      from the same standard-library module the rest of this package already
+      uses for normalisation and combining classes. No codepoint list is
+      hard-coded here.
+
+    Latin is *wider* than Vietnamese, deliberately: `Müller`, `naïve` and
+    `façade` stay protected. Over-protection only costs cut opportunities;
+    under-protection would bisect a syllable, so the error is taken in the safe
+    direction.
+    """
+    if not unit_text:
+        return False
+    base_nfd = nfd(unit_text)
+    base_cp = base_nfd[0] if base_nfd else ""
+    base_letter = D_STROKE.get(base_cp, base_cp)
+    if not base_letter.isalpha():
+        return False
+    try:
+        return unicodedata.name(base_letter).startswith("LATIN ")
+    except ValueError:  # unnamed codepoint -- not a Latin letter
+        return False
+
+
+def source_letter_runs(text: str) -> list[tuple[int, int]]:
+    """Maximal **protected** runs of `text`, in **source** coordinates.
+
+    The same shape of segmentation `_segment_syllables` performs -- split the
+    character unit stream on a per-unit letter predicate -- but over the string
+    **as given**, so the ranges address the original rather than its canonical
+    form, and with the **narrower** predicate
+    :func:`protects_a_vietnamese_candidate`.
+
+    The two are therefore related but not equal, and the difference is
+    deliberate. `SyllableSpan` answers "where are the alphabetic runs?" and
+    feeds channel metadata, where breadth is harmless. This answers "what may a
+    chunk cut never bisect?", where breadth is not harmless: it protected 97
+    Hangul syllables as one candidate and stopped Stage 6 (§AA). Every run
+    returned here is contained in an alphabetic run; the reverse does not hold.
 
     Why this exists: `decompose` canonicalises before it unitises, so every
     offset it reports is a canonical offset. For a non-canonically spelled
@@ -187,14 +258,7 @@ def source_letter_runs(text: str) -> list[tuple[int, int]]:
     start: int | None = None
     end = 0
     for unit in split_units_with_offsets(text):
-        # Exactly the predicate `decompose` applies, on the same normalised
-        # base: NFD the unit, take its base codepoint, resolve d-stroke, ask
-        # `isalpha`. Reading it off the precomposed source character would be a
-        # second rule, and two rules is how the original defect happened.
-        base_nfd = nfd(unit.text)
-        base_cp = base_nfd[0] if base_nfd else ""
-        base_letter = D_STROKE.get(base_cp, base_cp)
-        if base_letter.isalpha():
+        if protects_a_vietnamese_candidate(unit.text):
             if start is None:
                 start = unit.start
             end = unit.end
@@ -314,7 +378,12 @@ def recompose(parts: DecomposedText) -> str:
         base_letter = unit.base_char
         # Strip any non-Vietnamese marks back off the base before replaying the
         # full NFD sequence, otherwise they would be applied twice.
-        base_letter = nfd(base_letter)[:1] if base_letter else ""
+        # Keep every *non-combining* codepoint: one character for Latin, the
+        # whole Jamo skeleton for Hangul. Taking only the first would silently
+        # delete two thirds of a Hangul syllable (§AA).
+        base_letter = "".join(
+            c for c in nfd(base_letter) if not unicodedata.combining(c)
+        )
         if unit.has_stroke:
             base_letter = D_STROKE_INVERSE.get(base_letter, base_letter)
         pieces.append(base_letter + "".join(unit.nfd_marks))

@@ -4,17 +4,18 @@
 |---|---|
 | **Audit id** | 029 |
 | **Created (UTC)** | 2026-08-22 |
-| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), the performance investigation and ordered parallel compute (§Y), then the source-coordinate chunking repair (§Z) |
+| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), the performance investigation and ordered parallel compute (§Y), the source-coordinate chunking repair (§Z), then the non-Vietnamese orthography repair (§AA) |
 | **Original baseline HEAD** | `5b07430` (`docs: lock Stage-1 scientific configuration`) — the state at creation |
-| **Current baseline HEAD** | `2f6d024` (`perf: add ordered parallel Stage-1 preparation`) |
+| **Current baseline HEAD** | `1f86667` (`fix stage 1`) |
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Scope — as created** | *(historical, superseded)* "Implement the complete pre-training Stage-1 execution stack from the locked Audit 028 configuration. **Execute none of it.**" That was true on 2026-08-22 and is **no longer** the state: the stack has since been run repeatedly against the real pinned corpus. |
 | **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. Stages 1-5 execute and pass on the real corpus; Stage 6 is implemented, streamed and durably resumable, and **real Drive checkpointing and a cold-process RESUME are demonstrated**: `2f6d024` committed **847 848 documents across 170 verified shards** before failing closed. **Stage 6 has never completed**, and that prefix is now **forensic-only**, because the source-boundary semantics changed under it (§Z.12). Stage-1 *training* is implemented but unexecuted and out of scope here. |
-| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§Z each record a defect, or an investigation of one, that surfaced only against the real corpus or the real pinned tokenizer, not in the local suite. §Y is the exception that proves the discipline: the reported regression was **not** reproducible from the code. |
-| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1); at `f9c23fe` it **crashed at document 0** on runner wiring (§W); at `cc2b710` it ran to **500 documents** and was stopped deliberately (§Y); at `2f6d024`, with 16 workers, it ran durably to **847 848 documents / 170 verified shards** — **surviving a deliberate kill and a cold-process RESUME** — before **failing closed** on one 604-character region (§Z). Real worker sweep on the real tokenizer at 1 000 documents: **18.87 / 34.97 / 58.82 / 86.21 / 136.99 docs/s** at 1 / 2 / 4 / 8 / 16, all producing the same 17 219 chunks. |
-| **What has NOT run** | **No completed Stage-6 prepare.** The repaired chunker has **never been run against the real blocker document**, so it is **not claimed fixed**. The `2f6d024` prefix is unusable by design after the boundary-semantics change, so Stage 6 must **restart from document 0**. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
-| **Next step** | The **real blocker reprobe**: run the repaired chunker against the real `Chincha_Alta` region and confirm it now subdivides, then restart Stage 6 **from document 0 in a new checkpoint directory**. Not the full corpus run, and not training — **neither is authorised by this audit**. |
+| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§AA each record a defect, or an investigation of one, that surfaced only against the real corpus or the real pinned tokenizer, not in the local suite. §Y is the exception that proves the discipline: the reported regression was **not** reproducible from the code. |
+| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1); at `f9c23fe` it **crashed at document 0** on runner wiring (§W); at `cc2b710` it ran to **500 documents** and was stopped deliberately (§Y); at `2f6d024`, with 16 workers, it ran durably to **847 848 documents / 170 verified shards** — **surviving a deliberate kill and a cold-process RESUME** — before **failing closed** on one 604-character region (§Z); at `1f86667` that region **passed** (202 safe cuts, 167 viable) and Stage 6 reached **894 182 documents / 179 shards** before failing closed on a second, 98-character region (§AA). Real worker sweep on the real tokenizer at 1 000 documents: **18.87 / 34.97 / 58.82 / 86.21 / 136.99 docs/s** at 1 / 2 / 4 / 8 / 16, all producing the same 17 219 chunks. |
+| **What has NOT run** | **No completed Stage-6 prepare.** The §AA repair has **never been run against the real second blocker** (`Mô_đun:Ko-translit`, row 894 182), so it is **not claimed fixed**. The `1f86667` prefix is unusable by design after the RAW_BASE/boundary-semantics change, so Stage 6 must **restart from document 0**. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
+| **Next step** | The **real second-blocker reprobe**: `scripts/stage1_blocker_probe.py` against row 894 182 `[4887, 4985)`, confirming by metadata that RAW_BASE no longer exceeds 256 and that the region subdivides, then restart Stage 6 **from document 0 in a new checkpoint directory**. Not the full corpus run, and not training — **neither is authorised by this audit**. |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after a completed real prepare, a demonstrated real Drive resume, the proposal/PDF synchronisation, and a no-update real-model smoke available for review |
+| **Revision 3c non-Vietnamese orthography repair** | **2026-08-23** — §Z's repair **passed the real first blocker** (202 safe cuts, 167 viable), and Stage 6 ran to **894 182 / 1 118 224 documents, 179 shards**, then failed closed on a 98-character region of **97 Hangul syllables**: `reference 100` but **`RAW_BASE 271`**. Two defects — `isalpha()` protected any alphabetic script as a Vietnamese candidate, and NFD split Hangul into class-0 Jamo so the base stream grew to 269 characters. The base now **recomposes** per proposal §4.2, and the protected span is **Latin-script**. See §AA. |
 | **Revision 3c source-coordinate chunking repair** | **2026-08-23** — real Stage 6 reached **847 848 documents / 170 shards** with durable Drive checkpointing, a deliberate kill and a cold-process RESUME all demonstrated, then **failed closed** on a 604-character region carrying **108 punctuation/separator/symbol positions** — many candidate source-boundary locations, against **zero** cuts from the old implementation. A global `canonical_text != text` guard turned a **two-character** tone-placement difference into total indivisibility. Safe cuts are now computed in **source coordinates**. The 847 848-document checkpoint is forensic evidence, not a resume point. See §Z. |
 | **Revision 3c performance repair** | **2026-08-23** — a real run at `cc2b710` reported Stage 6 at **4.2 docs/s** against 29.46 at `4c72639`. Measured A/B: the streaming writer is **~0.5 %** of Stage-6 time and the two `lengths.py` versions are algorithmically identical, so **the regression is not attributed to the Revision-3c code and no root cause is claimed**. Added the Stage-6 timing breakdown and an optional ordered parallel compute path. See §Y. |
 | **Revision 3c runner-wiring repair** | **2026-08-23** — the real Colab probe crashed at `[6/6]`: `prepare-corpus` read `args.repository_head`, a flag it never defined. HEAD is now derived from the executing tree; a second latent crash (`RAW_BASE_POLICY` unimported) was found by the new real-parser end-to-end test. See §W. |
@@ -31,7 +32,7 @@
 
 ## A. VERDICT — CURRENT
 
-**REVISION 3C SOURCE-COORDINATE CHUNKING REPAIR PASS — READY FOR REAL BLOCKER REPROBE**
+**REVISION 3C NON-VIETNAMESE ORTHOGRAPHY REPAIR PASS — READY FOR REAL SECOND-BLOCKER REPROBE**
 
 Stage 6 is streamed and durably resumable; the direct-BPE fast path is
 **removed** as unsafe (§V) and the real tokenizer probe confirms it; the
@@ -41,9 +42,9 @@ and superseded.
 
 **What has actually happened on real data:** the corpus pin, schema,
 contamination screen and document split all pass on all **1 118 224** documents,
-and the pinned-tokenizer probe passes. Stage 6 has been entered at **four**
-commits, and the four must not be conflated — only the last one committed a
-checkpoint:
+and the pinned-tokenizer probe passes. Stage 6 has been entered at **five**
+commits, and the five must not be conflated — only the last two committed a
+checkpoint, and neither completed:
 
 | Commit | Runner | What happened | Checkpoint |
 |---|---|---|---|
@@ -51,16 +52,17 @@ checkpoint:
 | `f9c23fe` | checkpoint-capable | **crashed at document 0** on `repository_head` wiring, before any heartbeat (§W) | **none** — nothing was created |
 | `cc2b710` | checkpoint-capable, wiring repaired | ran to **500 documents / 9 862 chunks in 119.2 s = 4.2 docs/s**, then **stopped deliberately** before the first 5 000-document interval (§Y) | **none** — stopped short of the first commit |
 | `2f6d024` | + ordered parallel compute, **16 workers** | ran durably to **847 848 documents**, surviving a **deliberate kill** and a **cold-process RESUME**, then **failed closed** on one 604-character region (§Z) | **170 committed shards** — preserved as forensic evidence |
+| `1f86667` | + source-coordinate safe cuts (§Z) | **passed** the former blocker (202 safe cuts, 167 viable), reached **894 182 documents**, then **failed closed** on a 98-character Hangul region: `RAW_BASE 271` vs 256 (§AA) | **179 committed shards** — preserved as forensic evidence |
 
 **Real durable checkpointing, a deliberate kill and a cold resume are now
 demonstrated on real data** (§Z.1), and so is the parallel path: **136.99
 docs/s** at 16 workers against 18.87 at one, on the **real tokenizer**, all
 worker counts producing the same 17 219 chunks at 1 000 documents.
 
-Stage 6 has still **never completed**. And because the source-coordinate repair
-changes chunk boundaries for non-canonical documents, the 847 848-document
-prefix is **not a resume point**: Stage 6 must restart from document 0 in a new
-checkpoint directory (§Z.12).
+Stage 6 has still **never completed**. And because the §AA repair changes
+RAW_BASE text, token lengths and therefore chunk boundaries for non-Vietnamese
+documents, the **894 182**-document prefix is **not a resume point** either:
+Stage 6 must restart from document 0 in a new checkpoint directory (§AA.9).
 
 **What §Y concluded about the `cc2b710` slowdown, stated exactly:**
 
@@ -82,8 +84,9 @@ checkpoint directory (§Z.12).
 **What remains true:**
 
 * **no successful full Stage-6 prepare** — and this audit does not authorise one;
-* **the real blocker document has not been rechunked** — the repair is not
-  claimed to have fixed it until a real run shows that it does;
+* **the real second blocker has not been rechunked** — the repair is not
+  claimed to have fixed it until a real run shows that it does. The *first*
+  blocker was rechunked and **passed** (§AA.1);
 * **worker 16 is an operational choice for the Colab runtime that ran, not a
   production constant** — the sweep below is real-tokenizer evidence at 1 000
   documents, on one machine;
@@ -94,11 +97,13 @@ checkpoint directory (§Z.12).
 
 **The next step is the real blocker reprobe**:
 
-1. run the **repaired** chunker against the real `Chincha_Alta` region and
-   confirm it subdivides — §Z is a repair of the *mechanism*, and the document
-   itself has **not** been rechunked;
+1. run `scripts/stage1_blocker_probe.py` against the real second blocker
+   (row 894 182, `[4887, 4985)`, sha256 `e50cf079…`) and confirm by **metadata
+   only** that RAW_BASE no longer exceeds 256 and that the region subdivides —
+   §AA repairs the *mechanism*, and that document has **not** been rechunked;
 2. then restart Stage 6 **from document 0, in a new checkpoint directory**,
-   because the committed prefix was built under the old boundary semantics.
+   because the committed prefix was built under the old RAW_BASE and boundary
+   semantics.
 
 Neither the full 1 118 224-document run nor training is authorised here.
 
@@ -3205,7 +3210,344 @@ forbidden-rewriting assertion — `canon`, `corrupt`, `normalize`, `lower`,
 
 ---
 
-**STATUS: REVISION 3C SOURCE-COORDINATE CHUNKING REPAIR PASS — READY FOR REAL BLOCKER REPROBE**
+## AA. NON-VIETNAMESE ORTHOGRAPHY REPAIR — 97 HANGUL SYLLABLES AS ONE "VIETNAMESE CANDIDATE"
+
+**Date:** 2026-08-23 **Baseline commit:** `1f866678ca8218bd5e715f38b18d2cb24782838b`
+
+### AA.1 The §Z repair was validated on the real first blocker
+
+§Z ended with the source-coordinate repair unverified against the real
+`Chincha_Alta` region. **It is now verified.** On the real corpus, that region:
+
+| | |
+|---|---|
+| row / range | **847 848**, `[259, 863)`, 604 characters |
+| safe source-coordinate interior cuts | **202** |
+| cuts where **both** halves satisfy reference **and** RAW_BASE ≤ 256 | **167** |
+
+Stage 6 passed it and continued. §Z.16.1 — "whether `Chincha_Alta` now chunks is
+unverified" — is **answered: it does.** The run resumed from 760 000 and reached
+a second, independent blocker.
+
+**Durable prefix preserved: 894 182 / 1 118 224 documents, 179 shards.** Not
+mutated, not deleted — and, after this repair, forensic evidence only (§AA.9).
+
+### AA.2 The second blocker
+
+| | |
+|---|---|
+| document id | `Mô_đun:Ko-translit` |
+| source shard | `train.parquet` |
+| source row | **894 182** |
+| document characters | 13 499 |
+| failing source range | **[4887, 4985)** — 98 characters |
+| region sha256 | `e50cf079…69252a48` |
+| reference length | **100** |
+| **RAW_BASE length** | **271** |
+| `max_length` | 256 |
+
+The reference pathway was comfortable at 100. **RAW_BASE was 271** — the base
+stream, which is supposed to be a *stripping*, was longer than its source.
+
+### AA.3 The forensic evidence
+
+**No raw corpus text appears in this audit or in any test.** Counts, Unicode
+categories and a digest only.
+
+| Property | Value |
+|---|---|
+| Unicode categories | `Lo` **97**, `Po` **1** |
+| Unicode name families | **HANGUL 97**, QUOTATION 1 |
+| alphabetic / whitespace / combining / ASCII | 97 / **0** / **0** / 1 |
+| NFC length | **98** |
+| **NFD length** | **269** — `+171` codepoints |
+| canonical length | **98** |
+| `source == NFC` / `source == canon` | **true / true** |
+| `source_letter_runs(region)` | **one run `[0, 97)`** |
+| `safe_cut_offsets(region)` | **one interior cut: `[97]`** |
+| `decompose(...)` units / syllables | **269** / **1** |
+| `decompose(...).base_text` characters | **269** |
+| source character-unit boundaries | **97** |
+| boundaries where both pieces fit both pathways | **87** |
+
+The region is **already canonical and already NFC**. Nothing about Vietnamese
+orthography applies to it. Yet it produced one indivisible span and a base stream
+2.7x its own length.
+
+### AA.4 Root cause A — "alphabetic" was treated as "Vietnamese candidate"
+
+`source_letter_runs` protected every maximal run of units answering
+`base_letter.isalpha()`. That predicate is true for **every alphabetic script**:
+Hangul, Cyrillic, Greek, Armenian. So 97 consecutive Hangul syllables became one
+protected "Vietnamese candidate span" with exactly one legal cut, at its end —
+even though every Hangul syllable is already its own character unit and **87 of
+the 97 unit boundaries** split the region into two conforming pieces.
+
+The rule protected the right thing for Latin and the wrong thing for everything
+else.
+
+### AA.5 Root cause B — NFD leaked non-Vietnamese decomposition into the base
+
+`decompose` grouped units over `nfd(canon(text))`. For Latin that is exactly
+right: a base codepoint followed by combining marks of class ≠ 0.
+
+**Hangul does not decompose into combining marks.** NFD turns one precomposed
+syllable into 2-3 **Jamo**, every one of combining class **0**. `split_units`
+therefore saw each Jamo as its own unit, gave each its own `base_char`, and the
+base stream became the Jamo sequence: **98 source characters → 269 base
+characters → 271 RAW_BASE tokens**, against `max_length = 256`.
+
+This is not Vietnamese diacritic removal. It is Unicode decomposition leaking
+into the base pathway.
+
+### AA.6 Task A — the intended RAW_BASE contract, from the repository
+
+Established **before** any edit, and it is unambiguous:
+
+| # | Question | Repository evidence |
+|---|---|---|
+| 1 | Does RAW_BASE remove Vietnamese features only? | **Yes.** Proposal §4.2: NFD, "separation of combining marks into tone marks (U+0300, U+0301, U+0303, U+0309, U+0323) and letter-forming marks (U+0302, U+0306, U+031B, plus the đ stroke)" — an enumerated Vietnamese set, nothing else |
+| 2 | What should happen to Hangul, CJK, Cyrillic, Greek? | Proposal §4.2 ends the procedure with **"recomposition of the base"**, and §4.4 requires "every non-Vietnamese subword carries `N/A` in both channels". Non-Vietnamese is out of scope for the channels and must not be transformed |
+| 3 | Should unrelated text stay Unicode-equivalent? | **Yes**, and `decompose.py` says so in its own words: *"The base keeps non-Vietnamese combining marks, so `Müller` survives as `Müller` while `Đường` becomes `Duong`. This matches the G-1 `base_signature` semantics, which the tests cross-check."* |
+| 4 | What already supports that reading? | That comment, the G-1 `base_signature` tests, the enumerated mark sets in `marks.py`, and `rec(dec(x)) == canon(x)` |
+
+**The repository does not intend Hangul → Jamo expansion.** It intends the
+opposite and says so. This is therefore an **implementation correction**, not a
+scientific change, and no protocol constant moves (§AA.11).
+
+### AA.7 Task B — the RAW_BASE repair
+
+Units are now grouped over the **canonical (NFC) text**, and each unit is
+decomposed *individually*:
+
+```python
+for unit in split_units_with_offsets(canonical_text):
+    unit_nfd = nfd(unit.text)
+    base_cp    = "".join(c for c in unit_nfd if not unicodedata.combining(c))
+    unit_marks = tuple(c for c in unit_nfd if unicodedata.combining(c))
+```
+
+Everything downstream is unchanged: the same `_TONE_MARK_SET` / `_LETTER_MARK_SET`
+partition, the same `D_STROKE` handling, the same `base_char = nfc(base_letter +
+other_marks)`. The base is **recomposed**, exactly as §4.2 requires, so NFC puts
+a Jamo skeleton back together.
+
+`recompose` needed the matching correction: it took `nfd(base_char)[:1]`, the
+*first* codepoint, which would have deleted two thirds of a Hangul syllable. It
+now keeps the whole non-combining skeleton.
+
+**No Hangul special case, no script table, no second normaliser.** The word
+"HANGUL" appears nowhere in `unmark/`. The repair is stated in terms of
+*combining class*, which is what the Latin case was always relying on implicitly.
+
+Measured after the repair:
+
+| Input | base stream |
+|---|---|
+| 97 synthetic Hangul syllables | **97 characters, identical to source** |
+| `Müller` | `Müller` |
+| `naïve` / `façade` / `Ångström` / `Přehled` | unchanged |
+| `Đường` | `Duong` |
+| `Tôi đã đọc` | `Toi da doc` |
+| `nfd("hoà")` | `hoa` |
+
+### AA.8 Task C — the protected-span repair
+
+`protects_a_vietnamese_candidate(unit_text)` replaces bare `isalpha()`:
+**Vietnamese is written in the Latin script**, so a unit can belong to a
+Vietnamese candidate only if its base letter is a Latin letter. Tested with
+`unicodedata.name(...).startswith("LATIN ")` — the same standard-library module
+the package already uses for normalisation and combining classes, so no codepoint
+list is hard-coded.
+
+**The eligibility classifier was considered and deliberately rejected**, and Task
+C asked for that to be proved rather than asserted. `classify_candidate` answers
+**inventory membership**: it returns `NOT_APPLICABLE` for a syllable that is
+orthographically valid but out of vocabulary. Protecting only what the pinned
+inventory lists would therefore **permit a cut inside a genuine Vietnamese
+syllable** that the inventory happens not to contain. It cannot give the
+guarantee Task C requires, so it is not used — asserted by an AST test that the
+predicate calls none of `classify_candidate`, `is_vietnamese_candidate`,
+`membership_form` or `contains_membership_form`.
+
+The predicate is therefore **orthographic and lexicon-free**, which is what makes
+requirement A hold: an uncommon, OOV, NFC, NFD or non-canonically-toned
+Vietnamese candidate is protected exactly as a common one is.
+
+**Latin is deliberately wider than Vietnamese.** `Müller` stays protected.
+Over-protection costs cut opportunities; under-protection bisects a syllable — so
+the error is taken in the safe direction.
+
+**The relationship to `SyllableSpan` is now containment, not equality**, and that
+is stated rather than left implicit. `_segment_syllables` still answers "where are
+the alphabetic runs?" for channel metadata, where breadth is harmless, and is
+**not modified**. `source_letter_runs` answers "what may a cut never bisect?" and
+is narrower. Protected ⊆ alphabetic is asserted for every fixture; equality is
+asserted for Latin.
+
+### AA.9 Task I — the 894 182-document checkpoint is not resumable
+
+This repair changes **RAW_BASE text, token lengths, `fits()` and therefore chunk
+boundaries** for already-processed non-Vietnamese documents. The `1f86667`
+checkpoint — 894 182 documents, 179 shards — is **forensic evidence, not a resume
+point**. Not mutated, not deleted, and **no compatibility bypass added**: the
+HEAD-bound identity refuses it by construction, and
+`test_a_checkpoint_from_another_head_cannot_resume` plus the 13 parametrised
+identity cases are retained.
+
+**Stage 6 must START FROM DOCUMENT 0 in a NEW checkpoint namespace.**
+
+### AA.10 Tasks E, F, G — tests, with the two invariants kept apart
+
+`tests/test_stage1_non_vietnamese_orthography.py` — **93 tests**, all fixtures
+synthetic. Task D's separation is structural: defect A and defect B have their
+own sections, because repairing either alone would have left the other live.
+
+**B — RAW_BASE:** Hangul is NFC and NFD expands it (stated as a checked fact);
+the base does not expand; the base stream never exceeds its source on any of the
+seven script fixtures; `rec(dec(x)) == canon(x)` still holds for all of them;
+Vietnamese stripping still works.
+
+**A — protection:** a 97-syllable Hangul run is not one span and yields 96
+interior cuts; Hangul/Cyrillic/Greek/CJK unprotected, Latin/Vietnamese protected;
+the predicate is lexicon-free (AST); and the blocker shape chunks end to end with
+byte-exact reconstruction and both pathways within limit.
+
+**G — Vietnamese safety:** 16 words × NFC and NFD — including deliberately
+obscure but orthographically valid candidates — with no cut inside a protected
+span and no cut on a combining codepoint; and an oversized genuinely indivisible
+Vietnamese candidate **still fails closed**.
+
+**A documented collision, pinned rather than discovered later.** `señor` → `senor`,
+`café` → `cafe`, `règle` → `regle`: the Vietnamese tone marks are ordinary Unicode
+combining characters that other languages also use, and `dec` cannot separate them
+without language identification, which `classify.py` forbids by design. Verified
+**identical before and after this repair** against `1f86667`, and now asserted so
+it is a known property rather than a surprise.
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_non_vietnamese_orthography.py` | **93 passed** (new) |
+| `tests/test_stage1_source_coordinates.py` | 26 passed (2 replaced, §AA.12) |
+| orthography / decompose / alignment suites | **1 098 passed**, unchanged |
+| `tests/test_stage1_chunking.py` | 35 passed |
+| `tests/test_stage1_lengths.py` | 325 passed |
+| `tests/test_stage1_checkpoint.py` | 41 passed |
+| `tests/test_stage1_parallel.py` | 18 passed |
+| `tests/test_stage1_prepare_cli.py` | 17 passed |
+| `tests/test_stage1_runner_contract.py` | 43 passed |
+| **Full repository** | **3 346 passed, 97 skipped** (was 3 251 / 97) |
+
+### AA.11 What did NOT change
+
+`protocol.py`, `corpus.py`, `lengths.py`, `manifest.py`, `checkpoint.py`,
+`parallel.py`, `canonical.py`, `placement.py`, `marks.py`,
+`linguistics/classify.py` and the corpus pin are **byte-unchanged**. **25**
+scientific constants re-compared against `1f86667`: **NONE changed** — corpus,
+revision, shard order, split seed, dev count, `max_length`, encoder checkpoint
+and revision, `RAW_BASE_POLICY`, `pi_strip`, corruption and validation seeds,
+both grids, the update budget, adapter parameters and the sealed-TEST policy.
+
+`canon()` is untouched: the corpus is still never normalised or rewritten, and
+chunks remain slices of the source. Direct BPE remains absent. The ordered
+parallel path is untouched — `parallel.py` byte-unchanged, its 18 tests green:
+workers compute documents, the main process owns ordered emission, serialisation
+and checkpointing, in-flight work is bounded, the committed prefix stays
+contiguous, and worker failure propagates. Worker count remains operational only.
+
+### AA.12 Two tests replaced, not weakened
+
+Both asserted the pre-repair broad-alphabetic rule:
+
+* `test_canonical_input_is_identical_to_the_pre_repair_implementation` → scoped
+  to **Latin** and renamed. A canonical Greek or CJK string legitimately gains
+  cuts now; asserting the old equality on it would assert the defect. A new test
+  asserts the general property instead: the narrowing is a **superset** —
+  it can add cuts, never remove one.
+* `test_source_letter_runs_agree_with_decompose_on_canonical_text` → split into
+  **equality on Latin** and **containment everywhere**.
+
+### AA.13 Task H — reprobe support
+
+`scripts/stage1_blocker_probe.py` (new) re-probes one real region **by metadata
+only**: sha256, length, Unicode category and name-family census, both pathway
+lengths, protected-run count, safe-cut count, viable-cut count, chunk count and
+byte-exact reconstruction. It refuses to proceed unless the region hashes to
+`--expect-sha256`.
+
+**No raw text in any field** — asserted by a test that searches every 5-character
+window of the region against the serialised report. No encoder, forward pass,
+optimizer or training — AST-asserted.
+
+PASS requires ≥1 safe interior cut, successful chunking, byte-exact
+reconstruction, and every chunk within `max_length` on both pathways. The
+viable-single-cut requirement applies **only when the region splits in two** —
+the real blocker's case — because a region that legitimately needs three chunks
+has no single cut that fits both halves. **No exact cut count is asserted**: 87
+and 202 are diagnostics, not contract.
+
+### AA.14 Limitations
+
+1. **The repaired code has NOT been run against the real second blocker.** Every
+   fixture here is synthetic. **Whether `Mô_đun:Ko-translit` now chunks is
+   unverified** — that is the reprobe.
+2. **No full Stage-6 prepare has completed.** 894 182 documents is the furthest
+   Stage 6 has ever reached, and that prefix is now unusable by design.
+3. **A third blocker may follow.** Two of 1 118 224 documents have now stopped
+   Stage 6, both non-Vietnamese-script edge cases; **223 042** documents past
+   894 182 have never been chunked by any run.
+4. **The Latin-script predicate is a judgement, not a proof.** It is provably
+   *wide enough* (Vietnamese ⊂ Latin) and provably *lexicon-free*, but whether
+   protecting all Latin is the right breadth for non-Vietnamese Latin text is a
+   design choice, taken in the safe direction and recorded as such.
+5. The `señor` / `café` collision is unchanged but remains a real limitation of
+   a language-identification-free design.
+6. Real RAW_BASE token counts after the repair are unmeasured here; the local
+   tests use injected length functions, and the pinned tokenizer runs in Colab.
+
+### AA.15 Self-audit
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Second blocker root cause reproduced | **yes** — both defects, on a synthetic 98-char fixture |
+| 2 | No real corpus text committed | **yes** — counts, categories, digests; fixtures synthetic |
+| 3 | RAW_BASE semantics established from the repository | **yes** — §AA.6, proposal §4.2/§4.4 + `decompose`'s own comment |
+| 4 | Hangul/Jamo behaviour explained exactly | **yes** — NFD yields class-0 Jamo, so `split_units` split them |
+| 5-6 | No Hangul special case; no id/row/range special case | **yes** — "HANGUL" appears nowhere in `unmark/` |
+| 7 | No second Vietnamese syllable parser | **yes** — one predicate over the existing unitisation |
+| 8 | Alphabetic ≠ Vietnamese candidate | **yes** — Latin-script predicate |
+| 9-10 | Valid and OOV-valid Vietnamese still protected | **yes** — lexicon-free, AST-asserted |
+| 11-13 | NFC / NFD Vietnamese safe; combining never split | **yes** |
+| 14-15 | Non-Vietnamese scripts preserved; non-Vietnamese Latin tested | **yes** — 7 script families |
+| 16-17 | Byte-exact reconstruction; no normalisation into the corpus | **yes** |
+| 18-19 | No truncation; no dropped document | **yes** |
+| 20 | Both pathways ≤ `max_length` on every emitted chunk | **yes** |
+| 21 | Direct BPE absent | **yes** |
+| 22 | Parallel semantics unchanged | **yes** — `parallel.py` byte-unchanged |
+| 23-24 | Old checkpoint incompatible by HEAD; new run starts at 0 | **yes** — no bypass added |
+| 25-26 | No scientific constant changed; TEST sealed | **yes** — 25 compared |
+| 27-30 | No encoder, forward, optimizer, training | **yes** |
+| 31-32 | Focused and full suites pass | **yes** — 3 346 passed, 97 skipped |
+| 33-34 | `git diff --check` clean; nothing staged | **yes** |
+| 35-36 | Audit 029 revised in place; decision log updated | **yes** — §AA, D-S1B-013 |
+| 37 | Real second blocker claimed fixed? | **NO — unverified until the reprobe** |
+
+---
+
+**STATUS: REVISION 3C NON-VIETNAMESE ORTHOGRAPHY REPAIR PASS — READY FOR REAL SECOND-BLOCKER REPROBE**
+**§Z's REPAIR IS VALIDATED ON THE REAL FIRST BLOCKER: 202 SAFE CUTS, 167 VIABLE — IT PASSED**
+**STAGE 6 REACHED 894 182 / 1 118 224 DOCUMENTS, 179 SHARDS, THEN FAILED CLOSED AGAIN**
+**SECOND BLOCKER: 98 CHARS, 97 HANGUL + 1 QUOTATION, reference 100 BUT RAW_BASE 271 vs 256**
+**DEFECT A: `isalpha()` MADE 97 HANGUL SYLLABLES ONE "VIETNAMESE CANDIDATE" WITH 1 LEGAL CUT**
+**DEFECT B: NFD SPLIT HANGUL INTO CLASS-0 JAMO, SO 98 SOURCE CHARS BECAME A 269-CHAR BASE**
+**PROPOSAL §4.2 REQUIRES "RECOMPOSITION OF THE BASE" — THE BASE NOW RECOMPOSES; 98 IN, 98 OUT**
+**PROTECTED SPAN IS NOW LATIN-SCRIPT, NOT ANY UNICODE ALPHABETIC; LEXICON-FREE BY DESIGN**
+**ELIGIBILITY CLASSIFIER REJECTED WITH PROOF: IT WOULD PERMIT CUTS INSIDE OOV-VALID SYLLABLES**
+**NO HANGUL SPECIAL CASE, NO ROW/RANGE SPECIAL CASE, NO SECOND PARSER, NO SCIENTIFIC CONSTANT MOVED**
+**THE 894 182-DOCUMENT CHECKPOINT IS FORENSIC EVIDENCE — STAGE 6 MUST RESTART FROM 0**
+**THE REAL SECOND BLOCKER HAS NOT BEEN RECHUNKED — NOT CLAIMED FIXED**
+
+~~**STATUS: REVISION 3C SOURCE-COORDINATE CHUNKING REPAIR PASS — READY FOR REAL BLOCKER REPROBE**~~ **— superseded by §AA**
 **REAL DURABLE DRIVE CHECKPOINTING, KILL AND COLD RESUME ALL DEMONSTRATED (§Z.1)**
 **REAL WORKER SWEEP ON THE REAL TOKENIZER: 18.87/34.97/58.82/86.21/136.99 docs/s AT 1/2/4/8/16**
 **STAGE 6 REACHED 847 848 DOCUMENTS / 170 SHARDS, THEN FAILED CLOSED — PREFIX PRESERVED**

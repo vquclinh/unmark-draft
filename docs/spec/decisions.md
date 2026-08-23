@@ -39,6 +39,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock), D-S1B-005 … D-S1B-008 (seed roles, metric unit, FP32, pipeline/resume) |
 | **RESOLVED DECISION** (cont.) | D-S1B-009 — **implementation correction**: chunk boundaries are orthographically-safe offsets, not whitespace only. Found by real-corpus evidence after commit `0a34083` |
 | **RESOLVED DECISION** (cont.) | D-S1B-012 — **implementation correction**: those safe boundaries are computed in **original source coordinates**, so a non-canonically spelled source is no longer globally indivisible. Found by the real Stage-6 failure at source row 847 848 |
+| **RESOLVED DECISION** (cont.) | D-S1B-013 — **implementation correction**: RAW_BASE strips **Vietnamese** features only (the base recomposes, so Hangul no longer expands into Jamo), and a protected span is a **Latin-script** run, not any Unicode alphabetic run. Found by the real Stage-6 failure at source row 894 182 |
 | **RESOLVED DECISION** (cont.) | D-S1B-010 — Stage-6 corpus preparation is **streamed and durably resumable**; token lengths use the **public tokenizer wrapper** only (operational, no scientific change) |
 | **RESOLVED DECISION** (cont.) | D-S1B-011 — Stage-6 **compute** may fan out across processes (`--prepare-workers`, default 1); **order, serialisation, membership and checkpoint durability stay with the single main process**. Output byte-identical for 1/2/4/8 workers (operational, no scientific change) |
 | **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
@@ -4409,3 +4410,87 @@ No Stage-1 training has occurred.
 | | |
 |---|---|
 | **Proposal updated** | **NO, and none is required.** The proposal already states the no-truncation, text-preservation and protected-unit contract, and is **silent on coordinate systems** — which is the right level for it. No scientific value changed. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-S1B-013 — RAW_BASE strips Vietnamese features only; protected spans are Latin-script
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation correction) |
+| **Owner** | Stage-1B |
+| **Date** | 2026-08-23 |
+| **Clarifies** | [D-S1B-012](#d-s1b-012--safe-chunk-boundaries-are-computed-in-original-source-coordinates) — source coordinates were right; the *predicate* evaluated in them was too broad |
+| **Found by** | Real Stage-6 run at `1f86667`, which failed closed at source row 894 182 after 894 182 durably committed documents ([Audit 029 §AA](../audits/029-stage1-runner-implementation.md)) |
+
+**What the proposal says — and it is not silent this time.** §4.2 defines the
+decomposition procedure as "Unicode NFD normalisation; separation of combining
+marks into tone marks (U+0300, U+0301, U+0303, U+0309, U+0323) and letter-forming
+marks (U+0302, U+0306, U+031B, plus the đ stroke); **recomposition of the
+base**", and §4.4 requires that "every non-Vietnamese subword carries `N/A` in
+both channels". `unmark/orthography/decompose.py` states the same intent in its
+own words: *"The base keeps non-Vietnamese combining marks, so `Müller` survives
+as `Müller` while `Đường` becomes `Duong`."*
+
+**The specification therefore already required the repaired behaviour.** This is
+an implementation correction; **no scientific value changes**, and none was
+changed.
+
+**Previous implementation.**
+
+| # | What it did | Consequence |
+|---|---|---|
+| 1 | Grouped character units over `nfd(canon(whole text))` | Hangul NFD yields 2-3 **Jamo of combining class 0**, so each Jamo became its own unit with its own base. A 98-character region produced a **269-character base stream** and a RAW_BASE length of **271** against `max_length = 256` |
+| 2 | Protected every maximal `str.isalpha()` run as a candidate span | 97 consecutive Hangul syllables became **one indivisible "Vietnamese candidate"** with a single legal cut, though 87 of its 97 unit boundaries split it into two conforming pieces |
+
+**Implemented decision.**
+
+| # | Decision | Reason |
+|---|---|---|
+| 1 | Units are grouped over the **canonical (NFC) text**; each unit is decomposed **individually** and its base **recomposed** with NFC | This is proposal §4.2's "recomposition of the base". A precomposed character whose NFD expansion is several *non-combining* codepoints is one unit again, so Unicode decomposition no longer leaks into the base pathway |
+| 2 | `recompose` keeps the whole non-combining skeleton, not `nfd(base)[:1]` | Taking only the first codepoint would silently delete two thirds of a Hangul syllable and break `rec(dec(x)) == canon(x)` |
+| 3 | A chunk cut may not fall inside a run of units whose base letter is a **Latin-script letter** (`protects_a_vietnamese_candidate`) | Vietnamese is written in the Latin script, so no other script can spell a Vietnamese syllable. Tested via `unicodedata.name`, not a hard-coded codepoint list |
+| 4 | The predicate is **lexicon-free**: it must not consult the syllable inventory | `classify_candidate` answers inventory *membership* and returns `NOT_APPLICABLE` for an orthographically valid but **out-of-vocabulary** syllable. Using it would permit a cut **inside a genuine Vietnamese word**. AST-asserted |
+| 5 | Latin is deliberately **wider** than Vietnamese — `Müller`, `naïve`, `façade` stay protected | Over-protection costs cut opportunities; under-protection bisects a syllable. The error is taken in the safe direction |
+| 6 | `_segment_syllables` / `SyllableSpan` is **not** modified | It answers "where are the alphabetic runs?" for channel metadata, where breadth is harmless. The relationship is now **containment** (protected ⊆ alphabetic), asserted rather than assumed |
+| 7 | **No script special case.** The word "HANGUL" appears in no conditional in `unmark/` | The repair is stated in terms of *combining class* and *script*, which is what the Latin case always relied on implicitly |
+
+**A documented collision, unchanged.** `señor` → `senor`, `café` → `cafe`: the
+Vietnamese tone marks are ordinary Unicode combining characters other languages
+also use, and `dec` cannot separate them without language identification, which
+`unmark/linguistics/classify.py` forbids by design. Verified **identical before
+and after** this repair and now pinned by test, so it is a known property rather
+than a surprise.
+
+**Scientific values unchanged.** 25 constants re-compared against `1f86667`:
+corpus, revision, shard order, split seed, dev count, `max_length = 256`, PhoBERT
+checkpoint and revision, `RAW_BASE_POLICY`, corruption distribution, `pi_strip`,
+corruption and validation seeds, validation modes, update budget, adapter,
+optimizer, LR grid, `r` grid and the sealed-TEST policy — **none changed**.
+`RAW_BASE` remains the same experimental condition; what changed is that the
+implementation now computes the base the specification already described.
+
+**Consequence for the existing checkpoint.** This decision changes RAW_BASE text,
+token lengths, `fits()` and therefore chunk boundaries for already-processed
+non-Vietnamese documents. The `1f86667` checkpoint — **894 182 documents, 179
+shards** — is **forensic evidence, not a resume point**. Not mutated, not
+deleted, and **no compatibility bypass added**: the HEAD-bound checkpoint
+identity refuses it by construction. **Stage 6 must restart from document 0 in a
+new checkpoint namespace.**
+
+**Affected files.** `unmark/orthography/decompose.py` (unit grouping, base
+recomposition, `recompose`, new `protects_a_vietnamese_candidate`, narrowed
+`source_letter_runs`), `tests/test_stage1_non_vietnamese_orthography.py` (new),
+`tests/test_stage1_source_coordinates.py` (two tests **replaced, not weakened**),
+`scripts/stage1_blocker_probe.py` (new, metadata-only reprobe).
+`protocol.py`, `corpus.py`, `lengths.py`, `manifest.py`, `checkpoint.py`,
+`parallel.py`, `canonical.py`, `placement.py`, `marks.py` and
+`linguistics/classify.py` are **not** modified.
+
+**Affected experiments.** No completed experiment. The `1f86667` Stage-6 prefix
+(894 182 documents) is discarded as a *resume point* and retained as evidence.
+No Stage-1 training has occurred.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO, and none is required.** §4.2 already specifies "recomposition of the base" over an *enumerated* Vietnamese mark set, and §4.4 already places non-Vietnamese text outside the channels. The implementation had drifted from the specification; the specification was right. PDF stale: **YES** (unchanged) |
