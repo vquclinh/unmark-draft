@@ -9,6 +9,8 @@
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Revision 3c hardening** | **2026-08-23** — pre-commit review: the direct-BPE fast path **bypassed the wrapper's added-token split** and would have miscounted any run containing e.g. `<mask>`. Removed. Composition additionally gated on the tokenizer's own added tokens. Verdict/metadata consistency repaired. See §V. |
+| **Revision 3c** | **2026-08-23** — durable cross-runtime Stage-6 resume (append-only shards, document-boundary commits, failure-atomic state, identity-bound), plus a **second blocker found in inspection**: the pre-3c writer accumulated ~29.9 GB of chunks in RAM. Streaming removes it; output byte-identical. See §U. |
 | **Revision 3b** | **2026-08-23** — forensics: the historical `composed 5, exact 7` was **the wrong run unit** (`\S+` instead of the tokenizer's `\S+\n?`), reproduced exactly. Revision 3a's "composition falsified" reading is withdrawn. Exact run composition restored; BPE work now scales with distinct runs. See §T. |
 | **Revision 3a** | **2026-08-23** — **Revision 3's own micro-probe FAILED on the real pinned tokenizer** (`composed 5, exact 7`, rc 1). The runtime verifier worked and is kept. Per-run token composition removed; the 956x claim is withdrawn; 192x remains and is exact by construction. See §S. |
 | **Revision 3** | **2026-08-23** — **third post-commit real-corpus defect**: stage-6 pre-chunking re-canonicalised every growing prefix (~250x document length) and produced no 1 % line in 13 minutes. Repaired by memoised, composable transforms and per-run token composition; `chunking.py` untouched. See §R. |
@@ -18,7 +20,32 @@
 
 ---
 
-## A. VERDICT
+## A. VERDICT — CURRENT
+
+**REVISION 3C (2026-08-23): HARDENING PASS — READY FOR REAL RESUME/PERFORMANCE PROBE**
+
+Stage 6 is streamed and durably resumable; the direct-BPE fast path introduced
+earlier in Revision 3c has been **removed** as unsafe (§V). Every prior verdict
+below is **HISTORICAL** and superseded.
+
+**What has actually happened on real data:** the corpus pin, schema,
+contamination screen and document split all pass on all **1 118 224** documents;
+the pinned-tokenizer probe passes; Stage 6 has run partially (5 000 documents,
+~29.5 docs/s) but has **never completed**.
+
+**What remains true:**
+
+* **no successful full Stage-6 prepare** — and this audit does not authorise one;
+* **no encoder training, no optimizer step, no forward pass**;
+* **no downstream scientific Stage-1 run**;
+* **official UIT-VSFC TEST sealed** and structurally unreachable;
+* **compiled proposal PDF STALE**.
+
+---
+
+## A1. VERDICT — HISTORICAL (Revision 1)
+
+> **SUPERSEDED.** Kept as the record of what was concluded then.
 
 **REVISION 1 (2026-08-22): REPAIR PASS — READY FOR REAL CORPUS RE-RUN**
 
@@ -31,7 +58,9 @@ smoke passes.
 
 ---
 
-## A. VERDICT (as first written)
+## A2. VERDICT — HISTORICAL (as first written, pre-commit)
+
+> **SUPERSEDED.** Written before commit `0a34083`, when nothing had executed.
 
 **IMPLEMENTATION PASS — STAGE-1 STACK COMPLETE; NOT EXECUTED**
 
@@ -1459,8 +1488,7 @@ same API chain. That is the honest cost of dropping the shortcut.
 **Unchanged:** `unmark/stage1/chunking.py`, `unmark/stage1/corpus.py`
 (Revision 2), `canon()`, the corpus pin, split, seeds, `pi_strip`, objective,
 architecture, optimizer, grids, validation grid, `max_length = 256`, and the
-official-TEST policy. `docs/spec/decisions.md` not changed — no scientific
-decision moved.
+official-TEST policy.
 
 ### S.8 Tests
 
@@ -1741,7 +1769,473 @@ override flags. No encoder, forward pass, optimizer or training.
 
 ---
 
-**STATUS (Revision 3b): REVISION 3B REPAIR PASS — READY FOR REAL TOKENIZER/PERFORMANCE PROBE**
+## U. REVISION 3C — DURABLE STAGE-6 RESUME, AND A 30 GB MEMORY BLOCKER
+
+**Date:** 2026-08-23 **Baseline commit:** `4c72639a3215c0c5c73b0408f2088cf11a110287`
+
+### U.1 Where Revision 3b left it
+
+The real pinned-tokenizer probe **PASSed**: `status PASS`, `failures []`,
+`run_unit "\S+\n?"`, `encoder_loaded false`, `forward_passes 0`,
+`optimizer_steps 0`. Stages 1-5 continue to pass on all 1 118 224 documents
+(contamination: 0 excluded, 296 628 length-guard skips, 821 596 prefilter
+checks, 0 candidates, 0 corpus canon calls; split 1 113 224 / 5 000; official
+UIT-VSFC TEST **SEALED**).
+
+Real 5 k Stage-6 timing:
+
+| Documents | Elapsed |
+|---|---|
+| 1 | 0.5 s |
+| 100 | 9.3 s |
+| 1 000 | 53.1 s |
+| 5 000 | 188.9 s |
+
+**26.47 docs/s overall, 29.46 docs/s warm (1 000 → 5 000)**, projecting
+**~10.55 hours** for the full corpus — a **~65.5x** improvement on Revision 3a.
+Feasible, but a Colab runtime death would restart it at document 0.
+
+### U.2 Task A — what the pre-3c writer actually did
+
+| # | Question | Finding |
+|---|---|---|
+| 1 | Where are the 1 118 224 documents held? | Fully materialised in RAM: `documents`, then `kept` |
+| 2 | Are all `PreparedChunk`s accumulated? | **Yes** — `chunks = chunk_corpus(...)` builds one list of every chunk |
+| 3 | When is the payload written? | **Only at the very end**, after all chunking |
+| 4 | Format | JSONL, one object per line: `chunk_id, document_id, partition, chunk_index, text, source_start, source_end, source_shard`, `ensure_ascii=False` |
+| 5 | Manifest | `build_manifest(...)` → `manifest.json`, `indent=2, ensure_ascii=False, sort_keys=True` |
+| 6 | Does any output hash depend on serialization order? | **No.** `chunk_membership_digest` **sorts** its keys, and every count is order-free. The JSONL line order is document order |
+| 7 | Needed after chunking | every chunk (counts, digest, payload), plus `source`, `contamination`, `partition` |
+| 8 | Cross-document scientific state in Stage 6 | **None.** `chunk_document` is document-local; the partition is decided before chunking |
+| 9 | `ComposedTransforms` / `RunLengthComposer` caches | **Performance-only** — memoisation; discarding them changes no output |
+| 10 | Safe to discard at a runtime boundary | all caches, all already-committed chunks, and `documents`/`kept` (Stages 1-5 rebuild them in seconds) |
+
+**And the finding that changed the scope of this revision.** Point 2 is not just
+an inefficiency. From the real run, 100 documents produced 2 489 chunks — 24.89
+chunks/document. For 1 118 224 documents that is **≈ 27.8 million chunks**, and
+a `PreparedChunk` with an ~800-character text costs ~1 075 bytes:
+
+```
+27 832 595 chunks  x  ~1 075 B  =  ~29.9 GB
+```
+
+held in Python RAM *before the first byte is written*, on top of the corpus
+itself. **The pre-3c writer would very likely have exhausted Colab memory hours
+into the 10.55-hour run**, having written nothing. This is a second, independent
+blocker, and it makes streaming mandatory rather than an optimisation.
+
+### U.3 The repair — streaming, append-only, failure-atomic
+
+**No scientific value changes.** Chunk boundaries, ids, ranges, both lengths,
+text, ordering, partitioning and every manifest scientific field are identical;
+`chunking.py`, `corpus.py`, `canon()` and the protocol are untouched.
+
+*Streaming.* Chunks are serialised to a shard buffer as each document completes,
+so peak memory is bounded by **one shard**, not by the corpus. Measured with a
+fixed interval while growing the corpus 9x:
+
+| Documents | Chunks | RSS delta |
+|---|---|---|
+| 1 000 | 3 102 | 2.0 MB |
+| 3 000 | 9 349 | 1.2 MB |
+| 9 000 | 27 956 | 0.5 MB |
+
+Flat, as required. At the 5 000-document interval the buffer is ~100 MB against
+the pre-3c ~29.9 GB.
+
+*Streaming manifest.* `build_manifest_from_counts` assembles the identical
+manifest from counts accumulated during the stream; `build_manifest` is retained
+unchanged and the two are asserted equal. The membership digest sorts its keys,
+so it is computed by an **external merge sort** (blocks sorted, spilled, merged)
+— bounded memory, and verified to produce the *same digest* as the in-memory
+version even with a 7-line block size forcing many spills.
+
+*Append-only immutable shards.* Each shard covers one contiguous range of source
+document indices; a committed shard is never rewritten, so checkpoint cost is
+O(new work), never O(progress).
+
+*Commit protocol.* Payload: temp → flush → `fsync` → close → sha256 → `replace`
+→ **re-read and re-verify size and digest from disk** → only then state. State:
+temp → flush → `fsync` → `replace`. Drive's FUSE layer is not assumed POSIX, so
+nothing is trusted on the strength of a successful `write()`. A death between
+payload and state leaves an unreferenced shard that resume simply ignores.
+
+*Document boundaries only.* A commit means every document below
+`next_document_index` is **completely** processed; a document is never split
+across a commit. The interval is **5 000 documents** — at 29.46 docs/s that
+bounds lost work at ~3 minutes. **Operational, not scientific**: any interval
+produces the same artifacts.
+
+### U.4 Identity binding and the state machine
+
+The checkpoint binds: schema version, repository HEAD, protocol and chunk-schema
+versions, corpus dataset/revision and all three pinned file identities,
+tokenizer checkpoint/revision, **Transformers version**, `max_length`,
+`RAW_BASE` policy, split seed, dev count, contamination method and excluded
+count, the **ordered document-sequence digest**, the **partition-assignment
+digest**, `next_document_index`, completed-document and chunk counts (total,
+train, dev), the shard list with per-shard byte size and sha256, and the
+**last completed document id** so an off-by-one resume is detectable.
+
+**No raw corpus text and no UIT-VSFC text** appear in checkpoint metadata —
+asserted by test.
+
+| State | Trigger |
+|---|---|
+| **START** | no `state.json` |
+| **RESUME** | valid `state.json`: Stages 1-5 are re-run from the pinned inputs, every identity field must match, every committed shard's size and digest must still verify, the shard ranges must form a contiguous prefix, and only then does work continue at `next_document_index` |
+| **ALREADY_COMPLETE** | `COMPLETE.json` validates **and** every artifact it names re-hashes correctly |
+
+Stages 1-5 are deliberately **not** checkpointed — they take seconds and are
+scientifically load-bearing. They are re-derived and compared; any difference in
+corpus order, contamination, split or protocol **fails closed** rather than
+resuming against a different stream.
+
+`COMPLETE.json` is written **last**, after every artifact is on disk and
+verified, and binds their hashes plus the run identity. A directory existing
+proves nothing.
+
+### U.5 Interruption evidence (Task G)
+
+`tests/test_stage1_checkpoint.py` — **41 tests**. Death is simulated at eight
+document positions spanning every structural point (before the first commit,
+exactly on a commit, mid-uncommitted-shard, several commits in, and at the last
+document); each is resumed and compared against an uninterrupted oracle.
+
+| Property | Result |
+|---|---|
+| Resumed payload **byte-identical** to uninterrupted | pass, all positions |
+| Resumed manifest byte-identical | pass |
+| Streamed payload == the in-memory writer's bytes | pass |
+| Streamed manifest == `build_manifest`'s dict | pass |
+| Resume starts exactly at the committed prefix | pass |
+| No duplicate / missing document; order preserved | pass |
+| No duplicate chunk id | pass |
+| Mid-shard death loses only the uncommitted shard | pass |
+| Orphan `.tmp` (shard **and** state) ignored and removed | pass |
+| Unreferenced shard on disk never used | pass |
+| Tampered shard → fails closed | pass |
+| Malformed state → refused, not guessed | pass |
+| Out-of-order document → refused | pass |
+| **13 identity fields**, each mutated → fails closed | pass |
+| Directory alone ≠ ALREADY_COMPLETE | pass |
+| Completion refused if an artifact changed, or identity is foreign | pass |
+| Finalisation idempotent | pass |
+| Checkpoint metadata carries no corpus text | pass |
+
+### U.6 Performance work considered (Task I)
+
+**~~Accepted~~ REMOVED — direct pinned BPE (I.1).** This was accepted in the
+first pass of Revision 3c and is **withdrawn by the 3c hardening**: the wrapper
+overhead it skipped *is* the added-token split, and skipping that is not an
+optimisation but a defect. See **§V**. `RunLengthComposer` calls
+`tokenizer.tokenize(run)`, exactly as Revision 3b did.
+
+**Accepted — cache instrumentation (I.2).** `run_cache_evictions`,
+`run_cache_entries`, `run_cache_max_entries` added. On a 240-document
+real-shaped workload: **34 BPE evaluations, 3 452 846 cache hits, 0 evictions**.
+The 500 000-entry ceiling is **not changed** — there is no evidence it is
+costing work, and a cap change without that evidence would be guessing. Caches
+live in **CPU** memory; the 90 GB of GPU VRAM is irrelevant to them.
+
+**Rejected for now — document-level multiprocessing (I.3).** Benchmarked
+honestly on a real-shaped workload, output verified identical:
+
+| Workers | Throughput | Speedup | Identical | BPE evals |
+|---|---|---|---|---|
+| 1 | 52.0 docs/s | 1.00x | — | 34 |
+| 2 | 92.3 docs/s | **1.78x** | **yes** | 68 (2.0x) |
+| 4 | 188.3 docs/s | **3.62x** | **yes** | 136 (4.0x) |
+
+It works and is exact, and BPE-evaluation duplication scales with workers
+exactly as warned — negligible here only because the hit rate is ~100%. It is
+**not adopted in this revision** because: the catastrophic risk was runtime
+death, which checkpointing now bounds at ~3 minutes; the actual hard blocker was
+the ~30 GB accumulation, now fixed; multiprocessing complicates the
+contiguous-committed-prefix invariant the durability guarantee rests on; and it
+cannot be validated against the real tokenizer here. This machine has 16 CPUs
+while Colab standard runtimes typically expose 2, where the measured gain is
+1.78x — material, but not a qualitative change to a now-survivable 10.55-hour
+run. The measurement is recorded so the decision can be revisited with evidence
+rather than repeated from scratch.
+
+**Rejected outright.** GPU/CUDA tokenization, a fast tokenizer, approximate
+counts, any change to `max_length`, truncation, dropping, normalisation or
+`RAW_BASE`. Stage 6 is CPU tokenizer and Python work; **GPU VRAM does not
+accelerate it**, and this audit does not pretend otherwise.
+
+**Checkpoint overhead (Task J).** Measured on 3 000 documents / 9 349 chunks
+with a deliberately aggressive 500-document interval: **6 commits, 3.3 MB,
+0.02 s = 1.65 % of Stage-6 time**; finalisation 0.04 s. At the real
+5 000-document interval commits are ~10x rarer. Shards accumulate on **local
+staging** and only completed, verified shards are copied to the checkpoint
+directory, so a Drive mount never sees one write per chunk.
+
+### U.7 Operational interface (Tasks K, L)
+
+`prepare-corpus` gains exactly one operational flag, `--checkpoint-dir`
+(default `<output-dir>/_checkpoint`). Resume is **automatic**: a valid
+checkpoint continues, a verified completion marker short-circuits. **No
+scientific override was added** — no `max_length`, seed, split, dev count,
+`pi_strip`, corruption, tokenizer or corpus revision flag exists.
+
+The immutable-output guard now permits reuse **only** when a checkpoint state or
+completion marker is present, so a stale directory still cannot be silently
+overwritten. Before the long run the runner prints local and checkpoint free
+disk and process RSS, and reports checkpoint commits, bytes, time and share of
+Stage-6, plus the length/BPE/cache/fallback counters.
+
+### U.8 Tests
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_checkpoint.py` | **41 passed** (new) |
+| `tests/test_stage1_lengths.py` | 299 passed |
+| `tests/test_stage1_chunking.py` | 35 passed (unchanged) |
+| `tests/test_stage1_runner_contract.py` | 43 passed |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed (Revision 2 untouched) |
+| Full repository | **3 166 passed, 97 skipped** (was 3 125 / 97) |
+
+### U.9 Limitations
+
+1. **The full 1.118 M-document run has NOT been performed.** No Stage-6 PASS is
+   claimed, and this audit does not authorise the full run.
+2. **Checkpointing has never been exercised on the real corpus or a real
+   Drive mount.** Every durability test uses a local filesystem; Drive's FUSE
+   behaviour under a real runtime death is untested here.
+3. **The direct-BPE path has not run against the real tokenizer.** It
+   self-verifies at startup and degrades to the wrapper, but its actual benefit
+   is unmeasured.
+4. The ~30 GB figure is an extrapolation from the real 24.89 chunks/document and
+   a measured per-object cost, not an observed OOM.
+5. Multiprocessing is measured but unadopted; the 1.78x at two cores is from a
+   double, not the real tokenizer.
+6. The 5 000-document interval is justified from the *reported* throughput; real
+   checkpoint overhead at that interval on Drive is unmeasured.
+7. Stage 6 has still never completed, so Revision 1's chunker remains unverified
+   on real data end to end.
+
+### U.10 Self-audit for Revision 3c
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Audit 029 revised in place; no Audit 030 | **yes** |
+| 2 | Scientific outputs unchanged | **yes** — payload bytes and manifest asserted identical to the in-memory writer |
+| 3 | Resume starts only at document boundaries | **yes** — tested |
+| 4 | Every commit is a contiguous prefix | **yes** — enforced and tested |
+| 5 | Shards immutable once committed | **yes** — never reopened |
+| 6 | Shard hashes verified on resume | **yes** — tampering fails closed |
+| 7 | State write failure-atomic | **yes** — temp/fsync/replace, payload before state |
+| 8 | Orphan temps cannot be accepted | **yes** — removed on begin, tested |
+| 9-14 | HEAD / corpus pin / tokenizer revision / Transformers / protocol / split-order mismatch all fail | **yes** — 13 parametrised identity cases |
+| 15-17 | No skipped, duplicated document or chunk | **yes** — tested after resume |
+| 18 | Resumed output == uninterrupted output | **yes** — byte-identical, 8 death positions |
+| 19 | Partial directory cannot masquerade as COMPLETE | **yes** |
+| 20 | COMPLETE marker written last | **yes** — after artifacts are verified |
+| 21 | Finalisation idempotent | **yes** — tested |
+| 22 | BPE caches performance-only | **yes** — never serialised, cold resume is correct |
+| 23 | GPU not claimed to accelerate CPU tokenization | **yes** — stated explicitly |
+| 24 | Direct-BPE path exact and verified | **NO — the 3c hardening found it unsafe and REMOVED it (§V)** |
+| 25-26 | Multiprocessing exactness / failure propagation | **measured identical, but NOT adopted** (§U.6) |
+| 27 | Checkpoint overhead measured | **yes** — 1.65 % at an aggressive interval |
+| 28 | Memory/disk bounded | **yes** — flat RSS across a 9x corpus growth |
+| 29 | `chunking.py` semantics unchanged | **yes** — not modified |
+| 30 | Contamination semantics unchanged | **yes** — `corpus.py` not modified |
+| 31 | Official UIT-VSFC TEST sealed | **yes** |
+| 32-35 | No encoder, forward, optimizer, training | **yes** |
+| 36-37 | Focused and full suites pass | **yes** — 3 166 passed |
+| 38-39 | `git diff --check` clean; nothing staged | **yes** |
+| 40 | Full corpus claimed PASS? PRE-TRAIN ready? | **NO** to both |
+
+---
+
+## V. REVISION 3C HARDENING — THE DIRECT-BPE PATH WAS UNSAFE
+
+**Date:** 2026-08-23 **Reviewing:** the unstaged Revision-3c working tree over
+baseline `4c72639a3215c0c5c73b0408f2088cf11a110287`
+
+Revision 3c's architecture is unchanged and accepted. One thing in it was
+wrong, and this section records and removes it.
+
+### V.1 Task A — what the wrapper actually does
+
+`PreTrainedTokenizer.tokenize(text)` does **not** simply call `_tokenize`. It
+
+1. runs `prepare_for_tokenization`, then
+2. **splits the text on the added/special tokens** (`<s>`, `</s>`, `<unk>`,
+   `<pad>`, `<mask>` and anything else in the added vocabulary), emitting those
+   as whole tokens, and only then
+3. passes the remaining segments to `_tokenize`, which applies
+   `re.findall(r"\S+\n?", ...)` and `bpe` per run.
+
+Step 2 is invisible to `tokenizer.bpe(run)`. So for any run **containing** an
+added token as a substring, the two disagree — and PhoBERT's `_tokenize`
+calling `bpe` internally proves nothing about the *public* pathway, which is
+authoritative.
+
+### V.2 The defect, demonstrated
+
+The 17-run startup probe Revision 3c used to license the fast path contains **no
+added token**, so it enabled direct BPE. On a tokenizer double faithful to the
+wrapper's trie split:
+
+| Run | direct `bpe` | wrapper `tokenize` | |
+|---|---|---|---|
+| `abc<mask>def` | 4 | **3** | wrong |
+| `<mask>` | 2 | **1** | wrong |
+| `x</s>y` | 2 | **3** | wrong |
+
+A single such run — at document 900 000, long past the 256-query verification
+window — would have changed `fits()` and therefore **chunk boundaries**, silently.
+The user's review caught this before any real run.
+
+### V.3 Task B — removed, not patched
+
+A safe predicate would have to scan every run against every added token, which
+costs about what the wrapper call it replaces costs. And the benefit was never
+measured: the run-count memo means the tokenizer is consulted **once per distinct
+run**, not per query (34 evaluations against 3 452 846 cache hits in the §U.6
+benchmark), so the ceiling on the saving is small and entirely unquantified on
+the real tokenizer. Revision 3b already delivered the feasible ~10.55 h **without
+it**.
+
+**The optimisation is removed.** `lengths.py` contains no call to
+`tokenizer.bpe` — AST-asserted in test.
+
+### V.4 A second, pre-existing hazard this exposed
+
+The same inspection revealed a latent risk in Revision 3b's *composition itself*,
+independent of direct BPE. The wrapper matches added tokens as literal
+substrings **anywhere**, including across whitespace. An added token containing
+whitespace would therefore be lifted out whole by `tokenize`, while per-run
+composition would split it in two:
+
+| Text | wrapper | composed | |
+|---|---|---|---|
+| `abc [NEW LINE] def` | 3 | 6 | **mismatch** |
+| `[NEW LINE]` | 1 | 4 | **mismatch** |
+
+No PhoBERT special token contains whitespace, so this was never live — but it
+was never *checked*. `RunLengthComposer` now reads the tokenizer's **own**
+added-token collection (`get_added_vocab`, `all_special_tokens`,
+`added_tokens_encoder` — never hard-coded strings) and **disables composition
+entirely**, falling back to the authoritative whole-string chain, if any token
+contains whitespace **or if the collection cannot be read at all**. False
+negatives only cost speed; a false positive would change scientific output, so
+unknown is treated as unsafe.
+
+Composition remains enabled for a PhoBERT-like special-token set, and runs
+*containing* those tokens stay exact — because each run is counted with the
+**wrapper**, so the trie split happens inside the run.
+
+### V.5 Tests (Tasks C, D, E)
+
+Added to `tests/test_stage1_lengths.py` (**325 passed**, was 299):
+
+| # | Case | Result |
+|---|---|---|
+| 1 | Ordinary run stays exact | pass |
+| 2 | Exact added token (`<mask>`, `<s>`, …) | exact via wrapper |
+| 3 | Added token embedded in a larger run (`abc<mask>def`) | exact |
+| 4 | Adjacent / multiple added tokens | exact |
+| 5 | Newline-sensitive runs (Revision 3b) | unchanged |
+| 6 | Direct `bpe` disagreement is *demonstrated*, and `lengths.py` proven not to call `bpe` | pass |
+| 7 | Tokenizer that cannot report added tokens | composition **disabled** |
+| 8 | **Wrapper-sensitive run after 600 queries**, past the 256-query window | exact |
+| 9 | Reference **and** RAW_BASE pathways | both exact |
+| 10 | Chunk output vs authoritative oracle under a wrapper tokenizer | identical |
+
+20 added-token fixtures cover the token alone, prefixed, suffixed, both,
+adjacent, and with newlines/tabs/spaces around it, on both pathways.
+
+The Colab probe now builds its fixtures from the **tokenizer's own** added
+tokens and reports `direct_bpe_enabled` (false), `composition_enabled`,
+`added_tokens`, `direct_bpe_safe_cases`, `direct_bpe_wrapper_fallback_cases`
+and `direct_bpe_mismatches`. `--help` remains side-effect free; no encoder,
+forward, optimizer or training — AST-asserted.
+
+### V.6 Task G — `protocol.py` claim corrected
+
+Revision 3c's §U.3 said the protocol was untouched. Precisely:
+
+* **`unmark/stage1/protocol.py` is modified: `+6 / −0`**, adding
+  `RAW_BASE_POLICY = "RAW_BASE"` so the checkpoint can bind the base-pathway
+  identity and refuse to resume a stream prepared under a different one. Purely
+  additive; no existing line changed.
+* **Scientific constants are unchanged** — 21 of them byte-compared against
+  `4c72639`: `MAX_LENGTH`, `PI_STRIP`, `DEV_DOCUMENTS`, `SPLIT_SEED`, all seeds,
+  both grids, `BATCH_SIZE`, `CORPUS_REVISION`, `ENCODER_REVISION`, `ON_OVERFLOW`,
+  `PRECISION`, `VALIDATION_CONDITIONS`, `ADAPTER_TRAINABLE_PARAMETERS`,
+  `CONTAMINATION_METHOD`, `CORPUS_SHARD_ORDER`, `STAGE1_PROTOCOL_VERSION`,
+  `CHUNK_SCHEMA_VERSION` — **NONE changed**.
+
+"scientific protocol unchanged" and "`protocol.py` byte-untouched" are different
+claims; only the first is true.
+
+### V.7 Task I — checkpoint code untouched
+
+No correctness bug was found in the checkpoint architecture, so **none of it was
+modified**. All 41 checkpoint/resume tests still pass unchanged.
+
+### V.8 Limitations
+
+1. The wrapper's behaviour is modelled here with a faithful double; **the real
+   Transformers 4.57.6 `tokenize` was not executed** in this environment. The
+   probe exercises it on the next Colab run.
+2. `prepare_for_tokenization` is not separately proven to be identity for the
+   pinned tokenizer. It is not relied on: every run goes through the public
+   wrapper, which applies it.
+3. The removed optimisation's real benefit was never measured, so "negligible"
+   is an argument from the memo-hit counters, not a timing.
+4. Everything in §U.9 still stands: the full 1.118 M run has not been performed,
+   and checkpointing has not been exercised on a real Drive mount.
+
+### V.9 Self-audit for the 3c hardening
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Direct BPE cannot bypass added/special-token semantics | **yes — removed entirely** |
+| 2 | Wrapper-sensitive run after query 256 still exact | **yes** — 600-query test |
+| 3 | Safe cases match the authoritative wrapper | **yes** — 20 fixtures x 2 pathways |
+| 4 | Unsafe cases deterministically fall back | **yes** — composition disabled |
+| 5 | Exact safety unprovable → optimisation removed | **yes** |
+| 6 | Reference path exact | **yes** |
+| 7 | RAW_BASE path exact | **yes** |
+| 8 | Chunk-output oracle unchanged | **yes** |
+| 9 | Revision-3c checkpoint/resume tests pass | **yes** — 41 |
+| 10 | Streaming memory bound still holds | **yes** |
+| 11 | Interrupted/resumed output byte-identical | **yes** — 8 death positions |
+| 12 | No checkpoint scientific identity weakened | **yes** — 13 fields unchanged |
+| 13 | Top-level verdict is current | **yes** — §A |
+| 14 | Historical verdicts marked | **yes** — §A1, §A2 |
+| 15 | `protocol.py` claims factually accurate | **yes** — §V.6 |
+| 16 | Scientific constants unchanged | **yes** — 21 compared, none changed |
+| 17 | Decision log updated | **yes** — D-S1B-010 |
+| 18 | Proposal update necessity assessed | **yes** — not required (§V.6, D-S1B-010) |
+| 19-21 | `chunking.py`, contamination semantics, sealed TEST | **yes** |
+| 22-25 | No encoder, forward, optimizer, training | **yes** |
+| 26-27 | Focused and full suites pass | **yes** — 3 192 passed, 97 skipped |
+| 28-29 | `git diff --check` clean; nothing staged | **yes** |
+
+---
+
+**STATUS: REVISION 3C HARDENING PASS — READY FOR REAL RESUME/PERFORMANCE PROBE**
+**DIRECT-BPE FAST PATH REMOVED: IT BYPASSED THE WRAPPER'S ADDED-TOKEN SPLIT (§V)**
+**COMPOSITION NOW GATED ON THE TOKENIZER'S OWN ADDED TOKENS; UNKNOWN = UNSAFE**
+**WRAPPER-SENSITIVE RUNS EXACT BEFORE AND AFTER THE 256-QUERY WINDOW**
+**`protocol.py` IS +6/-0 ADDITIVE; 21 SCIENTIFIC CONSTANTS COMPARED, NONE CHANGED**
+**TOP-LEVEL VERDICT NOW CURRENT; PRIOR VERDICTS MARKED HISTORICAL**
+
+~~**STATUS (Revision 3c, first pass): REVISION 3C PASS**~~ **— hardened by §V**
+**DURABLE STAGE-6 RESUME: APPEND-ONLY SHARDS, DOCUMENT-BOUNDARY COMMITS, FAILURE-ATOMIC**
+**SECOND BLOCKER FOUND AND FIXED: THE PRE-3c WRITER HELD ~29.9 GB OF CHUNKS IN RAM**
+**RESUMED OUTPUT BYTE-IDENTICAL TO UNINTERRUPTED, AT 8 SIMULATED DEATH POSITIONS**
+**13 IDENTITY FIELDS FAIL CLOSED; COMPLETE MARKER WRITTEN LAST AND HASH-BOUND**
+**DIRECT-BPE WITHDRAWN BY THE 3c HARDENING (§V); MULTIPROCESSING MEASURED 1.78x@2 BUT NOT ADOPTED**
+**GPU VRAM DOES NOT ACCELERATE CPU TOKENIZATION — NOT CLAIMED**
+**FULL 1.118 M RUN NOT PERFORMED; NOT AUTHORISED HERE**
+
+~~**STATUS (Revision 3b): REVISION 3B REPAIR PASS — READY FOR REAL TOKENIZER/PERFORMANCE PROBE**~~ **— SUPERSEDED by Revision 3c**
 **HISTORICAL `composed 5, exact 7` EXPLAINED: bb50823 COMPOSED OVER `\S+`, NOT THE TOKENIZER'S `\S+\n?`**
 **REVISION 3a's "COMPOSITION FALSIFIED" READING IS WITHDRAWN — THE RUN UNIT WAS WRONG, NOT THE PROPERTY**
 **REAL SAMPLE: `\S+` 1708/1920 FAILURES, `\S+\n?` 0 FAILURES, wrapper vs `_tokenize` 0**

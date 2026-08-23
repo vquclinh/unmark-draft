@@ -93,6 +93,7 @@ def main(argv=None) -> int:
 
     from unmark.orthography import canon, decompose
     from unmark.stage1.chunking import ChunkingViolation, chunk_document
+    from unmark.stage1.lengths import build_length_functions
     from unmark.stage1.contracts import Stage1ContractViolation
     from unmark.stage1.corpus import CorpusDocument
     from unmark.stage1.lengths import build_length_functions
@@ -225,8 +226,63 @@ def main(argv=None) -> int:
             failures.append({"check": "chunk_output", "document": name,
                              "old_status": old[0], "new_status": new[0]})
 
+    # --- CHECK 5: added/special-token wrapper semantics ---------------------
+    # A direct `tokenizer.bpe(run)` fast path was REMOVED in the Revision-3c
+    # hardening: it bypasses the wrapper's added-token split. These fixtures are
+    # built from the tokenizer's OWN added tokens and prove the wrapper path
+    # stays exact, and that composition is disabled if it cannot be shown safe.
+    from unmark.stage1.lengths import RunLengthComposer, TransformCounters
+
+    composer = RunLengthComposer(tokenizer, counters=TransformCounters())
+    added = sorted(set(getattr(tokenizer, "all_special_tokens", []) or [])
+                   | set((tokenizer.get_added_vocab() or {}).keys()))
+    wrapper_fixtures: list[str] = []
+    for token in added:
+        wrapper_fixtures += [
+            token, f"xin{token}", f"{token}chào", f"xin{token}chào",
+            f"{token}{token}", f"{token}\n", f"\n{token}", f"\t{token}\t",
+            f"  {token}  ", f"Tôi {token} đọc", f"Đội_tuyển{token}bóng_đá",
+        ]
+    wrapper_fixtures += ["Tôi đã đọc", "hoà bình", "một\n"]
+
+    safe_cases = fallback_cases = mismatches = 0
+    ref_opt, base_opt, _ = build_length_functions(tokenizer)
+    for index, text in enumerate(wrapper_fixtures):
+        for label, transform in PATHWAYS:
+            transformed = transform(text)
+            exact = whole_length(transformed)
+            optimized = (ref_opt if label == "reference" else base_opt)(text)
+            if optimized != exact:
+                mismatches += 1
+                failures.append({"check": "added_token_length_equality",
+                                 "fixture_index": index, "pathway": label,
+                                 "optimized": optimized, "authoritative": exact})
+            per_run = sum(len(tokenizer.tokenize(r))
+                          for r in phobert_run.findall(transformed))
+            if per_run + specials == exact:
+                safe_cases += 1
+            else:
+                fallback_cases += 1
+                if composer.composition_enabled:
+                    failures.append({"check": "composition_should_have_fallen_back",
+                                     "fixture_index": index, "pathway": label})
+
+    resume_report = _checkpoint_resume_check(tokenizer, failures)
+
     report = {
         "probe": "STAGE1_TOKENIZER_RUN_COMPOSITION",
+        "direct_bpe_enabled": False,
+        "direct_bpe_removed_reason": (
+            "bypasses PreTrainedTokenizer.tokenize's added-token split; see "
+            "Audit 029 section V"
+        ),
+        "composition_enabled": composer.composition_enabled,
+        "added_tokens": len(added),
+        "wrapper_fixtures": len(wrapper_fixtures),
+        "direct_bpe_safe_cases": safe_cases,
+        "direct_bpe_wrapper_fallback_cases": fallback_cases,
+        "direct_bpe_mismatches": mismatches,
+        "resume": resume_report,
         "run_unit": "\\S+\\n?",
         "checkpoint": ENCODER_CHECKPOINT,
         "revision": ENCODER_REVISION,
@@ -245,6 +301,103 @@ def main(argv=None) -> int:
     }
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0 if not failures else 1
+
+
+def _checkpoint_resume_check(tokenizer, failures: list) -> dict:
+    """Interrupted-vs-uninterrupted preparation on a small deterministic set.
+
+    Uses the real pinned tokenizer but only a handful of documents -- the probe
+    never touches the 1.118 M-document corpus.
+    """
+    import tempfile
+
+    from unmark.stage1.checkpoint import (
+        CheckpointIdentity,
+        PrepareCheckpoint,
+        concatenate_shards,
+        document_sequence_digest,
+        stream_counts,
+    )
+    from unmark.stage1.chunking import chunk_document
+    from unmark.stage1.corpus import CorpusDocument, partition_documents
+    from unmark.stage1.lengths import build_length_functions
+    from unmark.stage1.manifest import CHUNKS_NAME
+    from unmark.stage1.protocol import (
+        CHUNK_SCHEMA_VERSION,
+        DEV_DOCUMENTS,
+        ENCODER_CHECKPOINT,
+        ENCODER_REVISION,
+        MAX_LENGTH,
+        RAW_BASE_POLICY,
+        SPLIT_SEED,
+        STAGE1_PROTOCOL_VERSION,
+    )
+
+    documents = [
+        CorpusDocument(f"probe-{i:03d}", text * 6, "train.parquet", i)
+        for i, text in enumerate(PROBE_DOCUMENTS.values())
+    ]
+    partition = partition_documents([d.document_id for d in documents], dev_documents=2)
+    identity = CheckpointIdentity(
+        repository_head="probe", protocol_version=STAGE1_PROTOCOL_VERSION,
+        chunk_schema_version=CHUNK_SCHEMA_VERSION,
+        corpus_dataset="probe", corpus_revision="0" * 40, corpus_files=(),
+        tokenizer_checkpoint=ENCODER_CHECKPOINT, tokenizer_revision=ENCODER_REVISION,
+        transformers_version=__import__("transformers").__version__,
+        max_length=MAX_LENGTH, raw_base_policy=RAW_BASE_POLICY,
+        split_seed=SPLIT_SEED, dev_documents=DEV_DOCUMENTS,
+        contamination_method="exact_canonical_duplicate",
+        contamination_excluded_count=0,
+        document_sequence_digest=document_sequence_digest(
+            [d.document_id for d in documents]
+        ),
+        partition_assignment_digest=partition.membership_digest,
+    )
+
+    def prepare(root, stop_after=None):
+        ref, base, _ = build_length_functions(tokenizer)
+        checkpoint = PrepareCheckpoint(root, identity, len(documents), interval=2,
+                                       staging_dir=root / "staging")
+        state = checkpoint.begin()
+        for index in range(state.next_document_index, len(documents)):
+            if stop_after is not None and index >= stop_after:
+                return checkpoint, False
+            document = documents[index]
+            checkpoint.add_document(index, document.document_id, chunk_document(
+                document, partition.assignment[document.document_id],
+                reference_length=ref, base_length=base, max_length=MAX_LENGTH,
+            ))
+        checkpoint.commit(force=True)
+        return checkpoint, True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        whole, _ = prepare(root / "whole")
+        payload_a = concatenate_shards(
+            [whole.shard_dir / s.name for s in whole.state.shards],
+            root / "whole" / CHUNKS_NAME,
+        )
+        prepare(root / "resumed", stop_after=3)
+        resumed, _ = prepare(root / "resumed")
+        payload_b = concatenate_shards(
+            [resumed.shard_dir / s.name for s in resumed.state.shards],
+            root / "resumed" / CHUNKS_NAME,
+        )
+        with open(root / "whole" / CHUNKS_NAME, encoding="utf-8") as handle:
+            counts = stream_counts(handle, root / "fin")
+
+        if payload_a != payload_b:
+            failures.append({"check": "resume_payload_identity",
+                             "uninterrupted": payload_a, "resumed": payload_b})
+        return {
+            "documents": len(documents),
+            "chunks": counts.chunks_total,
+            "uninterrupted_sha256": payload_a[1],
+            "resumed_sha256": payload_b[1],
+            "identical": payload_a == payload_b,
+            "shards_uninterrupted": len(whole.state.shards),
+            "shards_resumed": len(resumed.state.shards),
+        }
 
 
 if __name__ == "__main__":

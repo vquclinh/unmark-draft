@@ -351,7 +351,11 @@ def test_counters_carry_no_text():
 # ===========================================================================
 # Revision 3b: composition over the tokenizer's OWN run unit
 # ===========================================================================
-from unmark.stage1.lengths import PHOBERT_RUN, RunLengthComposer  # noqa: E402
+from unmark.stage1.lengths import (  # noqa: E402
+    PHOBERT_RUN,
+    RunLengthComposer,
+    TransformCounters,
+)
 
 NAIVE_RUN = re.compile(r"\S+")
 
@@ -470,18 +474,12 @@ def test_incremental_extension_handles_a_run_gaining_a_newline():
 def test_the_run_verifier_fails_closed_on_a_corrupted_run_count():
     """Task E: a deliberately wrong run counter must raise."""
     composer = RunLengthComposer(
-        PhoBERTShapedTokenizer(), counters=TransformCountersFactory()
+        PhoBERTShapedTokenizer(), counters=TransformCounters()
     )
     original = composer._run_tokens
     composer._run_tokens = lambda run: original(run) + 1  # corrupt the counter
     with pytest.raises(Stage1ContractViolation, match="run composition disagreed"):
         composer.length("Tôi đã đọc")
-
-
-def TransformCountersFactory():
-    from unmark.stage1.lengths import TransformCounters
-
-    return TransformCounters()
 
 
 def test_expensive_run_evaluations_scale_with_runs_not_prefix_lengths():
@@ -504,3 +502,162 @@ def test_expensive_run_evaluations_scale_with_runs_not_prefix_lengths():
     assert counters.incremental_appends > 10 * counters.full_fallbacks
     # authoritative whole-string calls are bounded by the verification window
     assert counters.authoritative_queries <= 2 * (DEFAULT_VERIFY_FIRST + 1) + 4
+
+
+# ===========================================================================
+# Revision 3c hardening: added/special-token wrapper semantics
+# ===========================================================================
+class WrapperTokenizer:
+    """Models `PreTrainedTokenizer.tokenize`: added-token split BEFORE `_tokenize`.
+
+    This is the behaviour a direct `tokenizer.bpe(run)` call bypasses, and the
+    behaviour per-run composition must respect.
+    """
+
+    def __init__(self, added=(), special=()):
+        self.added = sorted(set(added) | set(special), key=len, reverse=True)
+        self.all_special_tokens = list(special)
+
+    def get_added_vocab(self):
+        return {token: index for index, token in enumerate(self.added)}
+
+    def bpe(self, token):
+        return " ".join(token[i:i + 3] for i in range(0, len(token), 3)) or token
+
+    def _tokenize(self, text):
+        out = []
+        for run in PHOBERT_RUN.findall(text):
+            out.extend(self.bpe(run).split(" "))
+        return out
+
+    def tokenize(self, text):
+        pieces, index = [], 0
+        while index < len(text):
+            for token in self.added:
+                if text.startswith(token, index):
+                    pieces.append(("ADDED", token))
+                    index += len(token)
+                    break
+            else:
+                end = index
+                while end < len(text) and not any(
+                    text.startswith(t, end) for t in self.added
+                ):
+                    end += 1
+                pieces.append(("TEXT", text[index:end]))
+                index = end
+        out = []
+        for kind, piece in pieces:
+            out.extend([piece] if kind == "ADDED" else self._tokenize(piece))
+        return out
+
+    def convert_tokens_to_ids(self, tokens):
+        return list(tokens)
+
+    def build_inputs_with_special_tokens(self, ids):
+        return ["<s>", *ids, "</s>"]
+
+
+PHOBERT_LIKE_SPECIALS = ("<s>", "</s>", "<unk>", "<pad>", "<mask>")
+
+ADDED_TOKEN_CASES = [
+    "<mask>", "<s>", "</s>", "<unk>", "<pad>",
+    "abc<mask>def", "x</s>y", "<mask><s>", "<s></s>",
+    "xin <mask> chào", "a<mask>b c<mask>d",
+    "<mask>\n", "\n<mask>", "\t<mask>\t", "  <mask>  ",
+    "Tôi <mask> đọc", "Đội_tuyển<mask>bóng_đá",
+    "Tôi đã đọc", "hoà bình", "một\n",
+]
+
+
+def test_direct_bpe_would_have_been_wrong_and_is_gone():
+    """The 3c hardening defect, pinned.
+
+    A 17-run startup probe containing no added token would have enabled a
+    direct `bpe` path, which then miscounts any run containing `<mask>`.
+    """
+    tokenizer = WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS)
+    for run in ("abc<mask>def", "<mask>", "x</s>y"):
+        direct = len(tokenizer.bpe(run).split(" "))
+        wrapper = len(tokenizer.tokenize(run))
+        assert direct != wrapper, f"{run!r} must expose the divergence"
+
+    # and the production module must not call bpe at all
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path("unmark/stage1/lengths.py").read_text(encoding="utf-8"))
+    assert not [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "bpe"
+    ], "lengths.py must not call tokenizer.bpe()"
+
+
+@pytest.mark.parametrize("text", ADDED_TOKEN_CASES)
+def test_added_tokens_stay_exact_on_both_pathways(text):
+    tokenizer = WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS)
+    authoritative_ref, authoritative_base = old_length_functions(tokenizer)
+    ref, base, _ = build_length_functions(WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS))
+    assert ref(text) == authoritative_ref(text), repr(text)
+    assert base(text) == authoritative_base(text), repr(text)
+
+
+def test_composition_stays_enabled_for_phobert_like_specials():
+    composer = RunLengthComposer(
+        WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS), counters=TransformCounters()
+    )
+    assert composer.composition_enabled, "no PhoBERT special token contains whitespace"
+
+
+def test_an_added_token_containing_whitespace_disables_composition():
+    """CASE 2: the wrapper lifts it across a run boundary; composition cannot."""
+    tokenizer = WrapperTokenizer(added=("[NEW LINE]",), special=PHOBERT_LIKE_SPECIALS)
+    composer = RunLengthComposer(tokenizer, counters=TransformCounters())
+    assert not composer.composition_enabled
+
+    authoritative_ref, _ = old_length_functions(tokenizer)
+    ref, _, _ = build_length_functions(
+        WrapperTokenizer(added=("[NEW LINE]",), special=PHOBERT_LIKE_SPECIALS)
+    )
+    for text in ("abc [NEW LINE] def", "[NEW LINE]", "x [NEW LINE] y", "Tôi đã đọc"):
+        assert ref(text) == authoritative_ref(text), repr(text)
+
+
+def test_a_tokenizer_that_cannot_report_added_tokens_takes_the_safe_path():
+    class Opaque(WrapperTokenizer):
+        def get_added_vocab(self):
+            raise RuntimeError("not supported")
+
+    composer = RunLengthComposer(Opaque(special=PHOBERT_LIKE_SPECIALS),
+                                 counters=TransformCounters())
+    assert not composer.composition_enabled, "unknown added tokens must fail safe"
+
+
+def test_a_wrapper_sensitive_run_after_the_verification_window_is_still_exact():
+    """Query 900 000 must be as exact as query 1.
+
+    The early authoritative verifier only covers the first 256 distinct queries;
+    the per-run safety decision must hold for arbitrarily late documents.
+    """
+    tokenizer = WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS)
+    authoritative_ref, _ = old_length_functions(tokenizer)
+    ref, _, transforms = build_length_functions(
+        WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS)
+    )
+    for index in range(600):                       # exhaust the 256-query window
+        ref(f"phrase số {index} bình thường")
+    assert transforms.counters.verifications >= DEFAULT_VERIFY_FIRST
+
+    for text in ("abc<mask>def", "<mask>", "x</s>y", "Tôi <mask> đọc"):
+        assert ref(text) == authoritative_ref(text), f"late query {text!r}"
+
+
+def test_chunk_output_is_identical_under_a_wrapper_tokenizer():
+    tokenizer = WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS)
+    document = doc("added", "Tôi <mask> đọc quyển sách này rồi " * 12)
+    ref_old, base_old = old_length_functions(tokenizer)
+    ref_new, base_new, _ = build_length_functions(
+        WrapperTokenizer(special=PHOBERT_LIKE_SPECIALS)
+    )
+    old, new = compare(document, "train", ref_old, base_old, ref_new, base_new, 64)
+    assert old == new

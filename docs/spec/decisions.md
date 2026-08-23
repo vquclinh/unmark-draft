@@ -38,6 +38,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-PREG1-015 (pre-G1 CLOSED — primary and secondary), D-S1B-001 (UIT-VSFC excluded from Stage-1 selection), D-B3B0-007 (main backbone locked) |
 | **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock), D-S1B-005 … D-S1B-008 (seed roles, metric unit, FP32, pipeline/resume) |
 | **RESOLVED DECISION** (cont.) | D-S1B-009 — **implementation correction**: chunk boundaries are orthographically-safe offsets, not whitespace only. Found by real-corpus evidence after commit `0a34083` |
+| **RESOLVED DECISION** (cont.) | D-S1B-010 — Stage-6 corpus preparation is **streamed and durably resumable**; token lengths use the **public tokenizer wrapper** only (operational, no scientific change) |
 | **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
@@ -4202,3 +4203,50 @@ pending from D-S1B-005/008).
 **Not closed by synthetic tests.** The repaired chunker has **not** been run on
 the real 766 MB corpus. PRE-TRAIN stays **BLOCKED** until real `prepare-corpus`
 succeeds in Colab and the real-PhoBERT no-update smoke passes.
+
+
+### D-S1B-010 — Stage-6 preparation is streamed, resumable, and wrapper-only
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation / operational) |
+| **Owner** | Stage-1B |
+| **Date** | 2026-08-23 |
+
+**What the proposal says.** *Nothing.* `unmark-proposal.md` prescribes the
+Stage-1 corpus, the chunking contract and `max_length`, but **does not prescribe
+any operational mechanism** for how preparation is executed, persisted or
+resumed. This entry therefore records implementation decisions that the
+specification deliberately leaves open — it does not alter a scientific one.
+
+**Implemented decisions.**
+
+| # | Decision | Reason |
+|---|---|---|
+| 1 | Stage 6 **streams** prepared chunks to disk instead of accumulating them | The previous writer held every `PreparedChunk` in RAM: ~24.89 chunks/document x 1 118 224 documents x ~1 075 B ≈ **29.9 GB**, before writing a byte. Peak memory is now bounded by one shard |
+| 2 | Durable resume uses **immutable append-only shards** committed only at **document boundaries**, every 5 000 documents | Stage 6 takes ~10.5 h; a Colab runtime death must not restart at document 0. Rewriting the partial dataset each commit would be O(progress) I/O |
+| 3 | Checkpoints are **operational only** | They bind identity and payload digests but contribute nothing to the scientific artifacts. An uninterrupted run and a resumed run produce **byte-identical** payload and manifest |
+| 4 | Tokenizer/BPE **caches are performance-only** and are never serialised | A fresh runtime resumes cold and correct. Correctness depends solely on the source data, the locked protocol and the committed shards |
+| 5 | Token lengths are counted with the **public wrapper** `tokenizer.tokenize(run)` **only**. A direct `tokenizer.bpe(run)` path is **forbidden** | `PreTrainedTokenizer.tokenize` splits the text on added/special tokens *before* `_tokenize` runs. `bpe` skips that, so a run containing e.g. `<mask>` miscounts — which would change `fits()` and therefore chunk boundaries |
+| 6 | Per-run composition is **gated** on the tokenizer's own added-token collection: disabled if any added token contains whitespace, or if the collection cannot be read | The wrapper matches added tokens as literal substrings anywhere, including across whitespace; such a token would be lifted out whole by `tokenize` but split by the composition. Unknown is treated as unsafe |
+| 7 | **Multiprocessing remains unadopted** | Measured exact and 1.78x at two workers, but it complicates the contiguous-committed-prefix invariant durability rests on, and the blocking risks are already resolved. Revisit only with real evidence |
+
+**Scientific values unchanged.** Chunk boundaries, ids, source ranges, both
+recorded lengths, text, ordering, partitioning, every manifest scientific field,
+`max_length = 256`, `RAW_BASE`, the corpus pin, the contamination criterion, the
+split, the seeds and the sealed-TEST policy are all untouched.
+
+**Affected files.** `unmark/stage1/checkpoint.py` (new),
+`unmark/stage1/lengths.py`, `unmark/stage1/manifest.py` (additive
+`build_manifest_from_counts`), `unmark/stage1/protocol.py` (**+6/−0**, additive
+`RAW_BASE_POLICY` so the checkpoint can bind the base-pathway identity),
+`scripts/stage1_runner.py`, `scripts/stage1_tokenizer_probe.py`, and the tests
+`tests/test_stage1_checkpoint.py` (new) and `tests/test_stage1_lengths.py`.
+`chunking.py`, `corpus.py` and `canon()` are **not** modified.
+
+**Affected experiments.** None yet — Stage 6 has never completed, and no
+Stage-1 training has occurred.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO, and none is required.** The proposal does not prescribe execution, persistence or resume mechanics, and no scientific value changed. Recording an operational mechanism in the scientific specification would misplace it. PDF stale: **YES** (unchanged) |

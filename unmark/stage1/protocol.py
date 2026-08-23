@@ -77,6 +77,12 @@ a data policy. Silent SKIP would bias the corpus toward short documents."""
 CHUNK_ID_TEMPLATE = "{document_id}#{chunk_index}"
 CHUNK_SCHEMA_VERSION = "stage1-chunk-v1"
 
+RAW_BASE_POLICY = "RAW_BASE"
+"""The base-pathway identity (D-B3B1A-001): no word segmentation, `b(canon(x))`.
+
+Named so an operational checkpoint can bind it and refuse to resume a stream
+prepared under a different base policy."""
+
 # ---------------------------------------------------------------------------
 # Corruption -- D-S1B-003
 # ---------------------------------------------------------------------------

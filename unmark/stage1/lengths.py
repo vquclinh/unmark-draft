@@ -16,9 +16,15 @@ producing the *transformed* text changes.
 * Optimised: `canon(text)` and `decompose(canon(text)).base_text` are built from
   memoised whitespace segments and extended incrementally along a growing
   prefix. This rests on a lemma about *this repository's own code* (below).
-* **Not optimised: tokenization.** The transformed candidate is handed to the
-  tokenizer **whole**, through the **same API chain** the pre-optimisation
-  implementation used. No property of the tokenizer is assumed, used, or needed.
+* Optimised: token counts are summed over the tokenizer's **own** run unit
+  (`PHOBERT_RUN`), each run memoised. Every run is counted with the **public
+  wrapper** `tokenizer.tokenize(run)`, so added/special-token handling is the
+  tokenizer's, not ours.
+* **Never optimised: added-token semantics.** A direct `tokenizer.bpe(run)`
+  fast path was implemented in Revision 3c and **removed** in the 3c hardening:
+  it bypasses the wrapper's added-token split and silently miscounts any run
+  containing e.g. `<mask>` (Audit 029 §V). Composition itself is additionally
+  gated on `_composition_is_safe()`.
 
 **The composability lemma.** For a text `T` split into maximal whitespace and
 non-whitespace runs `s1 … sn`::
@@ -84,6 +90,9 @@ class TransformCounters:
     incremental_appends: int = 0
     last_run_recomputations: int = 0
     full_fallbacks: int = 0
+    run_cache_evictions: int = 0
+    run_cache_entries: int = 0
+    run_cache_max_entries: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return dict(self.__dict__)
@@ -258,6 +267,58 @@ class RunLengthComposer:
         # Derived through the authoritative API, never a hard-coded "+2".
         self._specials = self.authoritative_length("")
         self._last: tuple[str, int, int] = ("", 0, 0)
+        self._added_tokens = self._added_token_strings()
+        self._compose_runs = self._composition_is_safe()
+
+    def _added_token_strings(self) -> tuple[str, ...] | None:
+        """The tokenizer's OWN added/special tokens. Never hard-coded here.
+
+        `PreTrainedTokenizer.tokenize` splits the text on these **before**
+        `_tokenize` ever runs, so they are the one thing that can make the
+        wrapper disagree with a per-run decomposition.
+        """
+        collected: set[str] = set()
+        for attribute in ("get_added_vocab", "all_special_tokens"):
+            value = getattr(self._tokenizer, attribute, None)
+            try:
+                value = value() if callable(value) else value
+            except Exception:  # noqa: BLE001 - a tokenizer that cannot answer
+                return None   # unknown added tokens -> composition is not provable
+            if isinstance(value, dict):
+                collected.update(str(k) for k in value)
+            elif isinstance(value, (list, tuple, set)):
+                collected.update(str(v) for v in value)
+        encoder = getattr(self._tokenizer, "added_tokens_encoder", None)
+        if isinstance(encoder, dict):
+            collected.update(str(k) for k in encoder)
+        return tuple(sorted(t for t in collected if t))
+
+    def _composition_is_safe(self) -> bool:
+        """May token counts be summed over `PHOBERT_RUN` runs at all?
+
+        Per-run composition is exact **only** while every added token lies
+        wholly inside one run. `tokenize` matches added tokens as literal
+        substrings anywhere in the text, so an added token that *contains
+        whitespace* would be lifted out across a run boundary by the wrapper
+        and split in two by the composition -- a real divergence, demonstrated
+        in Audit 029 §V.
+
+        Checked once, from the tokenizer's authoritative collection. When the
+        collection cannot be read, or any token contains whitespace, every query
+        takes the authoritative whole-string path: slower, always correct.
+        **False negatives only cost speed; a false positive would change
+        scientific output**, so the unknown case is treated as unsafe.
+        """
+        if self._added_tokens is None:
+            return False
+        return not any(
+            token != token.strip() or any(c.isspace() for c in token)
+            for token in self._added_tokens
+        )
+
+    @property
+    def composition_enabled(self) -> bool:
+        return self._compose_runs
 
     def authoritative_length(self, transformed: str) -> int:
         """The unchanged pre-optimisation chain. The definition of truth."""
@@ -275,6 +336,15 @@ class RunLengthComposer:
         value = len(self._tokenizer.tokenize(run))
         if len(self._runs) < self._max_entries:
             self._runs[run] = value
+            self.counters.run_cache_entries = len(self._runs)
+            self.counters.run_cache_max_entries = max(
+                self.counters.run_cache_max_entries, len(self._runs)
+            )
+        else:
+            # At the ceiling: this run is recomputed every time it recurs. Counted
+            # so a cap that is actually costing work is visible rather than
+            # guessed at.
+            self.counters.run_cache_evictions += 1
         return value
 
     def _sum_runs(self, transformed: str) -> tuple[int, int]:
@@ -287,7 +357,14 @@ class RunLengthComposer:
         return total, last_start
 
     def length(self, transformed: str) -> int:
-        """Composed length of an already-transformed string."""
+        """Composed length of an already-transformed string.
+
+        Falls back to the authoritative whole-string chain whenever per-run
+        composition cannot be shown safe for this tokenizer.
+        """
+        if not self._compose_runs:
+            self.counters.full_fallbacks += 1
+            return self.authoritative_length(transformed)
         previous, previous_total, last_start = self._last
         if previous and len(transformed) > len(previous) and transformed.startswith(previous):
             # Only the final run of `previous` can be affected by appended text

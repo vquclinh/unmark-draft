@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -58,14 +60,27 @@ from unmark.stage1.corpus import (  # noqa: E402
     verify_corpus_root,
 )
 from unmark.linguistics import make_classifier, try_load_inventory  # noqa: E402
-from unmark.stage1.chunking import chunk_corpus, verify_no_parent_spans_partitions  # noqa: E402
+from unmark.stage1.chunking import chunk_document  # noqa: E402
+from unmark.stage1.checkpoint import (  # noqa: E402
+    COMPLETE_NAME,
+    CheckpointIdentity,
+    PrepareCheckpoint,
+    atomic_write_bytes,
+    concatenate_shards,
+    document_sequence_digest,
+    read_completion,
+    stream_counts,
+    write_completion_marker,
+)
 from unmark.stage1.manifest import (  # noqa: E402
     CHUNKS_NAME,
-    build_manifest,
+    MANIFEST_NAME,
+    build_manifest_from_counts,
     load_manifest,
 )
 from unmark.stage1.protocol import (  # noqa: E402
     BATCH_SIZE,
+    CHUNK_SCHEMA_VERSION,
     CORPUS_DATASET,
     CORPUS_REVISION,
     CORPUS_SHARD_ORDER,
@@ -103,9 +118,13 @@ from unmark.stage1.selection import (  # noqa: E402
 def run_prepare_corpus(args) -> int:
     """Pinned bytes -> verified prepared corpus. Verify BEFORE reading a row."""
     output = Path(args.output_dir)
-    if output.exists():
-        print(f"REFUSED: {output} already exists; prepared corpora are immutable",
-              file=sys.stderr)
+    checkpoint_root = Path(args.checkpoint_dir) if args.checkpoint_dir else output / "_checkpoint"
+    if output.exists() and not (checkpoint_root / "state.json").is_file() \
+            and not (checkpoint_root / COMPLETE_NAME).is_file():
+        # Immutable unless this is a genuine resume: a checkpoint state or a
+        # completion marker is the only thing that licenses reusing the directory.
+        print(f"REFUSED: {output} already exists and holds no checkpoint; prepared "
+              "corpora are immutable", file=sys.stderr)
         return 2
 
     print("[1/6] verifying the corpus pin", flush=True)
@@ -166,64 +185,123 @@ def run_prepare_corpus(args) -> int:
     reference_length, base_length, transforms = _length_functions(tokenizer)
     classifier = make_classifier(try_load_inventory())
 
-    total = len(kept)
-    every = max(1, total // 100)
-    started = time.monotonic()
-    # Early heartbeat first: at 1% the first line would arrive after ~11 000
-    # documents, which is exactly how a severe slowdown stayed invisible for
-    # 13 minutes. Counts and elapsed time only -- never corpus text.
-    heartbeats = (1, 10, 50, 100, 500, 1_000, 5_000, 10_000)
+    identity = CheckpointIdentity(
+        repository_head=args.repository_head,
+        protocol_version=STAGE1_PROTOCOL_VERSION,
+        chunk_schema_version=CHUNK_SCHEMA_VERSION,
+        corpus_dataset=pin.dataset,
+        corpus_revision=pin.revision,
+        corpus_files=tuple((f["name"], f["bytes"], f["sha256"]) for f in source["files"]),
+        tokenizer_checkpoint=ENCODER_CHECKPOINT,
+        tokenizer_revision=args.revision,
+        transformers_version=_transformers_version(),
+        max_length=MAX_LENGTH,
+        raw_base_policy=RAW_BASE_POLICY,
+        split_seed=SPLIT_SEED,
+        dev_documents=DEV_DOCUMENTS,
+        contamination_method=contamination.method,
+        contamination_excluded_count=contamination.excluded_count,
+        document_sequence_digest=document_sequence_digest(
+            [d.document_id for d in kept]
+        ),
+        partition_assignment_digest=partition.membership_digest,
+    )
 
-    def report(done: int, chunks_so_far: int) -> None:
-        if done in heartbeats or done % every == 0 or done == total:
-            elapsed = time.monotonic() - started
-            rate = done / elapsed if elapsed > 0 else 0.0
-            print(f"    chunking {done}/{total} documents ({100 * done / total:.1f}%), "
-                  f"{chunks_so_far} chunks, {elapsed:.1f}s, {rate:.0f} docs/s", flush=True)
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else output / "_checkpoint"
+    already = read_completion(checkpoint_dir, output, identity)
+    if already is not None:
+        print(f"  ALREADY_COMPLETE: every artifact verified against {COMPLETE_NAME}")
+        print(f"    {json.dumps(already['counts'], sort_keys=True)}")
+        return 0
+
+    checkpoint = PrepareCheckpoint(checkpoint_dir, identity, len(kept))
+    state = checkpoint.begin()
+    resuming = state.next_document_index > 0
+    print(f"  {'RESUME' if resuming else 'START'}: "
+          f"{state.next_document_index}/{len(kept)} documents already committed, "
+          f"{state.chunks_total} chunks in {len(state.shards)} verified shards")
+    _report_space(checkpoint_dir, output)
+
+    total = len(kept)
+    started = time.monotonic()
+    heartbeats = (1, 10, 50, 100, 500, 1_000, 5_000, 10_000)
+    produced = state.chunks_total
 
     try:
-        chunks = chunk_corpus(
-            kept, partition.assignment,
-            reference_length=reference_length, base_length=base_length,
-            max_length=MAX_LENGTH, classifier=classifier, on_progress=report,
-        )
+        for index in range(state.next_document_index, total):
+            document = kept[index]
+            chunks = chunk_document(
+                document, partition.assignment[document.document_id],
+                reference_length=reference_length, base_length=base_length,
+                max_length=MAX_LENGTH, classifier=classifier,
+            )
+            produced += checkpoint.add_document(index, document.document_id, chunks)
+            done = index + 1
+            if done in heartbeats or done % max(1, total // 100) == 0 or done == total:
+                elapsed = time.monotonic() - started
+                rate = (done - state.next_document_index) / elapsed if elapsed > 0 else 0.0
+                print(f"    chunking {done}/{total} documents ({100 * done / total:.1f}%), "
+                      f"{produced} chunks, {elapsed:.1f}s, {rate:.1f} docs/s", flush=True)
+        checkpoint.commit(force=True)
     except Stage1ContractViolation as error:
-        # Surface WHICH stage failed and on what, without dumping corpus text.
-        # The original contract error is re-raised unchanged, never swallowed.
-        print(f"\nREFUSED during CHUNKING (stage 5 of 6, after the document split):\n"
-              f"  {error}", file=sys.stderr, flush=True)
+        checkpoint.commit(force=True)
+        print(f"\nREFUSED during CHUNKING (stage 6 of 6, after the document split):\n"
+              f"  {error}\n  committed prefix preserved: "
+              f"{checkpoint.state.next_document_index}/{total} documents",
+              file=sys.stderr, flush=True)
         raise
-    parents = verify_no_parent_spans_partitions(chunks)
-    print(f"  chunked AFTER splitting: {len(chunks)} chunks from {parents} documents")
-    counters = transforms.counters
-    print(f"    length queries {counters.length_queries}, incremental extensions "
-          f"{counters.incremental_extensions}, full rescans {counters.full_rescans}, "
-          f"canon calls {counters.canon_calls}, tokenizer calls {counters.tokenizer_calls}, "
-          f"composition verifications {counters.verifications}")
 
-    manifest = build_manifest(
+    print(f"  chunked AFTER splitting: {checkpoint.state.chunks_total} chunks from "
+          f"{total} documents in {len(checkpoint.state.shards)} shards")
+    counters = transforms.counters
+    print(f"    length queries {counters.length_queries}, BPE run evaluations "
+          f"{counters.bpe_run_evaluations}, run-cache hits {counters.run_cache_hits}, "
+          f"evictions {counters.run_cache_evictions}, incremental appends "
+          f"{counters.incremental_appends}, full fallbacks {counters.full_fallbacks}, "
+          f"authoritative verifications {counters.authoritative_queries}")
+    print(f"    checkpoint: {checkpoint.commits} commits, "
+          f"{checkpoint.checkpoint_bytes / 1e6:.1f} MB, "
+          f"{checkpoint.checkpoint_seconds:.1f}s "
+          f"({100 * checkpoint.checkpoint_seconds / max(1e-9, time.monotonic() - started):.2f}% of stage 6)")
+
+    # --- finalisation: streaming, idempotent, COMPLETE written last -------
+    finalise_started = time.monotonic()
+    output.mkdir(parents=True, exist_ok=True)
+    shard_paths = [checkpoint.shard_dir / sh.name for sh in checkpoint.state.shards]
+    payload_bytes, payload_digest = concatenate_shards(shard_paths, output / CHUNKS_NAME)
+
+    with open(output / CHUNKS_NAME, encoding="utf-8") as handle:
+        counts = stream_counts(handle, checkpoint.staging / "finalise")
+
+    manifest = build_manifest_from_counts(
         source=source,
         contamination=contamination.to_dict(),
         partition=partition.to_dict(),
-        chunks=chunks,
+        chunks_total=counts.chunks_total,
+        chunks_by_partition=counts.chunks_by_partition,
+        parent_documents_total=counts.parent_documents_total,
+        parent_documents_by_partition=counts.parent_documents_by_partition,
+        chunk_membership_digest=counts.membership_digest,
         overflow_count=0,
         base_invariance_violations=0,
     )
-    output.mkdir(parents=True)
-    manifest.write(output)
-    with open(output / CHUNKS_NAME, "w", encoding="utf-8") as handle:
-        for chunk in chunks:
-            handle.write(json.dumps({
-                "chunk_id": chunk.chunk_id,
-                "document_id": chunk.document_id,
-                "partition": chunk.partition,
-                "chunk_index": chunk.chunk_index,
-                "text": chunk.text,
-                "source_start": chunk.source_start,
-                "source_end": chunk.source_end,
-                "source_shard": chunk.source_shard,
-            }, ensure_ascii=False) + "\n")
-    print(f"\nWrote {output}/ (manifest + {len(chunks)} chunks)")
+    manifest_bytes = (
+        json.dumps(manifest.to_dict(), indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    manifest_size, manifest_digest = atomic_write_bytes(output / MANIFEST_NAME, manifest_bytes)
+
+    write_completion_marker(
+        checkpoint_dir,
+        identity=identity,
+        artifacts={
+            CHUNKS_NAME: (payload_bytes, payload_digest),
+            MANIFEST_NAME: (manifest_size, manifest_digest),
+        },
+        counts=manifest.to_dict()["counts"],
+    )
+    checkpoint.cleanup_staging()
+    print(f"  finalisation {time.monotonic() - finalise_started:.1f}s")
+    print(f"\nWrote {output}/ (manifest + {counts.chunks_total} chunks)")
     print("The prepared corpus contains text because it IS the training dataset; "
           "scientific reports carry ids, digests and counts only.")
     return 0
@@ -244,6 +322,42 @@ def _read_text_column(path: str) -> list[str]:
     if not rows:
         raise CorpusContractViolation(f"no text column found in {path}")
     return rows
+
+
+def _transformers_version() -> str | None:
+    """Part of the operational identity: a different tokenizer library is a
+    different run, even at the same model revision."""
+    try:
+        import transformers
+
+        return transformers.__version__
+    except Exception:  # noqa: BLE001 - absent in the ML-free local environment
+        return None
+
+
+def _report_space(checkpoint_dir: Path, output_dir: Path) -> None:
+    """Print free space before a ten-hour run rather than after it fails."""
+    for label, path in (("local output", output_dir), ("checkpoint", checkpoint_dir)):
+        target = path
+        while not target.exists() and target != target.parent:
+            target = target.parent
+        try:
+            usage = shutil.disk_usage(target)
+        except OSError:
+            continue
+        print(f"    {label} free: {usage.free / 1e9:.1f} GB of "
+              f"{usage.total / 1e9:.1f} GB at {target}")
+    rss = _resident_bytes()
+    if rss is not None:
+        print(f"    process RSS: {rss / 1e6:.0f} MB")
+
+
+def _resident_bytes() -> int | None:
+    try:
+        with open("/proc/self/statm", encoding="ascii") as handle:
+            return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except Exception:  # noqa: BLE001 - not Linux, or unavailable
+        return None
 
 
 def _load_tokenizer(revision: str):
@@ -388,6 +502,14 @@ def build_parser() -> argparse.ArgumentParser:
                               "exact contamination screen")
     prepare.add_argument("--revision", default=ENCODER_REVISION,
                          help="tokenizer revision; defaults to the pinned revision")
+    prepare.add_argument(
+        "--checkpoint-dir", default=None,
+        help="OPERATIONAL ONLY: durable directory for Stage-6 resume state and "
+             "immutable shards (a Drive mount is fine). Defaults to "
+             "<output-dir>/_checkpoint. Resume is automatic: an existing valid "
+             "checkpoint continues from its committed prefix, a verified "
+             "completion marker short-circuits. Changes no scientific value.",
+    )
 
     pilot = sub.add_parser("lr-pilot", help="3 runs over the locked LR grid at r = 1")
     _corpus_consumer(pilot)

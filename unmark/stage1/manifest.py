@@ -134,6 +134,65 @@ def build_manifest(
     )
 
 
+def build_manifest_from_counts(
+    *,
+    source: dict[str, Any],
+    contamination: dict[str, Any],
+    partition: dict[str, Any],
+    chunks_total: int,
+    chunks_by_partition: dict[str, int],
+    parent_documents_total: int,
+    parent_documents_by_partition: dict[str, int],
+    chunk_membership_digest: str,
+    overflow_count: int,
+    base_invariance_violations: int,
+) -> PreparedCorpusManifest:
+    """`build_manifest` for a **streamed** payload. Identical scientific fields.
+
+    The pre-3c writer held every `PreparedChunk` in RAM to derive these counts --
+    projected at ~30 GB for the real corpus. The counts are now accumulated while
+    the payload streams past, and this function assembles exactly the same
+    manifest from them. `build_manifest` is retained unchanged for callers that
+    already have the chunks in hand, and the two are asserted equal in tests.
+    """
+    if overflow_count:
+        raise ManifestViolation(
+            f"{overflow_count} chunk(s) overflowed max_length={MAX_LENGTH}. After correct "
+            "pre-chunking this must be zero; on_overflow=FAIL is a guard, not a policy."
+        )
+    if base_invariance_violations:
+        raise ManifestViolation(
+            f"{base_invariance_violations} base-invariance violation(s); b(C(x)) != b(x) "
+            "means corruption or decomposition changed underneath Stage-1"
+        )
+    return PreparedCorpusManifest(
+        source=source,
+        contamination=contamination,
+        partition=partition,
+        chunking={
+            "algorithm": "deterministic_whitespace_boundary",
+            "schema_version": CHUNK_SCHEMA_VERSION,
+            "max_length": MAX_LENGTH,
+            "on_overflow": ON_OVERFLOW,
+            "truncation": False,
+            "split_before_chunk": True,
+            "chunks_inherit_parent_partition": True,
+            "tokenizer_checkpoint": ENCODER_CHECKPOINT,
+            "tokenizer_revision": ENCODER_REVISION,
+        },
+        counts={
+            "chunks_total": chunks_total,
+            "chunks_by_partition": dict(chunks_by_partition),
+            "parent_documents_total": parent_documents_total,
+            "parent_documents_by_partition": dict(parent_documents_by_partition),
+            "parents_spanning_both_partitions": 0,
+            "overflow_count": 0,
+            "base_invariance_violations": 0,
+            "chunk_membership_digest": chunk_membership_digest,
+        },
+    )
+
+
 def load_manifest(directory: Path) -> dict[str, Any]:
     """Read a prepared-corpus manifest and refuse anything off-protocol."""
     path = Path(directory) / MANIFEST_NAME
