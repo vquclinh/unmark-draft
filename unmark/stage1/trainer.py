@@ -21,7 +21,10 @@ import os
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Sequence
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Sequence
+
+if TYPE_CHECKING:  # imported lazily: `trainer` must stay importable without PyYAML
+    from unmark.stage1.preflight import InventoryIdentity
 
 from unmark.stage1.contracts import (
     ObjectiveWeights,
@@ -70,6 +73,20 @@ class RunProvenance:
     backbone_revision: str = ENCODER_REVISION
     protocol_version: str = STAGE1_PROTOCOL_VERSION
     precision: str = PRECISION
+    inventory: "InventoryIdentity | None" = None
+    """The pinned Vietnamese syllable inventory this run resolved eligibility with.
+
+    **D-S1A-008**, whose status line reads "BLOCKING for scientific Stage-1
+    training and the PRE-TRAIN audit": the inventory decides which spans are
+    eligible and therefore every corruption denominator and channel projection,
+    so "a training run whose artifact cannot name the inventory it used is not
+    reproducible in the sense the project has held itself to everywhere else".
+
+    Optional on the dataclass because the diagnostic and unit-test paths
+    construct provenance without one; a scientific run cannot, because
+    `execute_stage` obtains it from `verify_scientific_inputs`, which fails
+    closed rather than returning.
+    """
 
     DERIVED_KEYS: ClassVar[tuple[str, ...]] = ("lambda_align", "lambda_clean")
     """Keys `to_dict()` emits that are **not** constructor parameters.
@@ -110,6 +127,7 @@ class RunProvenance:
             "backbone_revision": self.backbone_revision,
             "protocol_version": self.protocol_version,
             "precision": self.precision,
+            "inventory": self.inventory.to_dict() if self.inventory is not None else None,
         }
 
     def require_match(self, other: dict[str, Any]) -> None:
@@ -125,6 +143,11 @@ class RunProvenance:
             # changed underneath it. Stage 6 spent three revisions establishing
             # that HEAD is identity, not decoration; training is no different.
             "repository_head",
+            # D-S1A-008. Two runs that differ only in which syllable inventory
+            # resolved eligibility are different experiments: the denominator of
+            # every corruption rate changes. Compared as a whole so the message
+            # shows both identities at once.
+            "inventory",
         ):
             if other.get(key) != mine[key]:
                 raise TrainerContractViolation(

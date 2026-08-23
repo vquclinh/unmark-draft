@@ -73,9 +73,17 @@ def _initialise_worker(factory: Callable[[], Any], max_length: int) -> None:
         transforms=transforms,
         max_length=max_length,
         # Built here, from the same repository inventory the serial path uses,
-        # rather than pickled across the boundary. It feeds `safe_cut_offsets`
-        # on the oversized-unit fallback, so dropping it would change chunk
-        # boundaries -- exactly the thing that must stay identical.
+        # rather than pickled across the boundary, so the worker and serial
+        # paths are constructed identically.
+        #
+        # It does NOT affect chunk boundaries. `safe_cut_offsets` accepts a
+        # classifier for signature compatibility and ignores it: where a cut may
+        # land is an orthographic question (unit boundaries and maximal letter
+        # runs), not a lexical one -- D-S1B-013's lexicon-free rule. Verified
+        # structurally and empirically in
+        # `tests/test_stage1_inventory_preflight.py`. This comment previously
+        # claimed the opposite, which would have implied the prepared corpus
+        # depends on the syllable inventory; it does not (Audit 030 §W.7).
         classifier=make_classifier(try_load_inventory()),
     )
 

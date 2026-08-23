@@ -114,8 +114,17 @@ def execute_stage(
     """
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.stage1.objective import Stage1Objective
+    from unmark.stage1.preflight import verify_scientific_inputs
     from unmark.stage1.validation import HeldOutExample, at_update, evaluate, prepare_condition_batch
     from unmark.stage1.protocol import VALIDATION_CONDITIONS
+
+    # Every mandatory external scientific input, BEFORE the encoder is fetched
+    # or loaded. The second real smoke (Audit 030 §W) discovered the missing
+    # pinned syllable inventory only after the model was already resident.
+    inputs = verify_scientific_inputs()
+    print(f"scientific inputs VERIFIED: eligibility {inputs.report['eligibility_policy']}")
+    print(f"  inventory {inputs.inventory.source_name} @ {inputs.inventory.source_revision[:12]} "
+          f"sha256 {inputs.inventory.sha256[:12]} ({inputs.report['inventory_shape']['unique_stripped_form_count']} stripped forms)")
 
     train_text, dev_text = load_prepared_chunks(prepared_corpus)
     tokenizer, unmark_encoder, objective_cls = build_objective(revision)
@@ -154,6 +163,7 @@ def execute_stage(
             r=planned.r,
             corpus_manifest_digest=manifest_digest,
             repository_head=repository_head,
+            inventory=inputs.inventory,
         )
         objective = objective_cls(unmark_encoder, provenance.weights)
         corruption = CorruptionRatePolicy(seed=CORRUPTION_SEED)
@@ -282,6 +292,11 @@ def smoke_check(
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.stage1.checkpoint import verify_prepared_corpus
     from unmark.stage1.data import Stage1Example, collate_stage1_batch, prepare_example
+    from unmark.stage1.preflight import verify_scientific_inputs
+
+    inputs = verify_scientific_inputs()
+    print(f"scientific inputs VERIFIED: eligibility {inputs.report['eligibility_policy']}")
+    print(f"  inventory sha256 {inputs.inventory.sha256}")
 
     completion = Path(completion_dir) if completion_dir else Path(prepared_corpus) / "_checkpoint"
     verified = verify_prepared_corpus(Path(prepared_corpus), completion)

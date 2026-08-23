@@ -14,10 +14,14 @@ Section 6.3 then defines `P25`/`P50`/`P75` as "Tone marks removed from
 
 The current state
 -----------------
-That rule needs the Vietnamese syllable inventory, which is not enumerated in
-the proposal and does not exist in this repository (GAP-2, see
-`docs/spec/orthography.md` D-002). B1A therefore reports every alphabetic span
-as `Eligibility.UNDECIDED`, and B2 must not quietly upgrade that to "eligible".
+GAP-2 is **closed** (D-B3A-001): that rule needs the Vietnamese syllable
+inventory, which is now pinned by `configs/linguistics/vietnamese_syllables.yaml`
+and implemented by `unmark.linguistics`. The raw list is not committed, because
+the upstream gist carries no license statement, so a runtime that has not
+provisioned the git-ignored cache still resolves to `UNRESOLVED` -- and then B1A
+reports every alphabetic span as `Eligibility.UNDECIDED`, and B2 must not quietly
+upgrade that to "eligible". The narrative below describes that unprovisioned
+state, which is a *deployment* condition now, not an open scientific gap.
 
 So B2 separates two things that the first implementation conflated:
 
@@ -62,8 +66,10 @@ class EligibilityPolicy(Enum):
 
     VIETNAMESE_SYLLABLE_INVENTORY = "VIETNAMESE_SYLLABLE_INVENTORY"
     """Proposal 4.3's rule: a candidate is eligible when its stripped form is in
-    the Vietnamese syllable inventory. **Not implemented.** Reserved so the
-    resolved state has a name before it has an implementation."""
+    the Vietnamese syllable inventory. **Implemented** by D-B3A-001, which closed
+    GAP-2. In force whenever the pinned inventory is present and verifies; the
+    raw list is not committed (no upstream license statement), so a runtime that
+    has not provisioned it reports `UNRESOLVED` instead."""
 
 
 def active_eligibility_policy() -> EligibilityPolicy:

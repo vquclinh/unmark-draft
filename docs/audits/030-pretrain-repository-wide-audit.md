@@ -14,15 +14,34 @@
 | **Revision 4 — final consistency check** | 2026-08-23 — **BLOCKER found in §S's own tool**: `--validation` loads the real encoder but runs **no forward pass**, so it does not measure validation wall-clock. Tool and audit corrected to say so; the measurement remains outstanding. Token sampling verified **deterministic**. See **§T** |
 | **Revision 5 — measurement repair** | 2026-08-23 — the §T blocker is **repaired**: `--validation` now runs the authoritative `validation.evaluate` with real forwards, CUDA-synchronised timing, real GPU peak, clean-reference attribution and parameter-hash proof of zero updates. Profile sampling is partition-aware (**all 11 443 dev**). See **§U** |
 | **Revision 6 — first real smoke** | 2026-08-23 — the **first real Colab pre-train smoke** was run at `8f07842`. It passed every corpus gate (byte-exact restore, manifest, `COMPLETE.json`) and stopped fail-closed at `tests/test_stage1_training_resume.py`: **6 failed, 8 passed**, all six dying in setup on `RunProvenance(**mine.to_dict())`. Traced to a **test-construction bug** — `to_dict()` is artifact serialization, not a constructor round trip — plus one real gap: the derived weights were serialized and never validated on read. **No model was loaded.** See **§V** |
+| **Revision 7 — second real smoke** | 2026-08-23 — the **second real Colab no-update smoke** ran at `b84b4da`. Corpus gates, and the 29 + 17 + 22 provenance/resume/measurement tests, all **passed on real hardware** — confirming §V. It then failed closed in condition preparation with `EligibilityUnresolved`: the pinned syllable inventory is **deliberately not committed** and a fresh runtime had not provisioned it. Classified **A + C** — the artifact was already locked by D-B3A-001, but the check ran *after* model load and the **blocking D-S1A-008 was unimplemented**. **No model forward, no optimizer, no update.** See **§W** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN REAL-SMOKE BLOCKER REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**PRE-TRAIN INVENTORY PROVISIONING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
 
-> **§V is the current verdict.** The first real Colab smoke passed every corpus
+> **§W is the current verdict.** The second real smoke confirmed §V on real
+> hardware and then failed closed before completing validation: the pinned
+> Vietnamese syllable inventory is deliberately **not committed** (no upstream
+> license statement) and a fresh runtime had not provisioned it. That failure was
+> the **designed** contract working. The real defects it exposed were that the
+> check ran **after** the encoder was loaded, and that **D-S1A-008** — a decision
+> whose status line reads "BLOCKING for scientific Stage-1 training and the
+> PRE-TRAIN audit" — had **never been implemented**, so no run artifact could name
+> the inventory it used. Both are repaired; §T, §U and §V are preserved unchanged.
+>
+> **§W also corrects this audit's own earlier "No UNRESOLVED MISMATCH"**, which
+> was true of the code and too strong as a pre-train readiness claim.
+>
+> **The real no-update smoke has NOT passed.** Validation never completed: no
+> PhoBERT forward, no optimizer, no update has yet occurred.
+
+~~**PRE-TRAIN REAL-SMOKE BLOCKER REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**~~ **— superseded by §W**
+
+> **§V was the previous verdict.** The first real Colab smoke passed every corpus
 > gate and then stopped fail-closed at the training-resume gate, before any
 > model was loaded. The cause was a **test-construction bug** — six foreign-run
 > cases died in setup and had never demonstrated rejection — together with one
@@ -1512,3 +1531,293 @@ remains unreachable.
 **NO SCIENTIFIC CONSTANT CHANGED; `decisions.md` BYTE-UNCHANGED; NO NEW DECISION REQUIRED**
 **NO MODEL LOAD, NO FORWARD, NO OPTIMIZER, NO UPDATE, NO TRAINING; TEST STILL SEALED**
 **THE REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM IT PASSED**
+
+---
+
+## W. SECOND REAL NO-UPDATE SMOKE — SCIENTIFIC ELIGIBILITY INVENTORY BLOCKER
+
+**Revision 7.** The second real Colab no-update smoke ran at the committed §V
+HEAD. It got further than the first: every corpus gate and every repaired test
+passed. It then failed closed **before completing validation**, because the
+pinned Vietnamese syllable inventory was not present in the fresh runtime.
+
+### W.1 What the real rerun established
+
+| Gate | Result |
+|---|---|
+| HEAD | `b84b4daac0f2be31266e171d3f56a71611a421e0` |
+| Runtime | Python 3.13.15, Torch 2.11.0+cu128, Transformers 4.57.6, RTX PRO 6000 Blackwell, 176.88 GiB RAM |
+| Exact HEAD / clean repository | **PASS** |
+| Prepared corpus byte-exact restore | **PASS** |
+| `COMPLETE.json` / membership digest | **PASS** |
+| `tests/test_stage1_provenance_contract.py` | **29 passed** |
+| `tests/test_stage1_training_resume.py` | **17 passed** |
+| `tests/test_stage1_validation_measurement.py` | **22 passed** |
+| Real descriptive corpus profile | **PASS** |
+| **Real validation** | **FAIL CLOSED** |
+| Exception | `unmark.corruption.eligibility.EligibilityUnresolved` |
+| Policy requested / available | `SCIENTIFIC` / **`UNRESOLVED`** |
+| Real validation forward | **NOT COMPLETED** |
+| Optimizer | **NONE** |
+| Updates | **ZERO** |
+| Training | **NOT STARTED** |
+
+**§V is confirmed by real evidence.** The 29 + 17 provenance and resume tests
+that §V repaired all passed in the torch-enabled runtime — the six foreign-run
+cases that previously died in setup now really execute.
+
+### W.2 Classification: **A + C**
+
+**Not B.** The inventory was **already scientifically locked**, exactly and
+completely, by **D-B3A-001** (2026-08-19), which closed GAP-2 and D-B2-003:
+
+| | |
+|---|---|
+| source | `all-vietnamese-syllables.txt` by `hieuthi` |
+| gist | `0f5adb7d3f79e7fb67e0e499004bf558` |
+| **immutable revision** | `135a4d9716e49a981624474156d6f247b9b46f6a` |
+| **sha256** | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| bytes | 116 290 |
+| shape | 17 974 raw → 17 954 unique canonical → **2 489 unique stripped forms** (15 465 collisions) |
+| license | **NO_EXPLICIT_LICENSE** |
+
+**A — provisioning.** The raw list is deliberately **not committed**: "A public
+gist is not a licence, so the raw list is **not committed**. It is fetched into
+the git-ignored `.resources-cache/` … and everything scientific fails loudly
+without it." A fresh Colab runtime therefore starts without it **by design**.
+`active_eligibility_policy()` is *computed* from whether the inventory loads and
+verifies, precisely so a missing cache re-arms the guard. **The exception the
+smoke hit was the designed contract working, not a defect.**
+
+**C — implementation defects around that locked artifact.** Three, all real:
+
+| # | Defect | Severity |
+|---|---|---|
+| **W-1** | The check ran **after** the encoder was downloaded and resident. `execute_stage`, `smoke_check` and `validation_timing` all called `build_objective` before anything touched the inventory | operational |
+| **W-2** | **D-S1A-008 was never implemented.** Its status line reads "**BLOCKING** for scientific Stage-1 training and the PRE-TRAIN audit", and it requires a scientific run to persist seven named inventory fields. `RunProvenance` recorded none of them | **MUST-FIX, scientific provenance** |
+| **W-3** | The manifest declares three counts and a byte size under "*Expected shape (verified on load)*", but `load_manifest` parsed only `expected_entry_count`. The other two counts and `size_bytes` were **checked by nothing** | fail-closed gap |
+
+### W.3 Was a wrong inventory able to reach training? — No
+
+Traced before repairing. `load_inventory` hashes the cached bytes against the
+pinned SHA-256 on every load, and `InventoryChecksumMismatch` **subclasses**
+`InventoryUnavailable`, so `try_load_inventory` degrades a corrupted cache to
+`None` → policy `UNRESOLVED` → `corrupt()` raises. The guard also fires **before**
+`get_condition`, so every condition including `FULL` is gated, and no Stage-1
+module ever passes `SELF_CHECK`. A wrong or absent inventory **cannot** silently
+produce scientific corruption.
+
+What it *could* do was report a corrupted cache as a *missing* one. The preflight
+now distinguishes the two.
+
+### W.4 The fetcher, audited statically (not executed for the audit)
+
+| | |
+|---|---|
+| URL | `https://gist.githubusercontent.com/hieuthi/0f5adb7d3f79e7fb67e0e499004bf558/raw/135a4d97…/all-vietnamese-syllables.txt` |
+| Mutable "latest"? | **No** — the revision SHA is *in the path*; no `/raw/main/`, no `HEAD` |
+| Hash verified before publication? | **Yes** — the write is unreachable unless the digest matches |
+| Advances the pin? | **Never** — mismatch is a hard refusal with an explicit "this is a scientific spec change" message |
+| Size guard | 8 MiB ceiling, 60 s timeout |
+| Output | `.resources-cache/vietnamese-syllables/all-vietnamese-syllables.txt` (git-ignored) |
+| Parsing | `canon()` → `strip_to_base()` → `casefold()` → set membership |
+
+**Reproducible and pinned, not dependent on mutable network state.** One
+weakness found and repaired: publication used `path.write_bytes`, so a lost
+runtime mid-write could leave a truncated file. It now uses the repository's
+temp → fsync → replace → dir-fsync discipline, after the digest check.
+
+### W.5 License boundary
+
+Repository evidence (manifest `license_notes`) states no LICENSE file, no license
+field, and no statement in the gist description were found. The architecture
+separates the three cases deliberately:
+
+| | |
+|---|---|
+| **Fetch as an external research input** | done, by the operator, into a git-ignored cache |
+| **Redistribute inside this repository** | **avoided** — this is why only provenance is committed |
+| **Redistribute inside released artifacts** | not done; the run artifact records *identity*, never content |
+
+This audit gives no legal conclusion beyond what that evidence supports. From an
+engineering standpoint the conclusion is unambiguous: the repository intentionally
+avoids vendoring, so the reproducibility contract must be an **external-artifact
+contract**, and the inventory was **not** vendored by this repair.
+
+### W.6 Repair — all restoration of already-locked decisions
+
+| Layer | Change |
+|---|---|
+| `unmark/stage1/preflight.py` **(new)** | `verify_scientific_inputs()` — fail-closed, **before** model load. Calls the authoritative `load_inventory`; adds no second verifier. Distinguishes missing / wrong-hash / wrong-shape. Refuses `SELF_CHECK`. Refuses an unresolved policy |
+| `unmark/linguistics/inventory.py` | parses and verifies `size_bytes` and the two other declared counts — **W-3**, restoring the manifest's own claim |
+| `unmark/stage1/trainer.py` | `RunProvenance.inventory` — **D-S1A-008's seven fields**, compared by `require_match`, so resume rejects inventory drift |
+| `unmark/stage1/execute.py` | preflight before `build_objective` in `execute_stage` **and** `smoke_check`; provenance binds the *verified* identity |
+| `scripts/stage1_pretrain_measurements.py` | preflight before `build_objective`; the verified identity is recorded in the report |
+| `scripts/fetch_vietnamese_syllable_inventory.py` | atomic publication |
+| `unmark/stage1/parallel.py`, `unmark/corruption/eligibility.py` | stale comments corrected — see W.7 and W.9 |
+
+**`InventoryIdentity` is exactly D-S1A-008's seven fields and no more.**
+
+An earlier revision of this section said the counts were "not compared against
+any constant — because no decision locks one". **That was wrong for the counts**,
+and it contradicted W-3 in this same section. D-B3A-001 *does* lock them
+(`17,974 raw → 17,954 unique canonical → 2,489 unique stripped forms`), the
+manifest declares them, and the repair makes `load_inventory` verify them
+fail-closed. The correct statement separates four distinct roles:
+
+| Role | Quantities | Where enforced |
+|---|---|---|
+| **1. Identity fields** — persisted in `RunProvenance`, compared by `require_match`, so resume rejects drift | the **seven** D-S1A-008 fields: `inventory_schema_version`, `source_name`, `source_author`, `source_revision`, `sha256`, `size_bytes`, `license_status` | `RunProvenance.inventory` |
+| **2. Raw artifact identity** — binds the exact bytes | `source_revision` + `sha256` | `load_inventory` hashes the cached bytes on every load |
+| **3. Locked shape assertions** — verified fail-closed on load, **not** duplicated into `RunProvenance` because D-S1A-008 does not require them | `size_bytes` (**also** an identity field), `expected_entry_count` **17 974**, `expected_unique_canonical_entry_count` **17 954**, `expected_unique_stripped_form_count` **2 489** | `load_inventory` — all four, since W-3 |
+| **4. Report-only derived evidence** — recorded so two runs can be compared; **not** an identity field and **not** compared against any constant, because no decision locks one | `parsed_membership_digest` | preflight `report` only |
+
+`collisions_after_stripping` (**15 465**, also stated in D-B3A-001) belongs to
+none of these categories on its own: it is `unique_canonical − unique_stripped`,
+so once **3** verifies 17 954 and 2 489 it is *entailed* and cannot differ. It is
+reported for readability, not separately checked.
+
+`size_bytes` deliberately appears in both **1** and **3**: D-S1A-008 names it as a
+field a run must persist, and the manifest declares it as shape to verify. The
+three counts appear **only** in **3** — locked and checked, but not promoted into
+the run identity, because `sha256` already makes any different byte sequence a
+different identity and D-S1A-008 does not list them.
+
+The only genuinely unlocked quantity is the **parsed-membership digest**. It stays
+report-only: promoting it would invent a scientific constant the decision log never
+locked, which this audit must not do.
+
+**Inspection confirms the implementation already matches this distinction** —
+`InventoryIdentity` has exactly seven fields, `load_inventory` raises on any of the
+four shape values, and `parsed_membership_digest` is produced into the report and
+compared to nothing. No code behaviour was changed by this correction.
+
+### W.7 Stage 6 does **not** depend on the inventory — verified, no rerun
+
+`unmark/stage1/parallel.py` builds a classifier in each worker, and its comment
+claimed *"dropping it would change chunk boundaries"*. **That comment was wrong**,
+and it is the kind of wrong that would have implied the prepared corpus is
+inventory-dependent. Verified two ways:
+
+* **structurally** — `classifier` is a parameter of `safe_cut_offsets` and is
+  **never read in its body** (AST);
+* **empirically** — over 2 000+ adversarial strings, the cut set is identical for
+  `None`, for a classifier claiming *everything* is Vietnamese, and for one
+  claiming *nothing* is.
+
+This matches **D-S1B-013**, which requires the cut predicate to be lexicon-free:
+membership would permit a cut **inside a genuine Vietnamese word**. Where a cut
+may land is orthographic (unit boundaries, maximal letter runs), not lexical.
+
+> **NO Stage-6 rerun is required. The prepared corpus remains authoritative and
+> was not touched.** The inventory is needed for SCIENTIFIC corruption and
+> classification, never for the already-produced chunk bytes.
+
+The misleading comment has been corrected.
+
+### W.8 Reconciling Audit 030's earlier "No UNRESOLVED MISMATCH"
+
+**The earlier statement was too strong, and is corrected here rather than
+explained away.**
+
+What §A–§Q checked was **implementation semantics**: proposal §4.3's rule against
+`classify.py`. That comparison was and remains **correct** — the membership rule
+is an exact match, and D-B3A-001 closed GAP-2 in code.
+
+What it did **not** check was whether the mandatory **external artifact** that
+rule consumes would be **present** in a fresh runtime, nor whether **D-S1A-008** —
+a decision whose own status line says "**BLOCKING for scientific Stage-1 training
+and the PRE-TRAIN audit**" — had been implemented. It had not. A repository-wide
+pre-train gate should have caught an unimplemented blocking decision; that is the
+miss, and it is squarely within the scope §A–§Q claimed.
+
+The precise correction:
+
+> *Implementation semantics are complete and match the proposal. The required
+> external scientific artifact was **not provisioned** in a fresh runtime, and the
+> blocking decision requiring its identity to be persisted (D-S1A-008) was **not
+> implemented**. "No UNRESOLVED MISMATCH" was true of the code and false of the
+> pre-train readiness gate.*
+
+§A–§Q's wording is preserved unchanged above.
+
+### W.9 Other stale claims corrected
+
+`unmark/corruption/eligibility.py` still described GAP-2 as open — "the Vietnamese
+syllable inventory … does not exist in this repository", and
+`VIETNAMESE_SYLLABLE_INVENTORY` was documented "**Not implemented.**" Both have
+been false since D-B3A-001. Corrected to describe the real state: implemented, and
+`UNRESOLVED` is now a *deployment* condition, not an open scientific gap.
+
+### W.10 The real corpus profile
+
+Recorded as **descriptive evidence only** in
+[`docs/experiments/stage1-prepared-corpus-profile-result.md`](../experiments/stage1-prepared-corpus-profile-result.md).
+Chunks: train **2 621 624**, dev **11 443**. Chunks per parent: dev mean 2.29
+(p50 1, p99 20, max 481); train mean 2.35 (p50 1, p99 22, max 2 479).
+
+Token lengths, recomputed under the locked tokenizer over **all 11 443 dev** and a
+deterministic **20 000** train sample:
+
+| Stream | mean | p50 | p75 | p99 | max |
+|---|---|---|---|---|---|
+| dev reference | 164.20 | 211 | 233 | 256 | 256 |
+| dev RAW_BASE | 181.06 | 253 | 256 | 256 | 256 |
+| train reference | 164.81 | 211 | 230 | 256 | 256 |
+| train RAW_BASE | 182.71 | 254 | 256 | 256 | 256 |
+
+**`over_max_length`: 0.**
+
+This **falsifies** the informal inference that 2.35 chunks/document implies most
+training chunks are short. The median document yields one chunk, but that chunk is
+commonly **at or near the 256-token ceiling** — median RAW_BASE is 253–254, and
+p75 onward is exactly 256. **No chunking or `MAX_LENGTH` change was made.**
+
+### W.11 The Colab provisioning contract — for review, not executed
+
+Claude did **not** access Drive and did **not** run the fetcher for this audit;
+the local cache was already provisioned and was only *verified*
+(`--verify-only` → present and matching, no network). The cell below is the
+proposed contract to review **before** the next rerun:
+
+```bash
+# 1. Provision the pinned inventory (network; ~116 KB). Idempotent: if a valid
+#    cache is already restored from Drive this verifies and exits 0 without
+#    downloading. Refuses on any checksum mismatch and never advances the pin.
+python scripts/fetch_vietnamese_syllable_inventory.py
+
+# 2. Verify without network, and fail the cell if it does not match the pin.
+python scripts/fetch_vietnamese_syllable_inventory.py --verify-only
+
+# 3. Persist to Drive so later fresh runtimes need no network.
+#    NOTE: .resources-cache/ is git-ignored; this copies ONLY the verified file.
+mkdir -p "$DRIVE/unmark-resources/vietnamese-syllables"
+cp .resources-cache/vietnamese-syllables/all-vietnamese-syllables.txt \
+   "$DRIVE/unmark-resources/vietnamese-syllables/"
+
+# 4. On a later runtime, restore BEFORE step 2 and let --verify-only be the gate:
+mkdir -p .resources-cache/vietnamese-syllables
+cp "$DRIVE/unmark-resources/vietnamese-syllables/all-vietnamese-syllables.txt" \
+   .resources-cache/vietnamese-syllables/
+```
+
+The restored copy is never trusted on provenance: step 2 re-hashes it against the
+pinned SHA-256, and `verify_scientific_inputs` re-verifies again before model
+load. Redistribution boundary unchanged — the file goes to the operator's own
+Drive, not into git and not into a released artifact.
+
+### W.12 What is still NOT established
+
+The real no-update smoke has **not** passed. Validation never completed, so there
+is still **no real forward evidence**, no optimizer, no update, no training. This
+section does not claim otherwise.
+
+**STATUS: PRE-TRAIN INVENTORY PROVISIONING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**CLASSIFICATION A + C — THE ARTIFACT WAS ALREADY LOCKED BY D-B3A-001; PROVISIONING AND BINDING WERE NOT**
+**THE `EligibilityUnresolved` FAILURE WAS THE DESIGNED CONTRACT WORKING, NOT A DEFECT**
+**W-2 IS A MUST-FIX: D-S1A-008 WAS BLOCKING AND UNIMPLEMENTED; PROVENANCE NOW BINDS THE INVENTORY**
+**AUDIT 030's EARLIER "NO UNRESOLVED MISMATCH" WAS TOO STRONG AND IS CORRECTED, NOT RATIONALISED**
+**STAGE 6 IS LEXICON-FREE — VERIFIED STRUCTURALLY AND EMPIRICALLY; NO RERUN; CORPUS UNTOUCHED**
+**NO NEW SCIENTIFIC DECISION — NO INVENTORY WAS CHOSEN, NO CONSTANT CHANGED, NOTHING VENDORED**
+**NO MODEL LOAD, NO FORWARD, NO OPTIMIZER, NO UPDATE, NO TRAINING; TEST STILL SEALED**
+**A THIRD REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM IT PASSED**

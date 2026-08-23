@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 import urllib.request
 from pathlib import Path
@@ -48,6 +49,31 @@ def download(url: str) -> bytes:
     if len(data) > MAX_BYTES:
         raise SystemExit(f"refusing: {url} returned more than {MAX_BYTES} bytes")
     return data
+
+
+def publish(path: Path, raw: bytes) -> None:
+    """Atomic publication: temp -> flush -> fsync -> replace -> dir fsync.
+
+    The same discipline Stage 6 uses. A crash or a lost Colab runtime part-way
+    through the write must leave either the previous verified file or nothing --
+    never a truncated one that would later be reported as a checksum mismatch.
+    Only reached AFTER the digest has been checked, so what is published is
+    always the pinned bytes.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    with open(temp, "wb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    except OSError:  # pragma: no cover - not every filesystem allows it
+        pass
+    finally:
+        os.close(directory_fd)
 
 
 def report(provenance: InventoryProvenance, path: Path, digest: str, raw: bytes) -> None:
@@ -114,8 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(raw)
+    publish(path, raw)
     print("Verified and cached.\n")
     report(provenance, path, digest, raw)
     return 0

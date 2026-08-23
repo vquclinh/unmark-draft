@@ -373,8 +373,15 @@ def validation_timing(
 
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.stage1.execute import build_objective, lambdas_to_weights, load_prepared_chunks
+    from unmark.stage1.preflight import verify_scientific_inputs
     from unmark.stage1.trainer import verify_model_contract
     from unmark.stage1.validation import HeldOutExample, evaluate, prepare_condition_batch
+
+    # BEFORE the encoder. This is the exact path the second real no-update smoke
+    # failed on (Audit 030 §W): it loaded PhoBERT, then raised
+    # EligibilityUnresolved in condition preparation because the pinned
+    # inventory was absent from the fresh runtime.
+    inputs = verify_scientific_inputs()
 
     build = build or build_objective
     loader = loader or load_prepared_chunks
@@ -432,6 +439,7 @@ def validation_timing(
 
     report: dict = {
         "measurement": "validation_wall_clock",
+        "scientific_inputs": inputs.report,
         "environment": {
             "device": str(device),
             "gpu_name": torch.cuda.get_device_name(0) if on_cuda else None,

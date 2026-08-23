@@ -27,6 +27,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from unmark.stage1.preflight import InventoryIdentity
 from unmark.stage1.protocol import LAMBDA_SCALE_SUM, lambdas_for_r
 from unmark.stage1.trainer import (
     RunProvenance,
@@ -39,6 +40,20 @@ CONSTRUCTOR_FIELDS = (
     "run_seed", "corruption_seed", "learning_rate", "r",
     "corpus_manifest_digest", "repository_head",
     "backbone_checkpoint", "backbone_revision", "protocol_version", "precision",
+    # D-S1A-008, added by Audit 030 §W: the pinned syllable inventory decides
+    # every corruption denominator, so a run artifact must name the one it used.
+    "inventory",
+)
+
+
+INVENTORY = InventoryIdentity(
+    inventory_schema_version="vn-syllables-v1",
+    source_name="all-vietnamese-syllables.txt",
+    source_author="hieuthi",
+    source_revision="135a4d9716e49a981624474156d6f247b9b46f6a",
+    sha256="78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2",
+    size_bytes=116_290,
+    license_status="NO_EXPLICIT_LICENSE",
 )
 
 
@@ -46,6 +61,7 @@ def provenance(**overrides) -> RunProvenance:
     base = dict(
         run_seed=36930, corruption_seed=35422, learning_rate=3e-4, r=1.0,
         corpus_manifest_digest="d" * 64, repository_head="a" * 40,
+        inventory=INVENTORY,
     )
     base.update(overrides)
     return RunProvenance(**base)
@@ -129,7 +145,11 @@ def test_the_production_lifecycle_preserves_every_identity_field():
     mine = provenance()
     recorded = payload_for(mine)["provenance"]
     for field in CONSTRUCTOR_FIELDS:
-        assert recorded[field] == getattr(mine, field), field
+        expected = getattr(mine, field)
+        # `inventory` is a nested identity; it serialises through its own to_dict.
+        if field == "inventory":
+            expected = expected.to_dict() if expected is not None else None
+        assert recorded[field] == expected, field
     verify_checkpoint(payload_for(mine), mine)  # must not raise
 
 
@@ -154,6 +174,7 @@ def test_the_lifecycle_survives_a_json_round_trip():
     ("backbone_revision", "deadbeef"),
     ("protocol_version", "stage1-not-this-one"),
     ("precision", "bf16"),
+    ("inventory", None),
 ])
 def test_every_constructor_field_is_gated_on_resume(field, value):
     """Not just the six: no identity field may be silently unguarded."""

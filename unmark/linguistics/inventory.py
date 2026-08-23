@@ -96,6 +96,14 @@ class InventoryProvenance:
     license_status: str
     expected_entry_count: int
     cache_relative_path: str
+    # The manifest declares these under "Expected shape (verified on load)", but
+    # until the Audit 030 §W preflight nothing parsed them, so two of the three
+    # declared counts and the declared byte size were never checked against the
+    # cached file. Defaulted so an inventory manifest that predates them still
+    # loads; the committed manifest carries all three.
+    size_bytes: int | None = None
+    expected_unique_canonical_entry_count: int | None = None
+    expected_unique_stripped_form_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +120,9 @@ class InventoryProvenance:
             "license_status": self.license_status,
             "expected_entry_count": self.expected_entry_count,
             "cache_relative_path": self.cache_relative_path,
+            "size_bytes": self.size_bytes,
+            "expected_unique_canonical_entry_count": self.expected_unique_canonical_entry_count,
+            "expected_unique_stripped_form_count": self.expected_unique_stripped_form_count,
         }
 
 
@@ -172,6 +183,10 @@ def build_inventory(
     )
 
 
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
 def load_manifest(manifest_path: str | Path = DEFAULT_MANIFEST) -> InventoryProvenance:
     """Read the committed provenance manifest. No network, no file download."""
     import yaml
@@ -195,6 +210,13 @@ def load_manifest(manifest_path: str | Path = DEFAULT_MANIFEST) -> InventoryProv
             license_status=data["license_status"],
             expected_entry_count=int(data["expected_entry_count"]),
             cache_relative_path=data["cache_relative_path"],
+            size_bytes=_optional_int(data.get("size_bytes")),
+            expected_unique_canonical_entry_count=_optional_int(
+                data.get("expected_unique_canonical_entry_count")
+            ),
+            expected_unique_stripped_form_count=_optional_int(
+                data.get("expected_unique_stripped_form_count")
+            ),
         )
     except KeyError as exc:  # noqa: PERF203 - one clear message beats a KeyError
         raise InventoryUnavailable(f"{path}: manifest is missing required field {exc}") from exc
@@ -251,12 +273,29 @@ def load_inventory(
             "docs/spec/decisions.md."
         )
 
-    inventory = build_inventory(raw.decode("utf-8").splitlines(), provenance)
-    if provenance.expected_entry_count and inventory.raw_entry_count != provenance.expected_entry_count:
+    if provenance.size_bytes is not None and len(raw) != provenance.size_bytes:
         raise InventoryUnavailable(
-            f"inventory entry count {inventory.raw_entry_count} != pinned "
-            f"{provenance.expected_entry_count}; the resource changed shape"
+            f"inventory at {path} is {len(raw)} bytes, pinned at "
+            f"{provenance.size_bytes}; the resource changed shape"
         )
+
+    inventory = build_inventory(raw.decode("utf-8").splitlines(), provenance)
+    # All three counts the manifest declares under "Expected shape (verified on
+    # load)". Only the first was ever checked; a file that hashed correctly but
+    # parsed to a different shape -- which is what a canonicalisation or
+    # membership-rule change would look like -- passed silently.
+    for label, observed, pinned in (
+        ("entry count", inventory.raw_entry_count, provenance.expected_entry_count),
+        ("unique canonical entry count", inventory.unique_canonical_entry_count,
+         provenance.expected_unique_canonical_entry_count),
+        ("unique stripped form count", inventory.unique_stripped_form_count,
+         provenance.expected_unique_stripped_form_count),
+    ):
+        if pinned and observed != pinned:
+            raise InventoryUnavailable(
+                f"inventory {label} {observed} != pinned {pinned}; the resource "
+                "changed shape"
+            )
     return inventory
 
 
