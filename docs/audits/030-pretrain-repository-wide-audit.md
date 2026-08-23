@@ -18,15 +18,35 @@
 | **Revision 8 — third real smoke** | 2026-08-23 — the **third real Colab no-update smoke** ran at `ebbe553`. §W's inventory repair **held completely** (fetch, SHA, shape, `--verify-only`, Drive persistence, preflight before model load), and 31 + 30 + 17 + 22 tests passed on real hardware. Validation then failed closed on `prepare_condition_batch(..., truncation=None, ...)` — `'NoneType' object has no attribute 'check'`. **Measurement-only** (A + D): every production caller passes the authoritative `TRUNCATION`. **PhoBERT was resident but no forward, no optimizer, no update.** See **§X** |
 | **Revision 9 — fourth real smoke** | 2026-08-23 — the **fourth real Colab no-update smoke** ran at `6bd6452`. All corpus, inventory and preparation gates passed (14 + 31 + 30 + 17). It stopped at the **test gate**: the §X real-seam tests reached `evaluate` and hit `Expected all tensors to be on the same device`. A **true positive** — the tool moved the encoder to CUDA and left every batch on the CPU, so real PhoBERT would have failed identically. Repaired in the shared layer, not the fixture. **The real validation command was never run.** See **§Y** |
 | **Revision 10 — fifth smoke probe** | 2026-08-23 — the fifth smoke reached the **device runtime gate** at `9651610` and **the device contract passed on real CUDA: 7 passed, 0 failed, 0 skipped**. The run stopped only because the orchestrator expected the string `"8 passed"`, a **prose miscount in §Y.6** — the file has always held **7** tests, and all nine claimed semantic assertions are present across them. **No code or test was at fault; none was changed.** See **§Z** |
+| **Revision 11 — first full real validation** | 2026-08-23 — at `a5da538` the **full four-condition real validation PASSED**: 11 443 dev chunks, **810 forward passes**, CUDA, fp32, adapter 3 551 232 frozen-encoder split, **0 backward / 0 steps / 0 updates**, parameters hash-identical before and after. The subsequent `stage1_runner.py smoke` then failed at **0.09 s** with `AttributeError: 'Namespace' object has no attribute 'completion_dir'` — a **parser omission** (`smoke` never declared an option its handler reads). Repaired; the validation surface is byte-unchanged. See **§AA** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN DEVICE-CONTRACT REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**PRE-TRAIN RUNNER-SMOKE CLI REPAIR PASS — READY TO COMMIT AND RERUN SMOKE ONLY**
 
-> **§Y is the current verdict.** The fourth real smoke passed every corpus,
+> **§AA is the current verdict, and it carries this audit's largest positive
+> result: the first full four-condition real validation PASSED** — 11 443 dev
+> chunks, 810 forward passes on real PhoBERT under CUDA/fp32, with the no-update
+> boundary held by parameter-hash equality before and after (0 backward, 0
+> optimizer steps, 0 updates). Every repair from §U onward is confirmed against
+> the real encoder and the real corpus in that one run.
+>
+> Afterwards, `stage1_runner.py smoke` failed at 0.09 s: the `smoke` subparser
+> never declared `--completion-dir`, which `run_smoke` reads. A **parser
+> omission** — the handler and every other consumer were already correct. Repaired
+> by declaring the pair once for training and smoke alike; `getattr` was refused
+> because it would have weakened the F1 COMPLETE gate. **The validation's
+> executable surface is byte-unchanged, so no re-run is required.**
+>
+> **The runner smoke has still never completed**, and training-device placement
+> remains a separate open item (§Y.3). §T–§Z are preserved unchanged.
+
+~~**PRE-TRAIN DEVICE-CONTRACT REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**~~ **— superseded by §AA**
+
+> **§Y was the previous verdict.** The fourth real smoke passed every corpus,
 > inventory and preparation gate and then stopped at the validation-measurement
 > **test gate** with a cross-device error. That failure was a **true positive**:
 > the injected fixture mirrors the production objective exactly — neither moves
@@ -2354,3 +2374,196 @@ no device placement, so the *training* device remains unchosen.
 **§Y's FOURTH-SMOKE FAILURE RECORD PRESERVED EXACTLY; §V/§W/§X UNTOUCHED**
 **FULL REAL VALIDATION STILL NOT RUN; NO OPTIMIZER, NO UPDATE, NO TRAINING**
 **A FIFTH-SMOKE RERUN IS STILL REQUIRED AFTER THE ORCHESTRATOR EXPECTS `7 passed`**
+
+---
+
+## AA. FIRST FULL REAL VALIDATION PASS, AND A RUNNER-SMOKE CLI CONTRACT FAILURE
+
+**Revision 11.** Two events at the same HEAD, recorded separately because they
+stand differently. The first is the **largest piece of positive evidence this
+audit has produced**. The second is a real repository bug, found afterwards, in a
+different command.
+
+### AA.1 THE FULL FOUR-CONDITION REAL VALIDATION **PASSED**
+
+At `a5da53805498a12ed64ffa28a6a13232dc8e4b1b`, on a fresh CUDA runtime:
+
+```
+scripts/stage1_pretrain_measurements.py --validation --require-cuda \
+  --prepared-corpus /content/unmark-stage1-prepared-aa49785eadcb \
+  --completion-dir  /content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb \
+  --revision        01daacda68afe13d83023d16ec647239e344a1e6
+```
+
+**completed successfully — status PASS.**
+
+| | |
+|---|---|
+| Encoder | `vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6` |
+| Device / GPU | **CUDA** — NVIDIA RTX PRO 6000 Blackwell Server Edition |
+| torch / CUDA / transformers | 2.11.0+cu128 / 12.8 / 4.57.6 |
+| Precision | **fp32** |
+| Dev chunks | **11 443** |
+| Conditions | **FULL / P50 / P100 / STRIP_ALL** |
+| Batch size / batches per condition | **128** / **90** |
+| Validation corruption seed | **19225** |
+| **Forward passes** | **810** (reference 360, adapted 450) |
+| Encoder trainable parameters | **0** |
+| Adapter trainable parameters | **3 551 232** in **8** tensors |
+| `grad_enabled_during_forward` | **false** |
+| `outputs_requiring_grad` | **0** |
+| `backward_calls` / `optimizer_steps` / `parameter_updates` | **0 / 0 / 0** |
+| `optimizer_constructed` | **false** |
+| `parameters_identical` | **true** |
+| Frozen encoder SHA-256, before **and** after | `6d9f6a5796818bb36ea2f9b31e1441623a7d1b086ec5f8ad1f782bfa049ddc7a` |
+| Trainable SHA-256, before **and** after | `3627e9953324b1d9dc8f9fbb0a9ee2eacd04538f1ce490f49f58ffbc3f54c21b` |
+
+Timing: prepared-corpus load **13.21 s**; one-time condition setup **1 585.65 s**;
+recurring validation total **302.245 s**; whole command **1 918.02 s**.
+
+**What this establishes.** Every repair from §U onward is now confirmed against
+the real encoder and the real dev corpus, in one run: §U's instrumented evaluator
+really measured (810 forwards, not zero); §W's inventory preflight resolved
+eligibility; §X's `TRUNCATION` carried all 11 443 dev chunks with no overflow;
+§Y's device boundary delivered CUDA tensors to a CUDA encoder. And the no-update
+boundary held by **hash equality before and after**, not by assertion.
+
+**The projection is descriptive operational evidence only.** The tool emitted
+**41** evaluations per 20 000-update run and a projected **12 392.0 s** of
+validation per run. That is recorded as a measurement of the locked protocol, not
+as an argument about it. **The cadence stays at 500. No validation subset, no
+reference cache, no protocol change follows from this number**, per the standing
+instruction that any such change must be an explicit scientific decision.
+
+### AA.2 The runner smoke — both attempts, preserved
+
+**Attempt 1.** The orchestrator invoked `stage1_runner.py smoke` with
+`--completion-dir`. **argparse rejected it**: the smoke subcommand did not declare
+that option. Runner logic was never entered.
+
+**Attempt 2.** Corrected to the documented CLI, exactly as `smoke -h` advertised:
+
+```
+python -u scripts/stage1_runner.py smoke \
+  --prepared-corpus /content/unmark-stage1-prepared-aa49785eadcb \
+  --revision        01daacda68afe13d83023d16ec647239e344a1e6 \
+  --repository-head a5da53805498a12ed64ffa28a6a13232dc8e4b1b
+```
+
+**argparse PASS. `run_smoke` entered. Immediate failure**, 0.09 s in:
+
+```
+File "scripts/stage1_runner.py", line 529, in run_smoke
+    completion_dir=Path(args.completion_dir) if args.completion_dir else None,
+AttributeError: 'Namespace' object has no attribute 'completion_dir'
+```
+
+| | |
+|---|---|
+| `smoke_check` executed | **NO** |
+| Runner model forward | **NOT ESTABLISHED** |
+| Optimizer | **NONE** |
+| Parameter update | **ZERO** |
+| Training | **NOT STARTED** |
+
+Attempt 1 is preserved deliberately: it was not an operator error in *kind*. Its
+two roots — payload on local disk, `COMPLETE.json` on Drive — are exactly the real
+deployment, and exactly the case `--completion-dir` exists to serve.
+
+### AA.3 The `completion_dir` contract, traced
+
+| Question | Answer |
+|---|---|
+| What does it identify? | the directory holding **`COMPLETE.json`** for a prepared corpus |
+| Required to verify `COMPLETE.json`? | **Yes** — `verify_prepared_corpus(prepared_dir, completion_dir)` reads `completion_dir / COMPLETE_NAME` |
+| Part of prepared-corpus provenance verification? | **Yes** — it is the F1 gate's input |
+| Optional at the `smoke_check` API? | **Yes**, with an explicit documented fallback: `<prepared-corpus>/_checkpoint` |
+| What is lost when `None`? | **No verification strength.** Verification still runs and still fails closed; only the ability to name a *different root* is lost |
+| Do the training subcommands pass it? | **Yes** — `_corpus_consumer` declares it, `_verified_corpus` consumes it with the identical fallback |
+| Does the measurement tool use it? | **Yes** — and the successful run in AA.1 supplied it |
+| Was `run_smoke` written assuming the parser provides it? | **Yes**, consistently with every other consumer |
+| Which side is inconsistent? | **The parser.** The handler, the `smoke_check` API, the training subcommands and the measurement tool all agree |
+
+**Classification: A — parser omission.** Not B: the option is neither irrelevant
+nor optional-by-design at the CLI; the real deployment needs it. Not C: the
+downstream contract is consistent everywhere else. Not D.
+
+### AA.4 Repair
+
+`--prepared-corpus` and `--completion-dir` are now declared **once**, in
+`_prepared_corpus_inputs(parser)`, used by both `_corpus_consumer` (training) and
+the `smoke` subparser. One CLI contract, one downstream contract, one help text.
+
+**`getattr(args, "completion_dir", None)` was deliberately NOT used.** For this
+field that is not a defensive default but an integrity choice: it would silently
+substitute an inferred marker for an explicitly named one, and it would let the
+parser and handler drift apart again. The F1 gate is untouched — `smoke_check`
+still calls `verify_prepared_corpus` before any model load, whether or not the
+option is supplied.
+
+The whole repair is **`scripts/stage1_runner.py`, +15 / −2**.
+
+### AA.5 Tests
+
+New `tests/test_stage1_runner_cli_contract.py` (19 tests) closes the **defect
+class**, not this instance: for **every** subcommand it parses that command's own
+minimal valid argv and asserts that every `args.<attr>` the handler
+reads — following helpers that are handed `args`, such as `_verified_corpus` and
+`_execute` — exists in the resulting `Namespace`. It also forbids `getattr` on
+`args` in any handler.
+
+Verified against the committed HEAD `a5da5380`: the smoke `Namespace` there holds
+`prepared_corpus, repository_head, revision`, `run_smoke` reads `completion_dir`
+as well, and executing that handler reproduces the exact production message —
+`'Namespace' object has no attribute 'completion_dir'`. **The new test fails at
+HEAD and passes after the repair.**
+
+The suite also executes the parser → handler boundary with `smoke_check` stubbed
+(no model, no torch), proving `run_smoke` now reaches it and forwards `None` or an
+explicit path correctly; asserts the help text matches the accepted options
+exactly; and re-proves the no-update guarantee **from the call graph** —
+`smoke_check` reaches no `backward`, `step`, `zero_grad`, optimizer construction,
+`train_run` or checkpoint write, runs its forward under `no_grad`, and still calls
+`build_objective`, `verify_model_contract`, `prepare_example`,
+`collate_stage1_batch` and `verify_scientific_inputs`.
+
+### AA.6 The AA.1 validation evidence is untouched
+
+Every file the successful validation executes is **byte-unchanged** versus
+`a5da5380`: `scripts/stage1_pretrain_measurements.py`, `validation.py`, `data.py`,
+`objective.py`, `unmark/modeling/`, `preflight.py`, `protocol.py`, `contracts.py`,
+`checkpoint.py`, `chunking.py`, `orthography/`, `linguistics/`, `configs/` and
+`docs/spec/decisions.md`. The diff is confined to the runner CLI.
+
+**No re-run of the 32-minute validation is required or requested.**
+
+### AA.7 Preserved, and still open
+
+§T–§Z unchanged. §V provenance, §W inventory (`135a4d97…` / `78eeb840…` /
+116 290 B / 17 974 / 17 954 / 2 489, seven-field identity, digest report-only),
+§X truncation and §Y device boundary all intact. Stage 6, the prepared corpus and
+official TEST are untouched.
+
+**Still separately open, and deliberately not touched here: `execute_stage`
+performs no accelerator placement, so the *training* device remains unchosen
+(§Y.3).** That is a training-authorisation question and has nothing to do with the
+smoke's `completion_dir`.
+
+### AA.8 What is still NOT established
+
+The runner smoke has **never completed**. There is no runner-side model-forward
+evidence, no optimizer, no update, no training. **One corrected real runner smoke
+is still required after commit** — the full validation of AA.1 does not stand in
+for it.
+
+**STATUS: PRE-TRAIN RUNNER-SMOKE CLI REPAIR PASS — READY TO COMMIT AND RERUN SMOKE ONLY**
+**THE FIRST FULL FOUR-CONDITION REAL VALIDATION PASSED: 810 FORWARDS, 11 443 DEV CHUNKS, CUDA, fp32**
+**NO-UPDATE BOUNDARY HELD BY HASH EQUALITY BEFORE AND AFTER — 0 BACKWARD, 0 STEPS, 0 UPDATES**
+**THE 12 392 s PROJECTION IS DESCRIPTIVE ONLY — CADENCE STAYS 500, NO SUBSET, NO CACHE**
+**CLASSIFICATION A — PARSER OMISSION; THE HANDLER AND EVERY OTHER CONSUMER WERE ALREADY RIGHT**
+**ONE SHARED DECLARATION: `_prepared_corpus_inputs` SERVES TRAINING AND SMOKE ALIKE**
+**`getattr(args, ...)` REFUSED — IT WOULD HAVE WEAKENED THE F1 COMPLETE GATE AND HIDDEN THE DRIFT**
+**NEW TEST FAILS AT `a5da5380` AND REPRODUCES THE EXACT AttributeError; PASSES AFTER REPAIR**
+**FULL-VALIDATION EXECUTABLE SURFACE BYTE-UNCHANGED — NO RE-RUN NEEDED**
+**TRAINING DEVICE PLACEMENT REMAINS A SEPARATE UNRESOLVED OPERATIONAL ITEM**
+**ONE CORRECTED REAL RUNNER SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM ONE PASSED**

@@ -535,7 +535,16 @@ def run_smoke(args) -> int:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def _corpus_consumer(parser: argparse.ArgumentParser) -> None:
+def _prepared_corpus_inputs(parser: argparse.ArgumentParser) -> None:
+    """The prepared corpus and the COMPLETE marker that binds it.
+
+    **Every** consumer that verifies a prepared corpus takes exactly this pair,
+    so it is declared once. The `smoke` subcommand previously declared only
+    `--prepared-corpus` while `run_smoke` read `args.completion_dir`, and the
+    real fifth-smoke runner died on `AttributeError` after argparse had already
+    accepted the documented CLI (Audit 030 §AA). Sharing the declaration is what
+    stops the parser and the handler drifting apart again.
+    """
     parser.add_argument("--prepared-corpus", required=True,
                         help="directory written by prepare-corpus (manifest-bound)")
     parser.add_argument(
@@ -547,6 +556,10 @@ def _corpus_consumer(parser: argparse.ArgumentParser) -> None:
              "explicit rather than inferred. The prepared corpus is verified "
              "against this marker before any model is loaded (Audit 030 F1).",
     )
+
+
+def _corpus_consumer(parser: argparse.ArgumentParser) -> None:
+    _prepared_corpus_inputs(parser)
     parser.add_argument("--output-dir", required=True,
                         help="must not already exist, unless --resume is given")
     parser.add_argument(
@@ -615,7 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
     final.add_argument("--r-artifact", required=True, help="r-phase1 selection artifact")
 
     smoke = sub.add_parser("smoke", help="no-update real-model check; cannot step an optimizer")
-    smoke.add_argument("--prepared-corpus", required=True)
+    _prepared_corpus_inputs(smoke)
     smoke.add_argument("--revision", default=ENCODER_REVISION)
     smoke.add_argument("--repository-head", default=None)
     return parser
