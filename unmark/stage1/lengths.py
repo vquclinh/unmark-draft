@@ -3,13 +3,22 @@
 Stage 6 fed every document through `canon`/`decompose` roughly **250 times its
 own length**: the greedy chunker re-derives the *whole growing candidate* at
 every segment, so a chunk spanning `k` segments canonicalises prefixes of total
-length `O(k * chunk_length)`. On the real corpus that made pre-chunking
-unusable (Audit 029 §R).
+length `O(k * chunk_length)`. On the real corpus that made pre-chunking unusable
+(Audit 029 §R).
 
 This module removes that blow-up **without touching the chunking algorithm**.
 `chunking.py` still receives plain `str -> int` length functions and still makes
-exactly the same `fits` queries in exactly the same order; only the cost of each
-query changes.
+exactly the same `fits` queries in exactly the same order; only the cost of
+producing the *transformed* text changes.
+
+**What is optimised, and what is not.**
+
+* Optimised: `canon(text)` and `decompose(canon(text)).base_text` are built from
+  memoised whitespace segments and extended incrementally along a growing
+  prefix. This rests on a lemma about *this repository's own code* (below).
+* **Not optimised: tokenization.** The transformed candidate is handed to the
+  tokenizer **whole**, through the **same API chain** the pre-optimisation
+  implementation used. No property of the tokenizer is assumed, used, or needed.
 
 **The composability lemma.** For a text `T` split into maximal whitespace and
 non-whitespace runs `s1 … sn`::
@@ -17,23 +26,17 @@ non-whitespace runs `s1 … sn`::
     canon(T)                         == "".join(canon(si))
     decompose(canon(T)).base_text    == "".join(decompose(canon(si)).base_text)
 
-Two independent reasons, both properties of code in this repository rather than
-of the tokenizer:
+because NFC never composes across a whitespace starter (combining class 0),
+`apply_modern_placement` moves a tone mark only *within* a maximal alphabetic
+run which whitespace terminates, and `base_text` is a per-character mapping.
+Verified exhaustively in `tests/test_stage1_lengths.py`, and re-checked at
+runtime by `ComposedTransforms.verify_remaining`.
 
-* **NFC never composes across whitespace.** A whitespace character is a starter
-  with combining class 0, so no combining sequence spans a run boundary.
-* **Tone placement is confined to a syllable.** `apply_modern_placement` moves a
-  tone mark within a *maximal alphabetic run*, and whitespace terminates such a
-  run, so placement decisions on either side are independent.
-* `base_text` is a per-character mapping, hence composable everywhere.
-
-Verified exhaustively in `tests/test_stage1_lengths.py`.
-
-**What this module does NOT assume.** Nothing about the tokenizer. Token counts
-are neither assumed additive across concatenation nor monotone in text length:
-the transformed string is still handed to the tokenizer whole, exactly as
-before. The only thing that is reused is the *orthographic transform*, and only
-at boundaries where it is provably composable.
+**Removed in Revision 3a.** An earlier version also composed *token counts* per
+non-whitespace run, citing D-B3B1B-001. The first real-tokenizer probe
+**falsified** that on the pinned PhoBERT: `composed 5, exact 7`. The runtime
+verifier caught it and refused to run. The shortcut is gone; only the
+tokenizer-independent transform reuse remains. See Audit 029 §S.
 """
 
 from __future__ import annotations
@@ -52,6 +55,9 @@ DEFAULT_MAX_ENTRIES = 500_000
 vocabulary; this caps memory without changing any result -- an eviction only
 costs a recomputation."""
 
+DEFAULT_VERIFY_FIRST = 256
+"""How many distinct queries are checked against the direct transform."""
+
 
 @dataclass
 class TransformCounters:
@@ -66,12 +72,10 @@ class TransformCounters:
     characters_queried: int = 0
     characters_canonicalised: int = 0
     characters_decomposed: int = 0
-    runs_seen: int = 0
-    run_cache_hits: int = 0
-    tokenizer_calls: int = 0
-    verifications: int = 0
     incremental_extensions: int = 0
     full_rescans: int = 0
+    tokenizer_calls: int = 0
+    verifications: int = 0
 
     def to_dict(self) -> dict[str, int]:
         return dict(self.__dict__)
@@ -82,15 +86,24 @@ class ComposedTransforms:
 
     Results are **bit-identical** to calling `canon` / `decompose` on the whole
     text -- that is the lemma above, and it is what makes this a pure
-    performance change.
+    performance change. `verify_remaining` re-checks that at runtime and fails
+    closed, so the lemma is a checked precondition rather than a belief.
     """
 
-    def __init__(self, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
+    def __init__(
+        self,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+        verify_first: int = DEFAULT_VERIFY_FIRST,
+    ) -> None:
         self._canon: dict[str, str] = {}
         self._base: dict[str, str] = {}
         self._max_entries = max_entries
+        self._verify_remaining = verify_first
+        self._last_canon: tuple[str, str] = ("", "")
+        self._last_base: tuple[str, str] = ("", "")
         self.counters = TransformCounters()
 
+    # -- memoised per-segment transforms ----------------------------------
     def _segment_canon(self, segment: str) -> str:
         cached = self._canon.get(segment)
         if cached is not None:
@@ -115,138 +128,73 @@ class ComposedTransforms:
             self._base[segment] = value
         return value
 
-    def _segments(self, text: str) -> list[str]:
-        pieces = [match.group(0) for match in _SEGMENT.finditer(text)]
+    def _compose(self, text: str, per_segment: Callable[[str], str]) -> str:
+        pieces = [m.group(0) for m in _SEGMENT.finditer(text)]
         self.counters.segments_seen += len(pieces)
-        return pieces
+        return "".join(per_segment(p) for p in pieces)
 
+    @staticmethod
+    def _extendable(previous: str, text: str) -> bool:
+        """Whether `text` extends `previous` at a junction outside any segment.
+
+        The chunker's greedy scan asks about a growing candidate from a fixed
+        start, so consecutive queries satisfy ``text.startswith(previous)``. The
+        extension is taken only when the junction is whitespace-adjacent, which
+        is exactly the condition the composability lemma needs. Every fast-path
+        candidate satisfies it; the oversized-unit fallback cuts inside a run,
+        the condition fails, and the full path runs. **Correctness never depends
+        on the shortcut being taken.**
+        """
+        return (
+            bool(previous)
+            and len(text) > len(previous)
+            and (previous[-1].isspace() or text[len(previous)].isspace())
+            and text.startswith(previous)
+        )
+
+    def _transform(self, text, last, per_segment, direct) -> str:
+        previous, previous_value = last
+        if self._extendable(previous, text):
+            self.counters.incremental_extensions += 1
+            value = previous_value + self._compose(text[len(previous):], per_segment)
+        else:
+            self.counters.full_rescans += 1
+            value = self._compose(text, per_segment)
+
+        if self._verify_remaining > 0:
+            self._verify_remaining -= 1
+            self.counters.verifications += 1
+            exact = direct(text)
+            if value != exact:
+                raise Stage1ContractViolation(
+                    "composed transform disagreed with the direct transform. The "
+                    "composability lemma (canon and base_text compose across "
+                    "whitespace-run boundaries) does not hold for this input, so "
+                    "Stage-1 refuses to chunk rather than emit lengths it cannot "
+                    f"justify. Query length {len(text)}, composed {len(value)}, "
+                    f"exact {len(exact)}."
+                )
+        return value
+
+    # -- public API --------------------------------------------------------
     def canonical(self, text: str) -> str:
         """Identical to `canon(text)`."""
         self.counters.length_queries += 1
         self.counters.characters_queried += len(text)
-        return "".join(self._segment_canon(s) for s in self._segments(text))
+        value = self._transform(text, self._last_canon, self._segment_canon, canon)
+        self._last_canon = (text, value)
+        return value
 
     def base(self, text: str) -> str:
         """Identical to `decompose(canon(text)).base_text`."""
         self.counters.length_queries += 1
         self.counters.characters_queried += len(text)
-        return "".join(self._segment_base(s) for s in self._segments(text))
-
-
-_NON_WHITESPACE = re.compile(r"\S+")
-
-
-class TokenLengthComposer:
-    """Token length as `specials + sum over maximal non-whitespace runs`.
-
-    **This uses an audited real-tokenizer fact, and still verifies it.**
-    D-B3B1B-001 established, on the pinned PhoBERT revision, that fastBPE
-    operates over **maximal non-whitespace chunks**: splitting on non-whitespace
-    runs and
-    tokenizing each whole chunk reproduced the authoritative token sequence
-    **13/13** and the token IDs **13/13** across 119 chunks, with zero surface
-    reconstruction failures. Composing per chunk is therefore exact, not an
-    approximation.
-
-    Audit 029 Revision 1 was caused by borrowing a B3B fact into chunking
-    without re-checking it, so this class **does not trust the fact blindly**:
-    the first `verify_first` distinct queries are computed *both* ways -- whole
-    string and composed -- and any disagreement raises. The property is a
-    checked precondition of every run, not a belief.
-
-    No monotonicity is used or implied. Nothing here assumes token counts grow
-    with text length; the composition is over disjoint runs of one text.
-    """
-
-    def __init__(
-        self,
-        tokenizer: object,
-        transform: Callable[[str], str],
-        *,
-        counters: TransformCounters,
-        verify_first: int = 256,
-        max_entries: int = DEFAULT_MAX_ENTRIES,
-    ) -> None:
-        self._tokenizer = tokenizer
-        self._transform = transform
-        self._run_length: dict[str, int] = {}
-        self._max_entries = max_entries
-        self._verify_remaining = verify_first
-        self._last: tuple[str, int] = ("", 0)
-        self.counters = counters
-        self._specials = self._whole_length("")
-
-    def _whole_length(self, transformed: str) -> int:
-        ids = self._tokenizer.convert_tokens_to_ids(self._tokenizer.tokenize(transformed))
-        return len(self._tokenizer.build_inputs_with_special_tokens(list(ids)))
-
-    def _run_tokens(self, run: str) -> int:
-        cached = self._run_length.get(run)
-        if cached is not None:
-            self.counters.run_cache_hits += 1
-            return cached
-        self.counters.tokenizer_calls += 1
-        value = len(self._tokenizer.tokenize(self._transform(run)))
-        if len(self._run_length) < self._max_entries:
-            self._run_length[run] = value
+        value = self._transform(
+            text, self._last_base, self._segment_base,
+            lambda t: decompose(canon(t)).base_text,
+        )
+        self._last_base = (text, value)
         return value
-
-    def _run_sum(self, text: str) -> int:
-        """Sum of per-run token counts, reusing the previous query's prefix.
-
-        The chunker's greedy scan asks about a **growing candidate** from a fixed
-        start, so consecutive queries satisfy ``text.startswith(previous)``.
-        Recomputing every run of the prefix each time is what made Stage 6
-        quadratic in segments per chunk.
-
-        The extension is only taken when the junction is **not inside a run** --
-        the previous text ends with whitespace, or the delta begins with it. Then
-        ``runs(prev + delta) == runs(prev) + runs(delta)`` exactly, because runs
-        are maximal non-whitespace spans. Every candidate end the chunker
-        produces in its fast path is a whitespace/non-whitespace boundary, so the
-        condition holds there; the oversized-unit fallback cuts inside a run, the
-        condition fails, and the full path runs. Correctness never depends on the
-        shortcut being taken.
-        """
-        previous, previous_sum = self._last
-        if (
-            previous
-            and len(text) > len(previous)
-            and (previous[-1].isspace() or text[len(previous)].isspace())
-            and text.startswith(previous)
-        ):
-            delta = text[len(previous):]
-            runs = _NON_WHITESPACE.findall(delta)
-            self.counters.runs_seen += len(runs)
-            self.counters.incremental_extensions += 1
-            total = previous_sum + sum(self._run_tokens(run) for run in runs)
-        else:
-            runs = _NON_WHITESPACE.findall(text)
-            self.counters.runs_seen += len(runs)
-            self.counters.full_rescans += 1
-            total = sum(self._run_tokens(run) for run in runs)
-        self._last = (text, total)
-        return total
-
-    def length(self, text: str) -> int:
-        self.counters.length_queries += 1
-        self.counters.characters_queried += len(text)
-        composed = self._specials + self._run_sum(text)
-
-        if self._verify_remaining > 0:
-            self._verify_remaining -= 1
-            self.counters.verifications += 1
-            exact = self._whole_length(self._transform(text))
-            if exact != composed:
-                raise Stage1ContractViolation(
-                    "per-chunk token composition disagreed with whole-string "
-                    f"tokenization: composed {composed}, exact {exact}. D-B3B1B-001 "
-                    "established that PhoBERT's fastBPE operates over maximal "
-                    "non-whitespace chunks; this run's tokenizer does not behave that "
-                    "way, so Stage-1 refuses to chunk rather than emit lengths it "
-                    "cannot justify. Check the tokenizer revision."
-                )
-        return composed
 
 
 def build_length_functions(
@@ -254,12 +202,27 @@ def build_length_functions(
 ) -> tuple[Callable[[str], int], Callable[[str], int], ComposedTransforms]:
     """The two Stage-1 length functions, sharing one transform memo.
 
-    The tokenizer is still called on the **whole** transformed candidate, so no
-    additivity or monotonicity property of the tokenizer is used or needed.
+    **The length definition is the authoritative one, unchanged**::
+
+        length(x) = len(build_inputs_with_special_tokens(
+                        convert_tokens_to_ids(tokenize(transform(x)))))
+
+    Same API chain, same whole-string tokenization, same special-token
+    accounting as the pre-optimisation implementation. Only `transform` is
+    computed more cheaply, so `optimized_length(x) == authoritative_length(x)`
+    holds **by construction** rather than by argument.
     """
     transforms = transforms or ComposedTransforms()
-    reference = TokenLengthComposer(
-        tokenizer, transforms.canonical, counters=transforms.counters
-    )
-    base = TokenLengthComposer(tokenizer, transforms.base, counters=transforms.counters)
-    return reference.length, base.length, transforms
+
+    def _tokenized_length(transformed: str) -> int:
+        transforms.counters.tokenizer_calls += 1
+        ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(transformed))
+        return len(tokenizer.build_inputs_with_special_tokens(list(ids)))
+
+    def reference_length(text: str) -> int:
+        return _tokenized_length(transforms.canonical(text))
+
+    def base_length(text: str) -> int:
+        return _tokenized_length(transforms.base(text))
+
+    return reference_length, base_length, transforms

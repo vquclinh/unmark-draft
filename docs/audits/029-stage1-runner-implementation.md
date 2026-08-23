@@ -9,6 +9,7 @@
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Type** | Implementation + tests. **No real Stage-1 run, no corpus download, no model load, no optimizer step on real data** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after this is reviewed, committed, the proposal/PDF are synchronised, and a no-update real-model smoke is available for review |
+| **Revision 3a** | **2026-08-23** — **Revision 3's own micro-probe FAILED on the real pinned tokenizer** (`composed 5, exact 7`, rc 1). The runtime verifier worked and is kept. Per-run token composition removed; the 956x claim is withdrawn; 192x remains and is exact by construction. See §S. |
 | **Revision 3** | **2026-08-23** — **third post-commit real-corpus defect**: stage-6 pre-chunking re-canonicalised every growing prefix (~250x document length) and produced no 1 % line in 13 minutes. Repaired by memoised, composable transforms and per-run token composition; `chunking.py` untouched. See §R. |
 | **Revision 2** | **2026-08-23** — **second post-commit real-corpus defect**: the stage-4 contamination screen applied full `canon()` to all 1 118 224 documents and ran >7 h. Repaired with two proven necessary-condition prefilters; the criterion is unchanged. See §Q. |
 | **Revision 1a** | **2026-08-22** — evidence-accuracy cleanup. Audit-only: §L/§M labelled historical, three overstated §P claims corrected, and the uncaptured original exception recorded. No code, test or decision changed. See §P.11. |
@@ -1157,7 +1158,10 @@ terminates), and `base_text` is a per-character mapping. Verified on **17 007**
 strings including NFD forms and random combining-mark sequences: **0
 counterexamples**.
 
-**Property 2 — per-chunk tokenization (already audited on the real model).**
+**Property 2 — per-chunk tokenization — WITHDRAWN in Revision 3a.** The real
+probe falsified this on the pinned tokenizer (`composed 5, exact 7`); the
+shortcut described below was **removed**. Retained here as the record of what
+was tried. See §S.
 `D-B3B1B-001` established on this exact pinned revision that PhoBERT's fastBPE
 operates over **maximal non-whitespace chunks**: splitting on non-whitespace runs
 and tokenizing each whole chunk reproduced the authoritative token sequence
@@ -1196,7 +1200,7 @@ fallback cuts inside a run, the condition fails, and the full path runs.
 | committed (`55aa7fe`) | 99.42 s | 0.8 K doc-chars/s | 1x |
 | + transform memo only | 4.63 s | 16.9 K doc-chars/s | 21.5x |
 | + per-run token composition | 1.66 s | 47.1 K doc-chars/s | 59.1x |
-| **+ incremental prefix extension** | **0.10 s** | **753.7 K doc-chars/s** | **956x** |
+| ~~+ incremental prefix extension~~ | ~~0.10 s~~ | ~~753.7 K doc-chars/s~~ | ~~956x~~ **— WITHDRAWN, §S.5** |
 
 **Output identical at every step** — chunk ids, source ranges, text, and *both*
 recorded lengths.
@@ -1304,7 +1308,223 @@ blocker on real data.
 
 ---
 
-**STATUS (Revision 3): CHUNKING PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**
+## S. REVISION 3A — REAL-TOKENIZER PROBE FAILED; SHORTCUT REMOVED
+
+**Date:** 2026-08-23 **Baseline commit:** `bb5082373d0ebe9527441a8add5fdb5ee408a16a`
+
+### S.1 The failed probe
+
+Revision 3 was committed and its own micro-probe was run in Colab against the
+real pinned tokenizer. The repository was clean and HEAD matched.
+
+```
+Python       /usr/bin/python3
+Transformers 4.57.6
+torch        2.11.0+cu128
+
+$ python scripts/stage1_tokenizer_probe.py
+    -> return code 1
+
+unmark.stage1.contracts.Stage1ContractViolation:
+per-chunk token composition disagreed with whole-string tokenization:
+composed 5, exact 7.
+
+stage1_tokenizer_probe.py -> chunk_document -> fits
+    -> unmark/stage1/lengths.py::length -> Stage1ContractViolation
+```
+
+**The runtime verifier worked exactly as designed.** Revision 3 wrote that the
+per-chunk fact was "a checked precondition of every run, not a belief"; the
+check fired on the first real tokenizer it met and refused to emit lengths it
+could not justify. **It has not been weakened or removed.**
+
+**Revision 3's claim is falsified.** Per-run token composition was *not*
+justified on the real pinned tokenizer, and the 956x figure rested on it. Both
+are superseded here.
+
+### S.2 The two length definitions, reconstructed (Task A)
+
+| | Authoritative (pre-optimisation, and the probe's oracle) | Revision 3's composed length |
+|---|---|---|
+| Formula | `len(build_inputs_with_special_tokens(convert_tokens_to_ids(tokenize(transform(x)))))` | `whole_length("")` + Σ over runs `r` of `len(tokenize(transform(r)))` |
+| APIs used | `tokenize` → `convert_tokens_to_ids` → `build_inputs_with_special_tokens` | **`tokenize` only**, per run |
+| `<s>` / `</s>` | included, added once by the tokenizer | included, added once as `whole_length("")` |
+| Transform applied to | the **whole** text | **each run** separately |
+| Run definition | n/a | `re.compile(r"\S+")` |
+| `<= 256` means | this number | this number |
+
+Two **definitional** divergences are visible by inspection:
+
+1. **Different API chain.** Run counts came from `tokenize` alone; the
+   authoritative number comes from the full chain.
+2. **Different run unit.** PhoBERT's own `_tokenize` splits on `\S+\n?` — a
+   trailing newline stays **attached** to the run, so BPE's `</w>` end-of-word
+   marker lands on a different final character than it does for a run cut at
+   `\S+`.
+
+### S.3 Why the cause was not guessed
+
+`exact - composed = 2` invites "special tokens" as the explanation. **It is not
+adopted here.** The failing fixture is the first probe document, `"Tôi đã đọc"`,
+which contains no newline, so divergence 2 cannot explain it; and
+`convert_tokens_to_ids` is a 1:1 mapping, so divergence 1 does not change a
+*count*. With `whole_length("") = 2` the arithmetic is `2 + 3 = 5` against
+`2 + 5 = 7`: the **whole string yields two more content tokens than the sum of
+its three per-word tokenizations**.
+
+That is a statement about real PhoBERT's behaviour which **cannot be verified in
+this ML-free environment** — no tokenizer, nothing downloaded. So the root cause
+is recorded as: *per-run token composition does not hold for the pinned
+tokenizer on this input, for a reason this audit has not isolated.* It is **not**
+recorded as a special-token accounting slip, because that has not been shown.
+
+### S.4 The repair (Task D)
+
+**The per-run token-composition shortcut is removed.** Correctness over
+benchmark: the real evidence falsified it, it cannot be validated here, and
+rescuing it by guessing at arithmetic would be exactly the mistake Revision 1
+already made once.
+
+What remains needs **no tokenizer property at all**:
+
+* memoised per-segment `canon` / `base_text`;
+* incremental extension of those transforms along a growing prefix, guarded by
+  the same whitespace-junction condition;
+* the transformed candidate then goes to the tokenizer **whole, through the
+  authoritative API chain**.
+
+So
+
+```
+optimized_length(x) == authoritative_length(x)
+```
+
+holds **by construction** — same chain, same whole-string tokenization, same
+special-token accounting — rather than by argument. The only thing reused is the
+orthographic transform, and only where the composability lemma applies.
+
+**The verifier is kept** (Task E), now guarding the property that remains: the
+first 256 distinct queries compare the composed transform against the direct
+`canon` / `decompose`, and any disagreement raises `Stage1ContractViolation`.
+
+### S.5 Revised benchmark
+
+Same fixture as §R.4 — 12 documents, 80 415 characters, mock tokenizer:
+
+| Implementation | Time | Throughput | Speedup |
+|---|---|---|---|
+| pre-optimisation | 102.35 s | 0.8 K doc-chars/s | 1x |
+| **Revision 3a (transform reuse only)** | **0.53 s** | **147.2 K doc-chars/s** | **192x** |
+| ~~Revision 3 (with the falsified shortcut)~~ | ~~0.10 s~~ | ~~753.7 K~~ | ~~956x — **withdrawn**~~ |
+
+Output identical: chunk ids, source ranges, text and **both** recorded lengths.
+`canon` ran on **58 characters** total (0.0007x the text). Tokenizer calls:
+**72 180 — unchanged from the pre-optimisation implementation**, whole-string,
+same API chain. That is the honest cost of dropping the shortcut.
+
+### S.6 Probe repaired (Tasks B, F, G)
+
+* **`--help` now works** and exits 0 **without importing transformers** — the
+  import moved inside `main()` after `parse_args`. Previously `--help` executed
+  the probe and failed. No scientific override flags were added.
+* The probe now **catches** `Stage1ContractViolation` and reports it, instead of
+  aborting before printing anything.
+* It compares **optimised vs authoritative** lengths on both pathways, transform
+  composability, and old-vs-new chunk output field by field (ids, ranges, text,
+  both lengths, and violation provenance).
+* On the first mismatches it emits a safe diagnostic: fixture index and repr,
+  transformed repr, whole tokens and id count, count before and after specials,
+  the runs, per-run tokens and counts, the sum, **what the removed shortcut
+  would have given**, and the optimised value. **Fixtures only — no UVW corpus
+  text, no UIT-VSFC text.**
+
+### S.7 Files changed in Revision 3a
+
+| File | Change |
+|---|---|
+| `unmark/stage1/lengths.py` | `TokenLengthComposer` **removed**; `ComposedTransforms` gains incremental extension and a fail-closed transform verifier; `build_length_functions` now uses the authoritative API chain |
+| `scripts/stage1_tokenizer_probe.py` | rewritten: argparse CLI, lazy transformers import, catches violations, safe first-mismatch diagnostics, authoritative-vs-optimised comparison |
+| `tests/test_stage1_lengths.py` | per-run composition tests replaced by authoritative-equality tests; **`test_the_five_versus_seven_regression_fixture`** reproduces `composed 5 / exact 7`; transform-verifier fail-closed test |
+| `tests/test_stage1_runner_contract.py` | 4 probe-CLI tests, including `--help` exit 0 without loading the tokenizer |
+| `docs/audits/029-…md` | this section |
+
+**Unchanged:** `unmark/stage1/chunking.py`, `unmark/stage1/corpus.py`
+(Revision 2), `canon()`, the corpus pin, split, seeds, `pi_strip`, objective,
+architecture, optimizer, grids, validation grid, `max_length = 256`, and the
+official-TEST policy. `docs/spec/decisions.md` not changed — no scientific
+decision moved.
+
+### S.8 Tests
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_lengths.py` | **223 passed** |
+| `tests/test_stage1_chunking.py` | 35 passed (unchanged) |
+| `tests/test_stage1_runner_contract.py` | **43 passed** (was 39) |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed (Revision 2 untouched) |
+| Full repository | **3 049 passed, 97 skipped** |
+
+The regression fixture is the load-bearing one: a tokenizer that returns 5
+tokens for `"Tôi đã đọc"` but 1 per word reproduces the reported
+`composed 5 / exact 7`, and the repaired implementation returns **7**, matching
+the authoritative pathway.
+
+### S.9 Limitations
+
+1. **The root cause of 5-vs-7 is not isolated.** It is recorded as "per-run
+   composition does not hold on the pinned tokenizer", not as a specific bug.
+   The repaired probe's diagnostics exist to answer this on the next Colab run.
+2. **The repaired probe has NOT been run.** No real-tokenizer evidence supports
+   the current implementation yet — only the by-construction argument and
+   synthetic tests.
+3. **Real-corpus performance is now UNKNOWN and may still be insufficient.**
+   Removing the shortcut restores the full per-query tokenization cost:
+   `Θ(Σ growing prefix lengths)` through the real tokenizer, ~72 180 whole-string
+   calls for 80 K characters in the benchmark. The 192x gain is entirely on the
+   `canon`/`decompose` side. Whether stage 6 now completes on 1.1 M documents is
+   **not established**.
+4. The 192x figure is synthetic, mock tokenizer, one machine.
+5. Stage 6 has still never completed on real data, so Revision 1's chunker
+   remains unverified there.
+
+### S.10 Self-audit for Revision 3a
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Audit 029 revised **in place**; no Audit 030 | **yes** |
+| 2 | Failed probe recorded, not hidden | **yes** — §S.1, with return code and exact violation |
+| 3 | Verifier kept, not weakened to pass | **yes** — retargeted to the surviving property, still fail-closed |
+| 4 | Root cause guessed? | **no** — special-token accounting explicitly **not** adopted; §S.3 |
+| 5 | Special-token accounting identical old vs optimised | **yes** — same API chain, added once by the tokenizer |
+| 6 | Optimised length == authoritative length | **yes** — by construction, and asserted for 3 tokenizer doubles |
+| 7 | No monotonicity assumption | **yes** — non-monotonic tokenizer still in the oracle matrix |
+| 8 | No unsafe additivity assumption remains | **yes** — per-run token composition **removed** |
+| 9 | Both reference and base pathways match old behaviour | **yes** |
+| 10 | `chunking.py` semantics unchanged | **yes** — not modified |
+| 11 | Revision-2 contamination code untouched | **yes** |
+| 12 | Official UIT-VSFC TEST unreachable | **yes** |
+| 13 | Probe `--help` exits 0 without loading the tokenizer | **yes** — tested via subprocess |
+| 14 | Probe loads no encoder, cannot step | **yes** — AST-asserted |
+| 15 | No corpus or UIT text in diagnostics | **yes** — fixtures only |
+| 16 | Regression fixture reproduces `composed 5 / exact 7` | **yes** |
+| 17 | Withdrawn 956x claim marked withdrawn | **yes** — §S.5 |
+| 18 | Focused + full suites run | **yes** — 3 049 passed |
+| 19 | Repaired probe executed on Colab? | **NO** |
+| 20 | Real corpus prepared? | **NO** |
+| 21 | Nothing staged; no prohibited git operation | **yes** |
+
+---
+
+**STATUS (Revision 3a): REVISION 3A REPAIR PASS — READY FOR REAL TOKENIZER PROBE**
+**REVISION 3's REAL PROBE FAILED (rc 1): `composed 5, exact 7` — THE VERIFIER WORKED**
+**PER-RUN TOKEN COMPOSITION FALSIFIED AND REMOVED; 956x CLAIM WITHDRAWN**
+**REMAINING OPTIMISATION NEEDS NO TOKENIZER PROPERTY — 192x, LENGTHS EQUAL BY CONSTRUCTION**
+**ROOT CAUSE OF 5-vs-7 NOT ISOLATED — NOT ATTRIBUTED TO SPECIAL TOKENS WITHOUT EVIDENCE**
+**PROBE `--help` DEFECT FIXED; DIAGNOSTICS ADDED FOR THE NEXT RUN**
+**REAL-CORPUS PERFORMANCE NOW UNKNOWN AND MAY STILL BE INSUFFICIENT**
+**NEXT AUTHORIZATION IS ONLY THE REAL TOKENIZER MICRO-PROBE — NOT PREPARE-CORPUS**
+
+~~**STATUS (Revision 3): CHUNKING PERFORMANCE REPAIR PASS — READY FOR REAL PREPARE-CORPUS RE-RUN**~~ **— SUPERSEDED by Revision 3a**
 **DEFECT 3: STAGE-6 RE-CANONICALISED EVERY GROWING PREFIX (~250x DOCUMENT LENGTH) — REPAIRED (§R)**
 **CHUNKING ALGORITHM UNCHANGED — `chunking.py` NOT MODIFIED; ONLY LENGTH-QUERY COST**
 **956x ON A SYNTHETIC BENCHMARK, OUTPUT IDENTICAL INCLUDING VIOLATION PROVENANCE**

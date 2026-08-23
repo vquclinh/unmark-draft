@@ -246,14 +246,79 @@ def test_violation_provenance_is_identical_too():
 # ---------------------------------------------------------------------------
 # The runtime verifier
 # ---------------------------------------------------------------------------
-def test_a_non_composing_tokenizer_is_caught_and_fails_closed():
-    """The audited per-chunk fact is a CHECKED precondition, not a belief."""
-    ref, _, _ = build_length_functions(NonComposingTokenizer())
-    with pytest.raises(Stage1ContractViolation, match="per-chunk token composition"):
-        ref("một hai ba bốn năm")
+def test_a_non_composing_tokenizer_is_now_HARMLESS():
+    """Revision 3a regression: the falsified per-run token shortcut is gone.
+
+    The first real-tokenizer probe produced `composed 5, exact 7` on the pinned
+    PhoBERT, falsifying per-run token composition. That shortcut was removed, so
+    a tokenizer whose whole-string count differs from the sum of its per-run
+    counts is no longer a problem: the length is always taken from the whole
+    transformed string through the authoritative API chain.
+    """
+    tokenizer = NonComposingTokenizer()
+    ref, base = old_length_functions(tokenizer)
+    opt_ref, opt_base, _ = build_length_functions(NonComposingTokenizer())
+    for text in ("một hai ba bốn năm", "Tôi đã đọc", "a b c d e f"):
+        assert opt_ref(text) == ref(text), text
+        assert opt_base(text) == base(text), text
 
 
-def test_the_verifier_accepts_a_conforming_tokenizer():
+def test_the_optimized_length_equals_the_authoritative_length_by_construction():
+    """`optimized_length(x) == authoritative_old_length(x)` -- not a guessed sum."""
+    for tokenizer_cls in (WordTokenizer, NonMonotonicTokenizer, NonComposingTokenizer):
+        authoritative_ref, authoritative_base = old_length_functions(tokenizer_cls())
+        opt_ref, opt_base, _ = build_length_functions(tokenizer_cls())
+        for text in LEMMA_CASES:
+            assert opt_ref(text) == authoritative_ref(text), (tokenizer_cls, text)
+            assert opt_base(text) == authoritative_base(text), (tokenizer_cls, text)
+
+
+def test_the_five_versus_seven_regression_fixture():
+    """The exact shape that failed on real PhoBERT: whole > sum of per-run.
+
+    `FiveVersusSeven` returns 5 tokens for the whole three-word string but 1 per
+    word, so the removed shortcut would have computed `2 + 3 = 5` against an
+    exact `2 + 5 = 7` -- the reported failure. The current implementation must
+    return **7**, matching the authoritative pathway.
+    """
+
+    class FiveVersusSeven(WordTokenizer):
+        def tokenize(self, text):
+            words = text.split()
+            if len(words) > 1:
+                return [f"t{i}" for i in range(len(words) + 2)]
+            return [text] if text else []
+
+    tokenizer = FiveVersusSeven()
+    authoritative_ref, _ = old_length_functions(tokenizer)
+    opt_ref, _, _ = build_length_functions(FiveVersusSeven())
+
+    text = "Tôi đã đọc"
+    assert authoritative_ref(text) == 7, "fixture must reproduce the reported exact=7"
+    # what the REMOVED shortcut would have produced
+    specials = 2
+    shortcut = specials + sum(len(tokenizer.tokenize(canon(w))) for w in text.split())
+    assert shortcut == 5, "fixture must reproduce the reported composed=5"
+    # the repaired implementation matches the authoritative number
+    assert opt_ref(text) == 7
+
+
+def test_the_transform_verifier_still_fails_closed():
+    """Task E: the remaining optimisation keeps a fail-closed verifier."""
+    import unmark.stage1.lengths as lengths
+
+    transforms = ComposedTransforms(verify_first=8)
+    original = lengths.canon
+    try:
+        # a deliberately wrong per-segment transform must be caught
+        lengths.canon = lambda t, *a, **k: original(t) + ("X" if t.strip() else "")
+        with pytest.raises(Stage1ContractViolation, match="composed transform disagreed"):
+            transforms.canonical("một hai ba")
+    finally:
+        lengths.canon = original
+
+
+def test_the_verifier_accepts_a_correct_composition():
     ref, base, transforms = build_length_functions(WordTokenizer())
     for text in LEMMA_CASES:
         ref(text)
@@ -280,9 +345,9 @@ def test_expensive_work_is_linear_in_document_not_quadratic_in_segments():
     )
     # the growing prefix is extended, not rescanned
     assert counters.incremental_extensions > 10 * counters.full_rescans
-    # runs examined stay proportional to the document, not to queries x segments
-    assert counters.runs_seen < 4 * len(content.split()), (
-        f"runs_seen {counters.runs_seen} is quadratic-looking for "
+    # segments examined stay proportional to the document, not to queries x segments
+    assert counters.segments_seen < 8 * len(content.split()), (
+        f"segments_seen {counters.segments_seen} is quadratic-looking for "
         f"{len(content.split())} words"
     )
 
@@ -295,7 +360,7 @@ def test_the_transform_memo_is_reused_across_documents():
                        base_length=base, max_length=256)
     counters = transforms.counters
     assert counters.canon_cache_hits > counters.canon_calls
-    assert counters.run_cache_hits > counters.tokenizer_calls
+    assert counters.base_cache_hits > counters.decompose_calls
 
 
 def test_counters_carry_no_text():

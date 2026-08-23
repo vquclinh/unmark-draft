@@ -339,3 +339,53 @@ def test_an_off_protocol_manifest_is_refused(override, message):
 
     with pytest.raises(ManifestViolation, match=message):
         require_compatible(manifest_dict(**override))
+
+
+# ---------------------------------------------------------------------------
+# The Colab tokenizer micro-probe (Audit 029 §S)
+# ---------------------------------------------------------------------------
+PROBE = REPO / "scripts" / "stage1_tokenizer_probe.py"
+
+
+def test_probe_help_exits_zero_without_loading_the_tokenizer():
+    """Revision 3a: `--help` previously executed the probe and failed."""
+    import subprocess
+
+    result = subprocess.run(
+        [__import__("sys").executable, str(PROBE), "--help"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+    assert "transformers" not in result.stdout.lower() or "--help" in result.stdout
+
+
+def test_probe_imports_transformers_only_inside_main():
+    """`--help` must not touch the tokenizer, so the import cannot be top-level."""
+    tree = tree_of(PROBE)
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert "transformers" not in node.module, "transformers imported at module scope"
+        if isinstance(node, ast.Import):
+            assert all("transformers" not in a.name for a in node.names)
+
+
+def test_probe_loads_no_encoder_and_cannot_step():
+    source = PROBE.read_text(encoding="utf-8")
+    assert "AutoModel" not in source
+    calls = {
+        getattr(n.func, "attr", None) or getattr(n.func, "id", None)
+        for n in ast.walk(tree_of(PROBE)) if isinstance(n, ast.Call)
+    }
+    for forbidden in ("backward", "step", "AdamW", "zero_grad"):
+        assert forbidden not in calls, f"probe calls {forbidden}()"
+
+
+def test_probe_compares_against_the_authoritative_length_definition():
+    """It must check optimized == authoritative, not a guessed composition."""
+    source = PROBE.read_text(encoding="utf-8")
+    assert "build_inputs_with_special_tokens" in source
+    assert "convert_tokens_to_ids" in source
+    assert "removed_shortcut_would_have_given" in source, (
+        "the diagnostic must show what the falsified shortcut would have produced"
+    )
