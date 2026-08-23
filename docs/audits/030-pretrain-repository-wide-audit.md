@@ -15,15 +15,35 @@
 | **Revision 5 — measurement repair** | 2026-08-23 — the §T blocker is **repaired**: `--validation` now runs the authoritative `validation.evaluate` with real forwards, CUDA-synchronised timing, real GPU peak, clean-reference attribution and parameter-hash proof of zero updates. Profile sampling is partition-aware (**all 11 443 dev**). See **§U** |
 | **Revision 6 — first real smoke** | 2026-08-23 — the **first real Colab pre-train smoke** was run at `8f07842`. It passed every corpus gate (byte-exact restore, manifest, `COMPLETE.json`) and stopped fail-closed at `tests/test_stage1_training_resume.py`: **6 failed, 8 passed**, all six dying in setup on `RunProvenance(**mine.to_dict())`. Traced to a **test-construction bug** — `to_dict()` is artifact serialization, not a constructor round trip — plus one real gap: the derived weights were serialized and never validated on read. **No model was loaded.** See **§V** |
 | **Revision 7 — second real smoke** | 2026-08-23 — the **second real Colab no-update smoke** ran at `b84b4da`. Corpus gates, and the 29 + 17 + 22 provenance/resume/measurement tests, all **passed on real hardware** — confirming §V. It then failed closed in condition preparation with `EligibilityUnresolved`: the pinned syllable inventory is **deliberately not committed** and a fresh runtime had not provisioned it. Classified **A + C** — the artifact was already locked by D-B3A-001, but the check ran *after* model load and the **blocking D-S1A-008 was unimplemented**. **No model forward, no optimizer, no update.** See **§W** |
+| **Revision 8 — third real smoke** | 2026-08-23 — the **third real Colab no-update smoke** ran at `ebbe553`. §W's inventory repair **held completely** (fetch, SHA, shape, `--verify-only`, Drive persistence, preflight before model load), and 31 + 30 + 17 + 22 tests passed on real hardware. Validation then failed closed on `prepare_condition_batch(..., truncation=None, ...)` — `'NoneType' object has no attribute 'check'`. **Measurement-only** (A + D): every production caller passes the authoritative `TRUNCATION`. **PhoBERT was resident but no forward, no optimizer, no update.** See **§X** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN INVENTORY PROVISIONING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**PRE-TRAIN TRUNCATION-WIRING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
 
-> **§W is the current verdict.** The second real smoke confirmed §V on real
+> **§X is the current verdict.** The third real smoke confirmed §W's inventory
+> repair end to end on real hardware, then failed closed in condition preparation:
+> the measurement tool passed `truncation=None`, which is not a valid
+> `TruncationPolicy`. **Production training, validation and the smoke were never
+> affected** — `truncation=None` existed at exactly one site in the repository,
+> introduced by the §U measurement repair. The locked contract
+> (`MAX_LENGTH = 256`, no truncation, `ON_OVERFLOW = FAIL`) is unchanged and was
+> merely restored at that call site.
+>
+> **The more important finding is why 22 measurement tests passed anyway**: nothing
+> ever executed `validation_timing` or `prepare_condition_batch`, and the runtime
+> fixture replaced the whole preparation stage with hand-built integers. The real
+> seam is now exercised end to end. §T–§W are preserved unchanged.
+>
+> **The real no-update smoke has NOT passed.** Validation never completed: no
+> forward, no optimizer, no update has yet occurred.
+
+~~**PRE-TRAIN INVENTORY PROVISIONING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**~~ **— superseded by §X**
+
+> **§W was the previous verdict.** The second real smoke confirmed §V on real
 > hardware and then failed closed before completing validation: the pinned
 > Vietnamese syllable inventory is deliberately **not committed** (no upstream
 > license statement) and a fresh runtime had not provisioned it. That failure was
@@ -1821,3 +1841,178 @@ section does not claim otherwise.
 **NO NEW SCIENTIFIC DECISION — NO INVENTORY WAS CHOSEN, NO CONSTANT CHANGED, NOTHING VENDORED**
 **NO MODEL LOAD, NO FORWARD, NO OPTIMIZER, NO UPDATE, NO TRAINING; TEST STILL SEALED**
 **A THIRD REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM IT PASSED**
+
+---
+
+## X. THIRD REAL NO-UPDATE SMOKE — TRUNCATION-CONTRACT WIRING FAILURE
+
+**Revision 8.** The third real Colab no-update smoke ran at the committed §W
+HEAD. §W's inventory repair **held completely** — provisioning, verification and
+Drive persistence all passed, and the preflight ran before model load. The run
+then failed closed in condition preparation on an invalid argument that the
+measurement tool had been passing since §U.
+
+### X.1 What the real rerun established
+
+| Gate | Result |
+|---|---|
+| HEAD | `ebbe5534a7cb8dd759642d2e9e6f6165aafde21d` |
+| Exact HEAD / clean repository | **PASS** |
+| Pinned inventory fetch | **PASS** |
+| Inventory immutable revision | **PASS** |
+| Inventory SHA-256 | **PASS** |
+| Inventory size | **PASS** |
+| Inventory shape counts | **PASS** |
+| `--verify-only` | **PASS** |
+| Verified inventory persisted to Drive | **PASS** |
+| Prepared corpus byte-exact restore | **PASS** |
+| `COMPLETE.json` / membership digest | **PASS** |
+| `tests/test_stage1_inventory_preflight.py` | **31 passed** |
+| `tests/test_stage1_provenance_contract.py` | **30 passed** |
+| `tests/test_stage1_training_resume.py` | **17 passed** |
+| `tests/test_stage1_validation_measurement.py` | **22 passed** |
+| **Real validation** | **FAIL CLOSED** |
+| Exception | `AttributeError: 'NoneType' object has no attribute 'check'` |
+| Offending wiring | `prepare_condition_batch(..., truncation=None, ...)` |
+| Real validation completed | **NO** |
+| Parameter update | **ZERO** |
+| Training | **NOT STARTED** |
+
+### X.2 The contract, re-derived
+
+| Question | Answer |
+|---|---|
+| What is the `truncation` argument? | a **`TruncationPolicy`** (`unmark/stage1/contracts.py`) |
+| Is `None` ever valid? | **No.** The parameter is typed `TruncationPolicy` with **no default** on both `prepare_condition_batch` and `prepare_with_condition`. "Intentionally unbounded" is an explicit *object*, `TruncationPolicy.unbounded()` — the class exists precisely so an implicit `None` cannot select a policy nobody chose |
+| What does `.check(length, what)` do? | returns `True` to keep the example; returns `False` under `SKIP`; **raises `Stage1ContractViolation`** under `FAIL` |
+| How does the locked rule map onto it? | `TruncationPolicy(max_length=MAX_LENGTH, on_overflow=OverflowBehaviour.FAIL)` — 256 / FAIL, and truncation is **not offered as a behaviour at all** |
+| Authoritative instance | **`unmark/stage1/execute.py:47`** — `TRUNCATION`, one definition, repository-wide |
+| Exactly one implementation? | **Yes.** One `TruncationPolicy` class, one Stage-1 instance, one `MAX_LENGTH` |
+
+**The locked science is unchanged: `MAX_LENGTH = 256`, truncation forbidden,
+overflow = FAIL.** Nothing here required a scientific decision — see §X.7.
+
+### X.3 Every caller, traced
+
+| Caller | Supplied | Real data? | Kind |
+|---|---|---|---|
+| `execute.py:140` — validation prep in `execute_stage` | **`TRUNCATION`** | yes | scientific |
+| `execute.py:183`, `:213` — `train_run` (initial + continuation) | **`TRUNCATION`** | yes | scientific |
+| `execute.py:325` — `smoke_check` | **`TRUNCATION`** | yes | scientific |
+| `validation.py:87`, `trainer.py:534`, `data.py:274` | threaded through | yes | scientific |
+| **`scripts/stage1_pretrain_measurements.py:415`** | **`None`** | **yes** | **measurement** |
+
+> **Production training, production validation and the smoke were all correct.**
+> `truncation=None` existed at exactly **one** site in the entire repository, and
+> it was the measurement tool.
+
+**Classification: A + D.** A measurement-tool-only wiring defect (**A**), plus the
+API-contract/test-boundary ambiguity that let it survive (**D**). **Not B** — no
+production path could reach the failure. The defect was introduced by the §U
+measurement repair.
+
+### X.4 Why 22 measurement tests passed while the real call died
+
+The most important finding in this section. Three seams, each individually
+reasonable, which together left the defect completely unobserved:
+
+| # | Boundary | Effect |
+|---|---|---|
+| 1 | **`validation_timing` was never executed by any test.** Its three appearances in the suite are `inspect.getsource` / AST reads | the wiring was *read*, never *run* |
+| 2 | **`prepare_condition_batch` was never executed by any test.** `test_stage1_measurement_contract.py` asserts only that its *name* appears in `validation_timing`'s call graph | proved the call exists, not that its arguments are valid |
+| 3 | **The runtime fixture substituted the whole preparation stage.** `evaluated` builds `prepared = {c: list(range(10))}` — plain integers — and starts at `evaluate`, **downstream** of the defect | every "real forward" test ran on hand-built input |
+
+So the suite verified that `validation_timing` *mentions* `prepare_condition_batch`,
+and separately that `evaluate` works on synthetic input. **The seam between them —
+the actual arguments — was never exercised by anything.** A structural assertion
+that a function is called is not evidence that calling it works.
+
+This is the same defect class §V recorded (`pytest.raises(Exception)` accepting any
+failure) in a different disguise: a test that cannot fail for the reason it exists.
+
+### X.5 Repair
+
+`validation_timing` now imports and passes **`unmark.stage1.execute.TRUNCATION`** —
+the same object `execute_stage` passes. No measurement-specific policy, no
+`truncation=None` fallback, no second `MAX_LENGTH`, no truncation, no silent skip.
+AST-verified that the tool constructs no `TruncationPolicy` and assigns no
+`MAX_LENGTH`/`TRUNCATION` of its own.
+
+**New `tests/test_stage1_validation_preparation.py` (torch-free, 14 tests)** runs
+the **real** `prepare_condition_batch` and the **real** `prepare_with_condition`
+with the **real** `TRUNCATION` and the **real** resolved classifier, proving:
+all four conditions prepare; `≤ 256` succeeds with lengths **unclipped**; `> 256`
+raises `Stage1ContractViolation`; both `truncation.check` calls exist and guard
+`reference sequence` **and** `base sequence` (the RAW_BASE grid); `SKIP` surfaces
+as a hard `ValidationContractViolation` rather than a shorter batch; and
+`truncation=None` reproduces the exact third-smoke `AttributeError`.
+
+**New end-to-end tests** in `tests/test_stage1_validation_measurement.py` execute
+the **real `validation_timing`** with an injected tiny model, so the real
+preparation seam runs — including a **runtime spy** that wraps (rather than
+replaces) `prepare_condition_batch` and asserts the captured argument **is**
+`execute.TRUNCATION`. With `truncation=None` these fail with the real
+`AttributeError`. The regression test that pins the argument uses **AST**, not a
+source-text search — a text match would trip over the tool's own comment
+explaining the defect.
+
+### X.6 Model-load order at the moment of failure
+
+Traced in `validation_timing`, by line:
+
+| Line | Step |
+|---|---|
+| 389 | **inventory preflight** — §W's repair, before any model |
+| 407 | **PhoBERT tokenizer + encoder weights downloaded and instantiated** |
+| 408 | `verify_model_contract` |
+| 409 | **moved to CUDA** |
+| 411–414 | classifier built, parameters hashed |
+| **419** | **condition preparation — the third smoke died here** |
+| 438 | `evaluate()` — the first real **forward**, **never reached** |
+
+So the encoder **was** downloaded, instantiated and resident on the GPU before the
+failure. **No forward pass, no optimizer, no backward, no parameter update.**
+
+**Classified as harmless operational ordering, and deliberately not reordered.**
+Preparation needs the **tokenizer**, which `build_objective` returns together with
+the encoder; the weight load is incidental to that call. Splitting it would be a
+redesign with no existing contract requiring it. The ordering that *does* matter —
+**inventory preflight before model load** — is intact and re-verified.
+
+### X.7 No decision required
+
+This restores the already-locked contract (`MAX_LENGTH = 256`, no truncation,
+`ON_OVERFLOW = FAIL`) at a call site that violated it. The meaning of the argument
+was never underspecified: it is a required, non-optional, typed parameter with a
+named constructor for the unbounded case. **No decision-log entry was created and
+`docs/spec/decisions.md` is byte-unchanged.**
+
+### X.8 Preserved
+
+§W re-verified intact: revision `135a4d97…`, sha256 `78eeb840…`, 116 290 bytes,
+17 974 / 17 954 / 2 489 counts, `InventoryIdentity` **exactly seven** D-S1A-008
+fields, `parsed_membership_digest` report-only, preflight before model load,
+`SELF_CHECK` rejected, nothing vendored, no decision changed.
+
+The third smoke again confirmed the prepared corpus: **2 633 067** chunks
+(train **2 621 624**, dev **11 443**), **1 118 224** parents, 5 000 dev parents,
+`overflow_count 0`, `base_invariance_violations 0`,
+`parents_spanning_both_partitions 0`, byte-exact restore. **No Stage-6 rerun. The
+prepared corpus remains authoritative and was not touched.**
+
+### X.9 What is still NOT established
+
+Validation still has **not** completed on real data. There is **no real forward
+evidence**, no optimizer, no update, no training. A **fourth** real no-update
+smoke is required.
+
+**STATUS: PRE-TRAIN TRUNCATION-WIRING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**
+**CLASSIFICATION A + D — MEASUREMENT-ONLY WIRING DEFECT PLUS THE TEST BOUNDARY THAT HID IT**
+**PRODUCTION TRAINING, VALIDATION AND SMOKE ALL PASSED `TRUNCATION` CORRECTLY — NOT AFFECTED**
+**`truncation=None` EXISTED AT EXACTLY ONE SITE IN THE REPOSITORY, INTRODUCED BY THE §U REPAIR**
+**22 TESTS PASSED BECAUSE NOTHING EVER EXECUTED `validation_timing` OR `prepare_condition_batch`**
+**THE REAL PREPARATION SEAM IS NOW EXERCISED END TO END, INCLUDING A RUNTIME ARGUMENT SPY**
+**MAX_LENGTH 256 / NO TRUNCATION / ON_OVERFLOW=FAIL UNCHANGED; NO NEW DECISION**
+**PhoBERT WAS RESIDENT ON GPU BUT NO FORWARD, NO OPTIMIZER, NO UPDATE OCCURRED**
+**§W INVENTORY REPAIR INTACT; STAGE 6 UNCHANGED; PREPARED CORPUS AUTHORITATIVE; TEST SEALED**
+**A FOURTH REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM ONE PASSED**

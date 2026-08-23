@@ -372,7 +372,12 @@ def validation_timing(
     import torch
 
     from unmark.linguistics import make_classifier, try_load_inventory
-    from unmark.stage1.execute import build_objective, lambdas_to_weights, load_prepared_chunks
+    from unmark.stage1.execute import (
+        TRUNCATION,
+        build_objective,
+        lambdas_to_weights,
+        load_prepared_chunks,
+    )
     from unmark.stage1.preflight import verify_scientific_inputs
     from unmark.stage1.trainer import verify_model_contract
     from unmark.stage1.validation import HeldOutExample, evaluate, prepare_condition_batch
@@ -412,7 +417,13 @@ def validation_timing(
     began = time.perf_counter()
     prepared_by_condition = {
         condition: prepare_condition_batch(
-            held_out, tokenizer, condition, truncation=None, classifier=classifier
+            # The SAME authoritative policy `execute_stage` passes: MAX_LENGTH 256
+            # with ON_OVERFLOW=FAIL. `truncation=None` was invalid -- the argument
+            # is typed `TruncationPolicy` with no default, and `prepare_with_condition`
+            # calls `truncation.check(...)` unconditionally, so the real third smoke
+            # died on `'NoneType' object has no attribute 'check'`. There is no
+            # measurement-specific policy and no second MAX_LENGTH (Audit 030 §X).
+            held_out, tokenizer, condition, truncation=TRUNCATION, classifier=classifier
         )
         for condition in VALIDATION_CONDITIONS
     }

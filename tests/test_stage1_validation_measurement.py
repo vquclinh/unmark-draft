@@ -257,3 +257,129 @@ def test_the_synchronize_hook_is_invoked_around_each_forward():
     proxy = InstrumentedObjective(TinyObjective(), synchronize=fake_synchronize)
     proxy.reference_representation(torch.ones(2, 4), None, None)
     assert calls["n"] == 2, "expected a sync immediately before and after"
+
+
+# ---------------------------------------------------------------------------
+# END-TO-END through the REAL preparation seam (Audit 030 §X)
+# ---------------------------------------------------------------------------
+# The tests above start at `evaluate`, with `prepared` hand-built from integers.
+# That is exactly why 22 of them passed while the real third smoke died in
+# `prepare_condition_batch`. These run the REAL `validation_timing` with an
+# injected tiny model, so the REAL `prepare_condition_batch` and the REAL
+# `prepare_with_condition` execute with whatever truncation the tool actually
+# passes. No PhoBERT, no download.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+e2e_provisioned = pytest.mark.skipif(
+    not (REPO_ROOT / ".resources-cache/vietnamese-syllables/all-vietnamese-syllables.txt").is_file(),
+    reason="the git-ignored inventory cache is not provisioned in this runtime",
+)
+
+
+class _TinyCore(torch.nn.Module):
+    """Stands in for the frozen encoder. `hidden_size != 768` so the locked
+    adapter-parameter assertion does not apply to this stub."""
+
+    def __init__(self, dim: int = 8) -> None:
+        super().__init__()
+        self.config = type("Config", (), {"hidden_size": dim})()
+        self.embedding = torch.nn.Embedding(64, dim)
+        for parameter in self.parameters():
+            parameter.requires_grad_(False)
+        self.eval()
+
+    def forward(self, ids):
+        return self.embedding(ids)
+
+
+class _TinyUnmarkEncoder(torch.nn.Module):
+    def __init__(self, dim: int = 8) -> None:
+        super().__init__()
+        self.encoder = _TinyCore(dim)
+        self.adapter = torch.nn.Linear(dim, dim)   # the only trainable half
+
+
+class _TinyObjective(torch.nn.Module):
+    def __init__(self, unmark_encoder, weights) -> None:
+        super().__init__()
+        self.unmark_encoder = unmark_encoder
+        self.weights = weights
+
+    def _pool(self, ids):
+        return self.unmark_encoder.encoder(ids.long()).mean(dim=1)
+
+    def reference_representation(self, ids, mask, special):
+        return self._pool(ids)
+
+    def adapted_representation(self, ids, mask, special, *channels):
+        return self.unmark_encoder.adapter(self._pool(ids))
+
+
+def _tiny_build(_revision):
+    from test_stage1_validation_preparation import StubTokenizer  # repo convention
+
+    return StubTokenizer(), _TinyUnmarkEncoder(), _TinyObjective
+
+
+def _tiny_loader(_prepared):
+    text = " ".join(["tiếng", "việt", "không", "dấu"] * 3)
+    dev = {f"doc-{i:04d}#0": text for i in range(6)}
+    return {}, dev
+
+
+@e2e_provisioned
+def test_validation_timing_runs_the_real_preparation_end_to_end(tmp_path):
+    """Would have caught the third-smoke defect: it executes the real seam.
+
+    With `truncation=None` this raises
+    `AttributeError: 'NoneType' object has no attribute 'check'`, exactly as the
+    real Colab run did.
+    """
+    report = validation_timing(tmp_path, "rev", build=_tiny_build, loader=_tiny_loader)
+
+    assert report["forward_passes"] > 0
+    assert sorted(report["conditions_executed"]) == sorted(VALIDATION_CONDITIONS)
+    assert validation_failures(report) == []
+    assert report["no_update_boundary"]["parameters_identical"] is True
+    assert report["scientific_inputs"]["eligibility_policy"] == "VIETNAMESE_SYLLABLE_INVENTORY"
+
+
+@e2e_provisioned
+def test_the_tool_passes_the_production_truncation_object_at_runtime(tmp_path, monkeypatch):
+    """A runtime spy, not a source match: capture the actual argument.
+
+    `prepare_condition_batch` is wrapped rather than replaced, so the real
+    preparation still runs and the assertion is about what was handed to it.
+    """
+    from unmark.stage1.execute import TRUNCATION
+
+    import unmark.stage1.validation as validation_module
+
+    real = validation_module.prepare_condition_batch
+    seen = []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("truncation"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(validation_module, "prepare_condition_batch", spy)
+    validation_timing(tmp_path, "rev", build=_tiny_build, loader=_tiny_loader)
+
+    assert len(seen) == len(VALIDATION_CONDITIONS)
+    for policy in seen:
+        assert policy is TRUNCATION, f"got {policy!r}, not the production policy"
+        assert policy.max_length == 256
+        assert policy.on_overflow.name == "FAIL"
+
+
+@e2e_provisioned
+def test_an_overlong_held_out_chunk_fails_closed_through_the_tool(tmp_path):
+    """>256 must still fail closed all the way up through the measurement tool."""
+    from unmark.stage1.contracts import Stage1ContractViolation
+
+    def long_loader(_prepared):
+        return {}, {"doc-0000#0": " ".join(["tiếng"] * 400)}
+
+    with pytest.raises(Stage1ContractViolation) as caught:
+        validation_timing(tmp_path, "rev", build=_tiny_build, loader=long_loader)
+    assert "exceeds max_length 256" in str(caught.value)
