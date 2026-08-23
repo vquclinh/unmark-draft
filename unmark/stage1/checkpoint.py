@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
 from unmark.stage1.contracts import Stage1ContractViolation
+from unmark.stage1.manifest import CHUNKS_NAME, MANIFEST_NAME
 
 CHECKPOINT_SCHEMA_VERSION = "stage1-prepare-checkpoint-v1"
 STATE_NAME = "state.json"
@@ -273,6 +274,49 @@ class CheckpointIdentity:
             document_sequence_digest=raw["document_sequence_digest"],
             partition_assignment_digest=raw["partition_assignment_digest"],
         )
+
+    def require_locked_protocol(self) -> None:
+        """Refuse an identity that is not the locked Stage-1 protocol.
+
+        `require_match` compares two identities to each other. This compares one
+        identity to the **repository's own locked constants**, which is what a
+        training consumer needs: it has no second identity to compare against,
+        only the protocol it is about to train under. Imported lazily so the
+        checkpoint module stays importable without the protocol module.
+        """
+        from unmark.stage1.protocol import (  # noqa: PLC0415 - avoids an import cycle
+            CHUNK_SCHEMA_VERSION,
+            CORPUS_DATASET,
+            CORPUS_REVISION,
+            DEV_DOCUMENTS,
+            ENCODER_CHECKPOINT,
+            ENCODER_REVISION,
+            MAX_LENGTH,
+            RAW_BASE_POLICY,
+            SPLIT_SEED,
+            STAGE1_PROTOCOL_VERSION,
+        )
+
+        expected = {
+            "protocol_version": STAGE1_PROTOCOL_VERSION,
+            "chunk_schema_version": CHUNK_SCHEMA_VERSION,
+            "corpus_dataset": CORPUS_DATASET,
+            "corpus_revision": CORPUS_REVISION,
+            "tokenizer_checkpoint": ENCODER_CHECKPOINT,
+            "tokenizer_revision": ENCODER_REVISION,
+            "max_length": MAX_LENGTH,
+            "raw_base_policy": RAW_BASE_POLICY,
+            "split_seed": SPLIT_SEED,
+            "dev_documents": DEV_DOCUMENTS,
+        }
+        mine = self.to_dict()
+        for key, want in expected.items():
+            if mine.get(key) != want:
+                raise CheckpointViolation(
+                    f"prepared corpus was built under {key}={mine.get(key)!r}, but "
+                    f"this repository locks {key}={want!r}. Artifacts from different "
+                    "protocols are not comparable and must not be trained on."
+                )
 
     def require_match(self, other: "CheckpointIdentity") -> None:
         mine, theirs = self.to_dict(), other.to_dict()
@@ -822,6 +866,129 @@ def write_completion_marker(
     path = Path(checkpoint_dir) / COMPLETE_NAME
     atomic_write_bytes(path, body)
     return path
+
+
+@dataclass(frozen=True)
+class VerifiedCorpus:
+    """A prepared corpus whose bytes have been checked, not merely declared.
+
+    Returned only by :func:`verify_prepared_corpus`. Holding one means every
+    artifact `COMPLETE.json` binds was re-hashed from disk and matched, so the
+    counts -- including `chunk_membership_digest` -- describe **those exact
+    bytes** rather than a manifest field accepted on trust (Audit 030 F1).
+    """
+
+    prepared_dir: Path
+    completion_path: Path
+    identity: CheckpointIdentity
+    manifest: dict[str, Any]
+    counts: dict[str, Any]
+    artifacts: dict[str, tuple[int, str]]
+
+    @property
+    def chunk_membership_digest(self) -> str:
+        """The VERIFIED membership digest. Safe to record as provenance."""
+        return self.counts["chunk_membership_digest"]
+
+
+def verify_prepared_corpus(
+    prepared_dir: Path, completion_dir: Path
+) -> VerifiedCorpus:
+    """Fail closed unless `prepared_dir` is the exact completed artifact it claims.
+
+    The one authoritative check a training consumer must pass before a model is
+    loaded. Until Audit 030 F1 there was none: `load_prepared_chunks` read
+    `chunks.jsonl` whole and `execute_stage` recorded
+    `manifest["counts"]["chunk_membership_digest"]` as provenance **without ever
+    verifying that the loaded bytes corresponded to it**. A truncated, swapped or
+    foreign payload would have trained silently under a digest describing
+    different data.
+
+    This reuses the Stage-6 completion machinery rather than adding a second
+    hash verifier: the same `COMPLETE.json` written last by
+    :func:`write_completion_marker`, the same `verify_file`, the same
+    relative-name artifact binding. **No absolute path is interpreted** --
+    `COMPLETE.json` binds artifacts by relative name plus size and sha256, so a
+    prepared corpus restored to a different directory verifies identically.
+
+    Args:
+        prepared_dir: the directory holding `chunks.jsonl` and `manifest.json`.
+        completion_dir: the directory holding `COMPLETE.json`. These are
+            separate because the real run persists the payload and the
+            checkpoint under different roots; neither path is inferred.
+
+    Raises:
+        CheckpointViolation: missing, malformed or incomplete marker; a bound
+            artifact that is missing, truncated or modified; a manifest that
+            disagrees with the marker; an identity that is not the locked
+            Stage-1 protocol.
+    """
+    prepared_dir = Path(prepared_dir)
+    path = Path(completion_dir) / COMPLETE_NAME
+    if not path.is_file():
+        raise CheckpointViolation(
+            f"no completion marker at {path}. A prepared corpus is only usable "
+            "for training once Stage 6 has written COMPLETE.json; a directory "
+            "that merely exists proves nothing."
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise CheckpointViolation(
+            f"completion marker {path} is malformed: {error}. Refusing to guess."
+        ) from error
+
+    if payload.get("complete") is not True:
+        raise CheckpointViolation(
+            f"completion marker {path} does not record complete=true; the "
+            "prepare did not finish"
+        )
+    if payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+        raise CheckpointViolation(
+            f"completion marker schema {payload.get('schema_version')!r} != "
+            f"{CHECKPOINT_SCHEMA_VERSION!r}"
+        )
+
+    identity = CheckpointIdentity.from_dict(payload["identity"])
+    identity.require_locked_protocol()
+
+    bound = payload.get("artifacts") or {}
+    for required in (CHUNKS_NAME, MANIFEST_NAME):
+        if required not in bound:
+            raise CheckpointViolation(
+                f"completion marker does not bind {required!r}; it cannot "
+                "vouch for the payload a training run would read"
+            )
+    artifacts: dict[str, tuple[int, str]] = {}
+    for name, meta in sorted(bound.items()):
+        # Re-hashed from disk. This is what catches truncation, modification,
+        # substitution and absence.
+        verify_file(prepared_dir / name, meta["bytes"], meta["sha256"])
+        artifacts[name] = (meta["bytes"], meta["sha256"])
+
+    from unmark.stage1.manifest import load_manifest  # noqa: PLC0415 - cycle
+
+    manifest = load_manifest(prepared_dir)
+    counts = payload.get("counts") or {}
+    if manifest.get("counts") != counts:
+        raise CheckpointViolation(
+            "the prepared manifest's counts disagree with the completion "
+            "marker's; the two artifacts do not describe the same prepare"
+        )
+    if "chunk_membership_digest" not in counts:
+        raise CheckpointViolation(
+            "completion marker records no chunk_membership_digest; provenance "
+            "would have nothing verified to record"
+        )
+
+    return VerifiedCorpus(
+        prepared_dir=prepared_dir,
+        completion_path=path,
+        identity=identity,
+        manifest=manifest,
+        counts=counts,
+        artifacts=artifacts,
+    )
 
 
 def read_completion(

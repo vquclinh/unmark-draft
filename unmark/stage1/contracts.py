@@ -372,8 +372,26 @@ RATE_NAMESPACE = "stage1-rate"
 SCOPE_NAMESPACE = "stage1-scope"
 """Domain separation tags for the two independent draws (D-S1B-003)."""
 
-PI_STRIP = 0.25
-"""`P(scope = TONE_AND_LETTER)` per example/visit.
+from unmark.stage1.protocol import PI_STRIP  # noqa: E402 - single source of truth
+
+"""`P(scope = TONE_AND_LETTER)` per example/visit -- **imported, never retyped.**
+
+Until Audit 030 F2 this module typed its own `0.25` literal while
+`protocol.PI_STRIP` typed another. The two agreed, so the science was correct
+and the manifest was honest -- but they were independent: the corruption engine
+read *this* one and every recorded artifact read *that* one, and a one-sided
+edit would have gone unnoticed by the entire repository.
+
+`protocol.py` is authoritative because it declares itself "the locked Stage-1
+protocol. One source of truth", and because it already *derives* rather than
+types (its seven role seeds come from `derive_seeds`). This module is a
+mechanism module -- policies and config objects -- so it consumes the locked
+value rather than declaring it. The direction is acyclic: `protocol` imports
+only `unmark.evaluation.profiling`, which reaches `evaluation.contracts` and
+`orthography` and never returns to `stage1.contracts`.
+
+Changing the value now necessarily changes **both** corruption behaviour and
+recorded protocol/manifest identity, which is the property F2 required.
 
 Locked a-priori by the researcher (D-S1B-003) **before any Stage-1 result
 existed**, and never tuned -- not on UIT-VSFC, not on any downstream score, and

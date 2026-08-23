@@ -4,16 +4,16 @@
 |---|---|
 | **Audit id** | 029 |
 | **Created (UTC)** | 2026-08-22 |
-| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), the performance investigation and ordered parallel compute (§Y), the source-coordinate chunking repair (§Z), then the non-Vietnamese orthography repair (§AA) |
+| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), the performance investigation and ordered parallel compute (§Y), the source-coordinate chunking repair (§Z), the non-Vietnamese orthography repair (§AA), then the **first successful complete real Stage-6 prepare** (§AB) |
 | **Original baseline HEAD** | `5b07430` (`docs: lock Stage-1 scientific configuration`) — the state at creation |
-| **Current baseline HEAD** | `1f86667` (`fix stage 1`) |
+| **Current baseline HEAD** | `aa49785` (`repair stage1 runner`) — **the HEAD that completed Stage 6** |
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Scope — as created** | *(historical, superseded)* "Implement the complete pre-training Stage-1 execution stack from the locked Audit 028 configuration. **Execute none of it.**" That was true on 2026-08-22 and is **no longer** the state: the stack has since been run repeatedly against the real pinned corpus. |
-| **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. Stages 1-5 execute and pass on the real corpus; Stage 6 is implemented, streamed and durably resumable, and **real Drive checkpointing and a cold-process RESUME are demonstrated**: `2f6d024` committed **847 848 documents across 170 verified shards** before failing closed. **Stage 6 has never completed**, and that prefix is now **forensic-only**, because the source-boundary semantics changed under it (§Z.12). Stage-1 *training* is implemented but unexecuted and out of scope here. |
+| **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. **Stage 6 is COMPLETE**: at `aa49785` the full 1 118 224-document prepare finished, producing **2 633 067 chunks across 224 shards**, re-verified on a cold process via `ALREADY_COMPLETE` (§AB). Two earlier prefixes (`2f6d024` 847 848 / 170, `1f86667` 894 182 / 179) are preserved **forensic-only**. Stage-1 *training* is implemented but unexecuted and out of scope here — **PRE-TRAIN readiness is decided by [Audit 030](030-pretrain-repository-wide-audit.md)**. |
 | **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§AA each record a defect, or an investigation of one, that surfaced only against the real corpus or the real pinned tokenizer, not in the local suite. §Y is the exception that proves the discipline: the reported regression was **not** reproducible from the code. |
 | **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1); at `f9c23fe` it **crashed at document 0** on runner wiring (§W); at `cc2b710` it ran to **500 documents** and was stopped deliberately (§Y); at `2f6d024`, with 16 workers, it ran durably to **847 848 documents / 170 verified shards** — **surviving a deliberate kill and a cold-process RESUME** — before **failing closed** on one 604-character region (§Z); at `1f86667` that region **passed** (202 safe cuts, 167 viable) and Stage 6 reached **894 182 documents / 179 shards** before failing closed on a second, 98-character region (§AA). Real worker sweep on the real tokenizer at 1 000 documents: **18.87 / 34.97 / 58.82 / 86.21 / 136.99 docs/s** at 1 / 2 / 4 / 8 / 16, all producing the same 17 219 chunks. |
-| **What has NOT run** | **No completed Stage-6 prepare.** The §AA repair has **never been run against the real second blocker** (`Mô_đun:Ko-translit`, row 894 182), so it is **not claimed fixed**. The `1f86667` prefix is unusable by design after the RAW_BASE/boundary-semantics change, so Stage 6 must **restart from document 0**. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
-| **Next step** | The **real second-blocker reprobe**: `scripts/stage1_blocker_probe.py` against row 894 182 `[4887, 4985)`, confirming by metadata that RAW_BASE no longer exceeds 256 and that the region subdivides, then restart Stage 6 **from document 0 in a new checkpoint directory**. Not the full corpus run, and not training — **neither is authorised by this audit**. |
+| **What has NOT run** | **No Stage-1 training of any kind**: no encoder load, no forward pass, no optimizer, no update, no LR pilot, no `r` sweep, no final main run, no downstream task. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
+| **Next step** | Stage-6 preparation is finished, so Audit 029's work is done. Readiness to *train* is a separate, repository-wide question — see **[Audit 030](030-pretrain-repository-wide-audit.md)**. **Training is not authorised by this audit.** |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after a completed real prepare, a demonstrated real Drive resume, the proposal/PDF synchronisation, and a no-update real-model smoke available for review |
 | **Revision 3c non-Vietnamese orthography repair** | **2026-08-23** — §Z's repair **passed the real first blocker** (202 safe cuts, 167 viable), and Stage 6 ran to **894 182 / 1 118 224 documents, 179 shards**, then failed closed on a 98-character region of **97 Hangul syllables**: `reference 100` but **`RAW_BASE 271`**. Two defects — `isalpha()` protected any alphabetic script as a Vietnamese candidate, and NFD split Hangul into class-0 Jamo so the base stream grew to 269 characters. The base now **recomposes** per proposal §4.2, and the protected span is **Latin-script**. See §AA. |
 | **Revision 3c source-coordinate chunking repair** | **2026-08-23** — real Stage 6 reached **847 848 documents / 170 shards** with durable Drive checkpointing, a deliberate kill and a cold-process RESUME all demonstrated, then **failed closed** on a 604-character region carrying **108 punctuation/separator/symbol positions** — many candidate source-boundary locations, against **zero** cuts from the old implementation. A global `canonical_text != text` guard turned a **two-character** tone-placement difference into total indivisibility. Safe cuts are now computed in **source coordinates**. The 847 848-document checkpoint is forensic evidence, not a resume point. See §Z. |
@@ -32,7 +32,7 @@
 
 ## A. VERDICT — CURRENT
 
-**REVISION 3C NON-VIETNAMESE ORTHOGRAPHY REPAIR PASS — READY FOR REAL SECOND-BLOCKER REPROBE**
+**STAGE-6 CORPUS PREPARATION COMPLETE — FIRST SUCCESSFUL FULL REAL RUN (§AB)**
 
 Stage 6 is streamed and durably resumable; the direct-BPE fast path is
 **removed** as unsafe (§V) and the real tokenizer probe confirms it; the
@@ -42,9 +42,9 @@ and superseded.
 
 **What has actually happened on real data:** the corpus pin, schema,
 contamination screen and document split all pass on all **1 118 224** documents,
-and the pinned-tokenizer probe passes. Stage 6 has been entered at **five**
-commits, and the five must not be conflated — only the last two committed a
-checkpoint, and neither completed:
+and the pinned-tokenizer probe passes. Stage 6 has been entered at **six**
+commits, and the six must not be conflated — three committed a checkpoint, and
+**only the last one completed**:
 
 | Commit | Runner | What happened | Checkpoint |
 |---|---|---|---|
@@ -53,16 +53,17 @@ checkpoint, and neither completed:
 | `cc2b710` | checkpoint-capable, wiring repaired | ran to **500 documents / 9 862 chunks in 119.2 s = 4.2 docs/s**, then **stopped deliberately** before the first 5 000-document interval (§Y) | **none** — stopped short of the first commit |
 | `2f6d024` | + ordered parallel compute, **16 workers** | ran durably to **847 848 documents**, surviving a **deliberate kill** and a **cold-process RESUME**, then **failed closed** on one 604-character region (§Z) | **170 committed shards** — preserved as forensic evidence |
 | `1f86667` | + source-coordinate safe cuts (§Z) | **passed** the former blocker (202 safe cuts, 167 viable), reached **894 182 documents**, then **failed closed** on a 98-character Hangul region: `RAW_BASE 271` vs 256 (§AA) | **179 committed shards** — preserved as forensic evidence |
+| `aa49785` | + non-Vietnamese orthography repair (§AA) | **COMPLETED**: 1 118 224 / 1 118 224 documents, 2 633 067 chunks, 1 203.5 s; `ALREADY_COMPLETE` re-verified every artifact on a cold process (§AB) | **224 shards, COMPLETE.json** — the prepared corpus |
 
 **Real durable checkpointing, a deliberate kill and a cold resume are now
 demonstrated on real data** (§Z.1), and so is the parallel path: **136.99
 docs/s** at 16 workers against 18.87 at one, on the **real tokenizer**, all
 worker counts producing the same 17 219 chunks at 1 000 documents.
 
-Stage 6 has still **never completed**. And because the §AA repair changes
-RAW_BASE text, token lengths and therefore chunk boundaries for non-Vietnamese
-documents, the **894 182**-document prefix is **not a resume point** either:
-Stage 6 must restart from document 0 in a new checkpoint directory (§AA.9).
+**Stage 6 is now complete** (§AB). The two earlier prefixes are forensic-only and
+were never reused: the HEAD-bound checkpoint identity refused both, and
+`aa49785` started from document 0 in its own namespace, exactly as §Z.12 and
+§AA.9 required.
 
 **What §Y concluded about the `cc2b710` slowdown, stated exactly:**
 
@@ -84,9 +85,7 @@ Stage 6 must restart from document 0 in a new checkpoint directory (§AA.9).
 **What remains true:**
 
 * **no successful full Stage-6 prepare** — and this audit does not authorise one;
-* **the real second blocker has not been rechunked** — the repair is not
-  claimed to have fixed it until a real run shows that it does. The *first*
-  blocker was rechunked and **passed** (§AA.1);
+* **both real blockers were rechunked and passed** in the full run (§AB.6);
 * **worker 16 is an operational choice for the Colab runtime that ran, not a
   production constant** — the sweep below is real-tokenizer evidence at 1 000
   documents, on one machine;
@@ -97,15 +96,11 @@ Stage 6 must restart from document 0 in a new checkpoint directory (§AA.9).
 
 **The next step is the real blocker reprobe**:
 
-1. run `scripts/stage1_blocker_probe.py` against the real second blocker
-   (row 894 182, `[4887, 4985)`, sha256 `e50cf079…`) and confirm by **metadata
-   only** that RAW_BASE no longer exceeds 256 and that the region subdivides —
-   §AA repairs the *mechanism*, and that document has **not** been rechunked;
-2. then restart Stage 6 **from document 0, in a new checkpoint directory**,
-   because the committed prefix was built under the old RAW_BASE and boundary
-   semantics.
+1. **Audit 030** — the repository-wide PRE-TRAIN gate, which audits the
+   *training* path Audit 029 never covered;
+2. then, only if that passes, the bounded **real no-update model smoke**.
 
-Neither the full 1 118 224-document run nor training is authorised here.
+**Training is not authorised here**, and this audit does not decide PRE-TRAIN readiness.
 
 ---
 
@@ -3534,7 +3529,157 @@ and 202 are diagnostics, not contract.
 
 ---
 
-**STATUS: REVISION 3C NON-VIETNAMESE ORTHOGRAPHY REPAIR PASS — READY FOR REAL SECOND-BLOCKER REPROBE**
+## AB. FIRST SUCCESSFUL COMPLETE REAL STAGE-6 PREPARE
+
+**Date:** 2026-08-23 **Execution HEAD:** `aa49785eadcbd67b64be28a5f67d725c79b41bbb`
+
+**This is the first time Stage 6 has ever completed.** Seven revisions and two
+real blockers preceded it; §P through §AA record every one of those failures and
+are **not** rewritten here. What follows is new evidence, not a revision of old
+evidence.
+
+### AB.1 Runtime and pins
+
+| | |
+|---|---|
+| Python / Transformers | 3.13.15 / 4.57.6 |
+| logical CPUs / RAM | 48 / 176.88 GiB |
+| `--prepare-workers` | **16 — OPERATIONAL ONLY**, not a protocol constant |
+| PhoBERT | `vinai/phobert-base` @ `01daacda68afe13d83023d16ec647239e344a1e6` |
+| UVW-2026 | `undertheseanlp/UVW-2026` @ `a0a79294e4568137e25828bb3f2a4cde8546e1fb` |
+
+Real source files passed **exact byte-size and SHA256** verification before a
+single row was read.
+
+### AB.2 Stages 1-5 on the real corpus
+
+| Stage | Result |
+|---|---|
+| pin verification | **PASS** — all three files, name + size + digest |
+| read + concatenate | `train.parquet` **894 579**, `validation.parquet` **111 822**, `test.parquet` **111 823** → **1 118 224**, locked order train → validation → test |
+| schema + duplicate ids | **PASS** — ids unique |
+| contamination screen | **0 excluded of 1 118 224**; 296 628 length-guard skips, 821 596 prefilter checks, **0 candidates**, **0 full corpus canon calls** |
+| document-level split **before** chunking | train **1 113 224**, dev **5 000**, split seed **51733** |
+
+**Official UIT-VSFC TEST: SEALED, UNTOUCHED, NOT SCREENED** — no route, no
+argument.
+
+### AB.3 Stage 6 completed
+
+Started from **document 0** in a new HEAD-bound checkpoint namespace, as §Z.12
+and §AA.9 required.
+
+| | |
+|---|---|
+| documents | **1 118 224 / 1 118 224** |
+| **chunks total** | **2 633 067** |
+| chunks train / dev | **2 621 624** / **11 443** |
+| shards | **224** |
+| committed payload | **~2 198.4 MB** |
+| Stage-6 total | **1 203.5 s** |
+
+Timing breakdown from the §Y.4 instrumentation: chunk compute **1 168.0 s
+(97.1 %)**, serialisation **16.7 s (1.4 %)**, checkpoint commit **17.4 s
+(1.4 %)** across **224** commits, collector wait 1 159.0 s (96.3 %).
+
+**The collector-wait figure is not evidence of a defect.** With 16 workers the
+main process is *expected* to spend most of its wall-clock blocked on
+`future.result()` while workers compute; that is what an ordered collector does.
+Collector wait and chunk compute overlap by construction and do not sum to 100 %.
+
+### AB.4 Artifacts
+
+```
+prepared output   /content/unmark-stage1-prepared-aa49785eadcb/
+Drive checkpoint  /content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb
+COMPLETE marker   .../aa49785eadcb/COMPLETE.json
+run log           /content/drive/MyDrive/UNMARK/logs/stage1-full-aa49785eadcb-20260823T082803Z.log
+completion summary/content/drive/MyDrive/UNMARK/logs/stage1-complete-aa49785eadcb.json
+```
+
+### AB.5 ALREADY_COMPLETE — durable completion verified independently
+
+A **second invocation under the same HEAD** re-ran Stages 1-5 and then reported
+`ALREADY_COMPLETE: every artifact verified against COMPLETE.json`. The §U.4
+state machine therefore worked end to end on real data: the marker was written
+last, and every artifact it names re-hashed correctly on a later, cold process.
+
+Final verified summary:
+
+| Property | Value |
+|---|---|
+| `base_invariance_violations` | **0** |
+| `chunks_total` | **2 633 067** |
+| `chunks_by_partition` | train **2 621 624**, dev **11 443** |
+| `parent_documents_total` | **1 118 224** |
+| `parent_documents_by_partition` | train **1 113 224**, dev **5 000** |
+| **`parents_spanning_both_partitions`** | **0** |
+| **`overflow_count`** | **0** |
+| `chunk_membership_digest` | `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6` |
+
+`overflow_count 0` is the load-bearing one: **every one of the 2 633 067 chunks
+satisfies `max_length = 256` on both the reference and the RAW_BASE pathway**, so
+no truncation was needed and none occurred.
+
+### AB.6 The two real blockers, both passed
+
+Neither failure is rewritten. Both were real, both stopped Stage 6, and both are
+recorded in full at §Z and §AA.
+
+| | First blocker | Second blocker |
+|---|---|---|
+| document / row | `Chincha_Alta` / **847 848** | `Mô_đun:Ko-translit` / **894 182** |
+| range / size | `[259, 863)` / 604 chars | `[4887, 4985)` / 98 chars |
+| shape | punctuation-rich, non-canonical tail | **97 Hangul + 1 quotation** |
+| old failure | global `canonical_text != source` guard → **zero safe cuts** | arbitrary Unicode alphabetic treated as one protected Vietnamese candidate; global NFD leaked Hangul → Jamo into RAW_BASE (**base 269 chars, RAW_BASE 271 tokens**) |
+| repair | source-coordinate safe boundaries (§Z, D-S1B-012) | non-Vietnamese script preserved in RAW_BASE; protected span is Latin-script (§AA, D-S1B-013) |
+| **real repaired result** | **202 safe cuts, 167 viable**, reference 282, RAW_BASE 281 | **base 98 chars, reference 100, RAW_BASE 100**, 97 safe interior cuts, 97 viable |
+
+Both passed **in the real corpus run**, and the full 1 118 224-document prepare
+then completed.
+
+### AB.7 Forensic checkpoints preserved
+
+| HEAD | Documents | Shards | State |
+|---|---|---|---|
+| `2f6d024192df` | 847 848 | 170 | **UNTOUCHED** |
+| `1f866678ca82` | 894 182 | 179 | **UNTOUCHED** |
+
+Neither was reused, mutated or deleted. The HEAD-bound checkpoint identity
+refused both by construction, exactly as §Z.12 and §AA.9 specified, and the new
+run started from document 0 in its own namespace.
+
+### AB.8 Boundaries still held
+
+**No encoder was loaded, no forward pass ran, no optimizer was constructed, and
+no training step occurred.** Official UIT-VSFC TEST remains SEALED and was never
+screened. Direct BPE remains absent.
+
+### AB.9 What this section does and does not conclude
+
+It concludes that **Stage-6 corpus preparation is complete and durably verified**
+— the thing Audit 029 existed to deliver.
+
+It does **not** conclude that Stage-1 training may begin. That is a separate,
+repository-wide question about the *training* path, which Audit 029 never
+audited, and it is decided by
+[Audit 030](030-pretrain-repository-wide-audit.md). **No PRE-TRAIN PASS is
+claimed here.**
+
+---
+
+**STATUS: STAGE-6 CORPUS PREPARATION COMPLETE — FIRST SUCCESSFUL FULL REAL RUN (§AB)**
+**HEAD `aa49785`: 1 118 224 / 1 118 224 DOCUMENTS, 2 633 067 CHUNKS, 224 SHARDS, 1 203.5 s**
+**train 2 621 624 / dev 11 443 CHUNKS FROM 1 113 224 / 5 000 PARENT DOCUMENTS**
+**ALREADY_COMPLETE RE-VERIFIED EVERY ARTIFACT AGAINST COMPLETE.json ON A COLD PROCESS**
+**overflow_count 0, base_invariance_violations 0, parents_spanning_both_partitions 0**
+**chunk_membership_digest 250859a5…78413d6; CONTAMINATION 0 OF 1 118 224**
+**BOTH REAL BLOCKERS PASSED: Chincha_Alta 202/167 CUTS; Ko-translit RAW_BASE 271 -> 100**
+**FORENSIC CHECKPOINTS `2f6d024` (847 848) AND `1f86667` (894 182) UNTOUCHED**
+**OFFICIAL UIT-VSFC TEST SEALED; NO ENCODER, NO FORWARD, NO OPTIMIZER, NO TRAINING**
+**PRE-TRAIN READINESS IS *NOT* DECIDED HERE — SEE AUDIT 030**
+
+~~**STATUS: REVISION 3C NON-VIETNAMESE ORTHOGRAPHY REPAIR PASS — READY FOR REAL SECOND-BLOCKER REPROBE**~~ **— superseded by §AB**
 **§Z's REPAIR IS VALIDATED ON THE REAL FIRST BLOCKER: 202 SAFE CUTS, 167 VIABLE — IT PASSED**
 **STAGE 6 REACHED 894 182 / 1 118 224 DOCUMENTS, 179 SHARDS, THEN FAILED CLOSED AGAIN**
 **SECOND BLOCKER: 98 CHARS, 97 HANGUL + 1 QUOTATION, reference 100 BUT RAW_BASE 271 vs 256**

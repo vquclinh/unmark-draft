@@ -12,6 +12,7 @@ structural rather than a promise.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -21,6 +22,8 @@ from unmark.stage1.contracts import (
     Stage1ContractViolation,
     TruncationPolicy,
 )
+from unmark.stage1.checkpoint import VerifiedCorpus
+from unmark.stage1.trainer import load_training_checkpoint
 from unmark.stage1.manifest import CHUNKS_NAME
 from unmark.stage1.protocol import (
     BATCH_SIZE,
@@ -96,13 +99,19 @@ def execute_stage(
     stage: str,
     schedule: Sequence[PlannedRun],
     prepared_corpus: Path,
-    manifest: dict[str, Any],
+    verified: "VerifiedCorpus",
     output_dir: Path,
     cache_root: Path,
     revision: str,
     repository_head: str | None,
+    resume: bool = False,
 ) -> int:
-    """Run every planned run of one stage and persist the selection artifact."""
+    """Run every planned run of one stage and persist the selection artifact.
+
+    With `resume`, each planned run continues from its own verified training
+    checkpoint if one exists, and starts fresh if it does not -- so a stage
+    interrupted after two of five runs redoes neither of the two.
+    """
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.stage1.objective import Stage1Objective
     from unmark.stage1.validation import HeldOutExample, at_update, evaluate, prepare_condition_batch
@@ -124,11 +133,19 @@ def execute_stage(
         for condition in VALIDATION_CONDITIONS
     }
 
-    manifest_digest = manifest["counts"]["chunk_membership_digest"]
+    # The VERIFIED digest (Audit 030 F1). Until the hardening this read
+    # `manifest["counts"][...]` -- a declaration accepted on trust, so a run
+    # could record a digest describing data it had not trained on. `verified`
+    # can only exist if every artifact COMPLETE.json binds was re-hashed from
+    # disk and matched.
+    manifest_digest = verified.chunk_membership_digest
     candidates: list[Candidate] = []
-    output_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True, exist_ok=resume)
 
     for planned in schedule:
+        # One checkpoint namespace per run, named by the run's own label, so two
+        # runs in a stage can never overwrite each other's state.
+        run_checkpoints = output_dir / f"run-{planned.label.replace('=', '')}" / "_checkpoint"
         lambda_align, lambda_clean = lambdas_for_r(planned.r)
         provenance = RunProvenance(
             run_seed=planned.seed,
@@ -158,9 +175,25 @@ def execute_stage(
             pad_token_id=pad_token_id,
             classifier=classifier,
             cap=INITIAL_MAX_UPDATES,
+            checkpoint_dir=run_checkpoints,
+            # Explicit: a checkpoint is used only when the operator asked to
+            # resume. `train_run` verifies its identity before touching it.
+            resume=load_training_checkpoint(run_checkpoints) if resume else None,
         )
         if result.continued:
-            # SAME run, continued -- not a new candidate.
+            # SAME run, continued -- not a new candidate. The locked budget rule
+            # requires preserving adapter, optimizer, visit, cursor and streams
+            # across the 20k boundary. This passed `resume=None` until the Audit
+            # 030 F3 hardening, which rebuilt the optimizer and restarted the
+            # sampler at visit 0 -- a continuation in name only. It now resumes
+            # from the checkpoint the first leg wrote at exactly `cap`, so the
+            # continuation uses the same mechanism as a crash resume.
+            carried = load_training_checkpoint(run_checkpoints)
+            if carried is None:
+                raise Stage1ContractViolation(
+                    "the 20k leg produced no checkpoint to continue from; a "
+                    "continuation must preserve optimizer and sampler state"
+                )
             result = train_run(
                 objective=objective,
                 provenance=provenance,
@@ -172,7 +205,8 @@ def execute_stage(
                 pad_token_id=pad_token_id,
                 classifier=classifier,
                 cap=result.cap,
-                resume=None,
+                resume=carried,
+                checkpoint_dir=run_checkpoints,
             )
         candidates.append(
             Candidate(
@@ -217,18 +251,52 @@ def execute_stage(
     return 0
 
 
-def smoke_check(*, prepared_corpus: Path, revision: str, repository_head: str | None) -> int:
+def _resident_bytes() -> int | None:
+    """Process RSS, for the Audit 030 F4 measurement. Linux only; None elsewhere."""
+    try:
+        with open("/proc/self/statm", encoding="ascii") as handle:
+            return int(handle.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except Exception:  # noqa: BLE001 - measurement only, never load-bearing
+        return None
+
+
+def smoke_check(
+    *,
+    prepared_corpus: Path,
+    revision: str,
+    repository_head: str | None,
+    completion_dir: Path | None = None,
+) -> int:
     """No-update real-model integration check.
 
     **Constructs no optimizer and calls no `.backward()`.** It reports the model
     contract and one forward pass, and cannot change a parameter.
+
+    Verifies the prepared corpus **before the model is loaded** (Audit 030 F1),
+    so the smoke exercises exactly the gate a training run will pass through.
     """
+    import time
+
     import torch
 
     from unmark.linguistics import make_classifier, try_load_inventory
+    from unmark.stage1.checkpoint import verify_prepared_corpus
     from unmark.stage1.data import Stage1Example, collate_stage1_batch, prepare_example
 
-    train_text, _ = load_prepared_chunks(prepared_corpus)
+    completion = Path(completion_dir) if completion_dir else Path(prepared_corpus) / "_checkpoint"
+    verified = verify_prepared_corpus(Path(prepared_corpus), completion)
+    print(f"prepared corpus VERIFIED against {verified.completion_path}")
+    print(f"  chunk_membership_digest {verified.chunk_membership_digest}")
+    print(f"  counts {json.dumps(verified.counts, sort_keys=True)}")
+
+    # Audit 030 F4 is measured here, on the real corpus, and nowhere else.
+    started = time.monotonic()
+    train_text, dev_text = load_prepared_chunks(prepared_corpus)
+    print(f"  loaded {len(train_text)} train and {len(dev_text)} dev chunks in "
+          f"{time.monotonic() - started:.1f}s")
+    resident = _resident_bytes()
+    if resident is not None:
+        print(f"  process RSS after load: {resident / 1e9:.2f} GB")
     tokenizer, unmark_encoder, objective_cls = build_objective(revision)
     contract = verify_model_contract(unmark_encoder)
     objective = objective_cls(unmark_encoder, lambdas_to_weights(1.0))

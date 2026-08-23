@@ -415,27 +415,48 @@ def _length_functions(tokenizer):
 # ---------------------------------------------------------------------------
 # The three scientific stages
 # ---------------------------------------------------------------------------
+def _verified_corpus(args):
+    """Fail closed unless the prepared corpus is the exact completed artifact.
+
+    Runs BEFORE any model load, so a truncated, swapped, foreign or unfinished
+    prepared corpus can never reach training (Audit 030 F1).
+    """
+    from unmark.stage1.checkpoint import verify_prepared_corpus
+
+    prepared = Path(args.prepared_corpus)
+    completion = Path(args.completion_dir) if args.completion_dir else prepared / "_checkpoint"
+    verified = verify_prepared_corpus(prepared, completion)
+    print(f"  prepared corpus VERIFIED against {verified.completion_path}")
+    for name, (size, digest) in sorted(verified.artifacts.items()):
+        print(f"    {name}: {size} bytes, sha256 {digest[:12]}...")
+    print(f"    chunk_membership_digest {verified.chunk_membership_digest}")
+    return verified
+
+
 def run_lr_pilot(args) -> int:
-    manifest = load_manifest(Path(args.prepared_corpus))
+    verified = _verified_corpus(args)
+    manifest = verified.manifest
     schedule = lr_pilot_schedule(SELECTION_SEED)
     print(f"LR pilot: {len(schedule)} runs, grid {list(LR_PILOT_GRID)}, r = {LR_PILOT_R}, "
           f"seed {SELECTION_SEED}")
     print(f"  corpus: {manifest['source']['revision']}")
-    return _execute(args, schedule, "lr_pilot", manifest)
+    return _execute(args, schedule, "lr_pilot", verified)
 
 
 def run_r_phase1(args) -> int:
-    manifest = load_manifest(Path(args.prepared_corpus))
+    verified = _verified_corpus(args)
+    manifest = verified.manifest
     pilot = _load_selection(Path(args.lr_artifact), "lr_pilot")
     frozen = pilot["selected"]["learning_rate"]
     schedule = r_phase1_schedule(SELECTION_SEED, frozen)
     print(f"r Phase 1: {len(schedule)} runs, grid {list(R_PHASE1_GRID)}, frozen LR {frozen:g}, "
           f"seed {SELECTION_SEED}")
-    return _execute(args, schedule, "r_phase1", manifest)
+    return _execute(args, schedule, "r_phase1", verified)
 
 
 def run_final_main(args) -> int:
-    manifest = load_manifest(Path(args.prepared_corpus))
+    verified = _verified_corpus(args)
+    manifest = verified.manifest
     pilot = _load_selection(Path(args.lr_artifact), "lr_pilot")
     phase1 = _load_selection(Path(args.r_artifact), "r_phase1")
     lr = pilot["selected"]["learning_rate"]
@@ -448,7 +469,7 @@ def run_final_main(args) -> int:
     schedule = final_main_schedule(lr, r)
     print(f"FINAL MAIN Stage-1: {len(schedule)} runs, LR {lr:g}, r {r:g}, seeds {list(TRAIN_SEEDS)}")
     print("  these three adapters ARE the final main Stage-1 models; nothing follows them")
-    return _execute(args, schedule, "final_main", manifest)
+    return _execute(args, schedule, "final_main", verified)
 
 
 def _load_selection(path: Path, expected_stage: str) -> dict:
@@ -466,23 +487,31 @@ def _load_selection(path: Path, expected_stage: str) -> dict:
     return artifact
 
 
-def _execute(args, schedule, stage: str, manifest: dict) -> int:
+def _execute(args, schedule, stage: str, verified) -> int:
     """Run a stage's schedule and persist its selection artifact."""
     from unmark.stage1.execute import execute_stage
 
     output = Path(args.output_dir)
-    if output.exists():
-        print(f"REFUSED: {output} already exists; run artifacts are immutable", file=sys.stderr)
+    resuming = bool(getattr(args, "resume", False))
+    if output.exists() and not resuming:
+        print(f"REFUSED: {output} already exists; run artifacts are immutable. "
+              "Pass --resume to continue an interrupted stage from its verified "
+              "training checkpoints instead of deleting it.", file=sys.stderr)
+        return 2
+    if resuming and not output.exists():
+        print(f"REFUSED: --resume was given but {output} does not exist; there is "
+              "nothing to resume", file=sys.stderr)
         return 2
     return execute_stage(
         stage=stage,
         schedule=schedule,
         prepared_corpus=Path(args.prepared_corpus),
-        manifest=manifest,
+        verified=verified,
         output_dir=output,
         cache_root=Path(args.cache_root),
         revision=args.revision,
         repository_head=args.repository_head,
+        resume=resuming,
     )
 
 
@@ -497,6 +526,7 @@ def run_smoke(args) -> int:
 
     return smoke_check(
         prepared_corpus=Path(args.prepared_corpus),
+        completion_dir=Path(args.completion_dir) if args.completion_dir else None,
         revision=args.revision,
         repository_head=args.repository_head,
     )
@@ -508,7 +538,27 @@ def run_smoke(args) -> int:
 def _corpus_consumer(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prepared-corpus", required=True,
                         help="directory written by prepare-corpus (manifest-bound)")
-    parser.add_argument("--output-dir", required=True, help="must not already exist")
+    parser.add_argument(
+        "--completion-dir", default=None,
+        help="directory holding COMPLETE.json for that prepared corpus. Defaults "
+             "to <prepared-corpus>/_checkpoint, which is where prepare-corpus "
+             "puts it when the two are co-located. A real run may persist the "
+             "payload and the checkpoint under different roots, so this is "
+             "explicit rather than inferred. The prepared corpus is verified "
+             "against this marker before any model is loaded (Audit 030 F1).",
+    )
+    parser.add_argument("--output-dir", required=True,
+                        help="must not already exist, unless --resume is given")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="continue an interrupted stage from its per-run training "
+             "checkpoints. WITHOUT this flag an existing --output-dir is "
+             "REFUSED, so a fresh run can never overwrite scientific evidence; "
+             "WITH it the directory must already exist and every checkpoint "
+             "found is verified against this run's identity (seed, LR, r, "
+             "corpus digest, repository HEAD) before it is used. Nothing is "
+             "auto-resumed: a stage resumes only when asked.",
+    )
     parser.add_argument("--cache-root", required=True, help="representation/tokenizer cache root")
     parser.add_argument("--revision", default=ENCODER_REVISION,
                         help="encoder revision; defaults to the pinned revision and is "
