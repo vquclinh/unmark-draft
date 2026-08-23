@@ -17,6 +17,7 @@
 | **Revision 7 — second real smoke** | 2026-08-23 — the **second real Colab no-update smoke** ran at `b84b4da`. Corpus gates, and the 29 + 17 + 22 provenance/resume/measurement tests, all **passed on real hardware** — confirming §V. It then failed closed in condition preparation with `EligibilityUnresolved`: the pinned syllable inventory is **deliberately not committed** and a fresh runtime had not provisioned it. Classified **A + C** — the artifact was already locked by D-B3A-001, but the check ran *after* model load and the **blocking D-S1A-008 was unimplemented**. **No model forward, no optimizer, no update.** See **§W** |
 | **Revision 8 — third real smoke** | 2026-08-23 — the **third real Colab no-update smoke** ran at `ebbe553`. §W's inventory repair **held completely** (fetch, SHA, shape, `--verify-only`, Drive persistence, preflight before model load), and 31 + 30 + 17 + 22 tests passed on real hardware. Validation then failed closed on `prepare_condition_batch(..., truncation=None, ...)` — `'NoneType' object has no attribute 'check'`. **Measurement-only** (A + D): every production caller passes the authoritative `TRUNCATION`. **PhoBERT was resident but no forward, no optimizer, no update.** See **§X** |
 | **Revision 9 — fourth real smoke** | 2026-08-23 — the **fourth real Colab no-update smoke** ran at `6bd6452`. All corpus, inventory and preparation gates passed (14 + 31 + 30 + 17). It stopped at the **test gate**: the §X real-seam tests reached `evaluate` and hit `Expected all tensors to be on the same device`. A **true positive** — the tool moved the encoder to CUDA and left every batch on the CPU, so real PhoBERT would have failed identically. Repaired in the shared layer, not the fixture. **The real validation command was never run.** See **§Y** |
+| **Revision 10 — fifth smoke probe** | 2026-08-23 — the fifth smoke reached the **device runtime gate** at `9651610` and **the device contract passed on real CUDA: 7 passed, 0 failed, 0 skipped**. The run stopped only because the orchestrator expected the string `"8 passed"`, a **prose miscount in §Y.6** — the file has always held **7** tests, and all nine claimed semantic assertions are present across them. **No code or test was at fault; none was changed.** See **§Z** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
@@ -39,8 +40,14 @@
 > **One open operational item** is recorded, not decided: `execute_stage` performs
 > no device placement at all, so the *training* device remains unchosen.
 >
-> **The real no-update smoke has NOT passed.** The fourth smoke never ran
-> `--validation --require-cuda`: no forward, no optimizer, no update has occurred.
+> **§Z (Revision 10) corrects one number in §Y.6** — the runtime device file holds
+> **7** tests, not 8 — and records that the fifth smoke ran those seven on **real
+> CUDA hardware: 7 passed, 0 failed, 0 skipped**. The device repair below is
+> therefore confirmed in production conditions. No code or test changed.
+>
+> **The real no-update smoke has NOT passed.** Neither the fourth nor the fifth
+> smoke ran `--validation --require-cuda` to completion: no forward, no optimizer,
+> no update has occurred.
 
 ~~**PRE-TRAIN TRUNCATION-WIRING REPAIR PASS — READY TO COMMIT AND RERUN NO-UPDATE SMOKE**~~ **— superseded by §Y**
 
@@ -2174,15 +2181,37 @@ ML-free venv**: all three assemblers route through `batch_to_device` **and**
 still does not move its own inputs; the measurement tool places the model and does
 not assemble batches.
 
-`tests/test_stage1_device_contract_runtime.py` — **torch-gated, 8 tests**: a
-`RecordingCore` encoder captures the device of every tensor it receives, through
-the **real** `evaluate` over **real** prepared examples. It proves the helpers
-behave, that CPU+CPU works, and that **every** tensor the encoder sees — `input_ids`
-*and* `attention_mask`, on both the reference *and* adapted paths — is on the
-model's device. Two tests are **CUDA-gated**: one asserts a CUDA objective receives
-CUDA tensors from a CPU-prepared batch (the fourth-smoke failure inverted into a
-passing contract), and one proves that test is not vacuous by showing the raw
-cross-device call still raises.
+`tests/test_stage1_device_contract_runtime.py` — **torch-gated, 7 tests**
+(~~8~~ — a miscount in the original wording of this section, corrected in §Z; the
+file has always contained seven): a `RecordingCore` encoder captures the device of
+every tensor it receives, through the **real** `evaluate` over **real** prepared
+examples. It proves the helpers behave, that CPU+CPU works, and that **every**
+tensor the encoder sees — `input_ids` *and* `attention_mask`, on both the reference
+*and* adapted paths — is on the model's device. Two tests are **CUDA-gated**: one
+asserts a CUDA objective receives CUDA tensors from a CPU-prepared batch (the
+fourth-smoke failure inverted into a passing contract), and one proves that test is
+not vacuous by showing the raw cross-device call still raises.
+
+**Seven tests, nine semantic claims.** Test count and assertion count are not the
+same number, and the mapping is explicit so the difference is not mistaken for a
+gap:
+
+| # | Semantic claim | Covered by |
+|---|---|---|
+| 1 | `module_device` derives the device from parameters | `test_module_device_reads_the_parameters` |
+| 2 | parameterless module falls back to CPU | `test_module_device_falls_back_to_cpu_without_parameters` |
+| 3 | `batch_to_device` moves tensors and preserves non-tensors (and dtype) | `test_batch_to_device_moves_tensors_and_passes_non_tensors_through` |
+| 4 | CPU objective + CPU batch works, and the encoder really ran | `test_cpu_objective_with_cpu_batch_works` |
+| 5 | `input_ids` on the model's device | `test_every_tensor_the_encoder_sees_is_on_the_models_device` |
+| 6 | `attention_mask` on the model's device | *(same test)* |
+| 7 | **reference** path obeys the contract | *(same test)* — `evaluate` calls `reference_representation` and `RecordingObjective` routes it into the recorder |
+| 8 | **adapted** path obeys the contract | *(same test)* — `evaluate` calls `adapted_representation` twice per batch, also routed into the recorder |
+| 9 | CUDA objective receives CUDA tensors from a CPU-prepared batch, and the check is non-vacuous | `test_a_cuda_objective_receives_cuda_tensors_from_a_cpu_prepared_batch` + `test_removing_the_transfer_really_would_fail` |
+
+Claims 5–8 are one test because they are one fact: the recorder captures **every**
+call the encoder receives, from **both** representation paths, and asserts each
+tensor's device. No eighth test was added, because none of the nine claims was
+missing.
 
 Split into two files deliberately: a module-level `importorskip` would have skipped
 the structural half too, which is how an earlier repair lost its torch-free
@@ -2238,3 +2267,90 @@ smoke is required.
 **NO SCIENTIFIC CONSTANT CHANGED; NO NEW DECISION; §V/§W/§X ALL INTACT**
 **NO FORWARD, NO OPTIMIZER, NO UPDATE, NO TRAINING; PREPARED CORPUS AND STAGE 6 UNTOUCHED**
 **A FIFTH REAL NO-UPDATE SMOKE IS STILL REQUIRED — THIS DOES NOT CLAIM ONE PASSED**
+
+---
+
+## Z. FIFTH REAL SMOKE — DEVICE RUNTIME GATE PROBE, AND A COUNT CORRECTION
+
+**Revision 10.** The fifth smoke reached the device runtime gate on a fresh CUDA
+runtime and **the device contract passed on real hardware**. The run stopped only
+because the orchestrator had been given an expected summary string that did not
+match reality: §Y.6 said the runtime device file held **8** tests. It holds **7**.
+
+**This is not a fifth-smoke scientific failure, and not a code failure.**
+
+### Z.1 The probe
+
+| | |
+|---|---|
+| HEAD | `9651610708dcf038fdc14a81a8338d839ad77ea3` |
+| Fifth smoke reached | the **device runtime gate** |
+| AST top-level tests in `tests/test_stage1_device_contract_runtime.py` | **7** |
+| `pytest --collect-only` | **7 tests collected** |
+| **Real CUDA execution** | **7 passed, 0 failed, 0 skipped** |
+| Orchestrator | **FAIL-CLOSED only because it expected the incorrect string `"8 passed"`** |
+| Production / device code | **NOT FAILED** |
+| Full real validation | **NOT RUN** |
+| Optimizer | **NONE** |
+| Parameter update | **ZERO** |
+| Training | **NOT STARTED** |
+
+`0 skipped` is itself evidence: both CUDA-gated tests and both inventory-gated
+tests actually executed, so the cross-device assertions in §Y ran for real rather
+than being skipped into a false green.
+
+### Z.2 Classification: **A — a counting error in prose, not a coverage gap**
+
+Verified rather than assumed. The seven functions carry **no** `parametrize`
+decorator, so seven definitions collect as exactly seven tests — matching the
+probe. Each of the nine semantic claims §Y makes was mapped to the test that
+carries it; the mapping table is now in **§Y.6**. Claims 5–8 (`input_ids`,
+`attention_mask`, reference path, adapted path) are one test because they are one
+fact: `evaluate` calls `reference_representation` once and `adapted_representation`
+twice per batch, `RecordingObjective` routes **both** into the recording encoder,
+and the test asserts the device of **every** captured tensor.
+
+**Every claimed semantic requirement is present. No eighth test was added**, and no
+test was altered to manufacture one — that would have been redundant coverage
+existing only to make a wrong number true.
+
+### Z.3 What was corrected
+
+* **§Y.6**: "torch-gated, **8** tests" → "torch-gated, **7** tests", with the
+  original figure struck rather than erased, plus the nine-claim mapping table.
+* No other count in this audit derived from the mistaken number. The companion
+  claim "torch-free, **6** tests" was re-checked and is **correct** — four
+  functions, one parametrized three ways, six collected. Every other "8" in this
+  document is unrelated historical evidence (§V's `6 failed, 8 passed`,
+  `test_stage1_pretrain_audit.py`'s 8) and is preserved untouched.
+* The fifth-smoke orchestrator's expected string must be updated to `7 passed`
+  before the next run.
+
+### Z.4 Boundaries
+
+**No production code changed.** No test changed. §V, §W, §X and §Y's findings and
+evidence are untouched — the fourth-smoke failure record in §Y stands exactly as
+written, and its device repair is unaffected and now confirmed on real CUDA
+hardware.
+
+Local full suite at this HEAD: **3 527 passed, 100 skipped, 0 failed** — measured,
+not adjusted. The seven runtime device tests are among the local skips (no torch in
+the ML-free venv) and are the ones the CUDA probe executed.
+
+`docs/spec/decisions.md` byte-unchanged. No scientific constant touched. No
+Audit 031.
+
+### Z.5 Still outstanding
+
+The fifth smoke did **not** run `--validation --require-cuda` to completion. There
+is still **no real validation forward evidence**, no optimizer, no update, no
+training. The **open operational item from §Y.3 stands**: `execute_stage` performs
+no device placement, so the *training* device remains unchosen.
+
+**STATUS: PRE-TRAIN DEVICE TEST-COUNT CONSISTENCY PASS — SEVEN TESTS ARE COMPLETE COVERAGE**
+**THE DEVICE CONTRACT PASSED ON REAL CUDA HARDWARE: 7 PASSED, 0 FAILED, 0 SKIPPED**
+**THE ONLY DEFECT WAS A PROSE MISCOUNT IN §Y.6; NO CODE AND NO TEST WAS AT FAULT**
+**NINE SEMANTIC CLAIMS MAP ONTO SEVEN TESTS — NO EIGHTH TEST WAS ADDED OR NEEDED**
+**§Y's FOURTH-SMOKE FAILURE RECORD PRESERVED EXACTLY; §V/§W/§X UNTOUCHED**
+**FULL REAL VALIDATION STILL NOT RUN; NO OPTIMIZER, NO UPDATE, NO TRAINING**
+**A FIFTH-SMOKE RERUN IS STILL REQUIRED AFTER THE ORCHESTRATOR EXPECTS `7 passed`**
