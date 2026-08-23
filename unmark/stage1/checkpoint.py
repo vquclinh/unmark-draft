@@ -44,6 +44,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
@@ -67,6 +68,62 @@ the same order, with the same contents, are produced for any interval.
 _EXTERNAL_SORT_BLOCK = 2_000_000
 """Lines held in memory while sorting membership keys. Bounds finalisation
 memory to a few hundred MB regardless of corpus size."""
+
+
+@dataclass
+class Stage6Timings:
+    """Where Stage-6 wall-clock actually goes. **Operational only.**
+
+    Revision 3c was blamed for a 3.8x real slowdown that a local A/B could not
+    reproduce (Audit 029 §Y). The reason the question was open at all is that
+    the runner reported one number -- docs/s -- so "the chunker is slow" and
+    "the writer is slow" looked identical from the outside. These counters make
+    the next real run answer it directly instead of by inference.
+
+    Every field is a count or a duration. **No corpus text, no UIT-VSFC text.**
+    Accumulation is a float add per document (not per chunk), so the
+    instrumentation cannot itself become the cost it is measuring.
+    """
+
+    stage6_total_seconds: float = 0.0
+    chunk_compute_seconds: float = 0.0
+    serialization_seconds: float = 0.0
+    shard_buffer_write_seconds: float = 0.0
+    membership_accumulator_seconds: float = 0.0
+    membership_spill_seconds: float = 0.0
+    checkpoint_commit_seconds: float = 0.0
+    checkpoint_bytes: int = 0
+    json_records_written: int = 0
+    chunks_processed: int = 0
+    documents_processed: int = 0
+    membership_spills: int = 0
+    collector_wait_seconds: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.__dict__)
+
+    def report(self) -> str:
+        """One-line-per-phase summary. Called once, at the end of Stage 6."""
+        total = max(1e-9, self.stage6_total_seconds)
+        rows = [
+            ("chunk compute", self.chunk_compute_seconds),
+            ("serialisation", self.serialization_seconds),
+            ("shard buffer write", self.shard_buffer_write_seconds),
+            ("membership accumulate", self.membership_accumulator_seconds),
+            ("membership spill", self.membership_spill_seconds),
+            ("checkpoint commit", self.checkpoint_commit_seconds),
+            ("collector wait", self.collector_wait_seconds),
+        ]
+        lines = [
+            f"    stage 6 total {self.stage6_total_seconds:.1f}s, "
+            f"{self.documents_processed} documents, {self.chunks_processed} chunks, "
+            f"{self.json_records_written} json records, "
+            f"{self.checkpoint_bytes / 1e6:.1f} MB committed, "
+            f"{self.membership_spills} membership spills"
+        ]
+        for label, value in rows:
+            lines.append(f"      {label:<24s} {value:8.1f}s  {100 * value / total:5.1f}%")
+        return "\n".join(lines)
 
 
 class CheckpointViolation(Stage1ContractViolation):
@@ -417,6 +474,7 @@ class PrepareCheckpoint:
         self.checkpoint_seconds = 0.0
         self.checkpoint_bytes = 0
         self.commits = 0
+        self.timings = Stage6Timings()
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -481,14 +539,22 @@ class PrepareCheckpoint:
         if self._buffer_first_index is None:
             self._buffer_first_index = index
         written = 0
+        # One clock read per document, not per chunk: the instrumentation must
+        # not become the cost it exists to measure.
+        started = time.monotonic()
+        append = self._buffer.append
         for chunk in chunks:
-            self._buffer.append(chunk_line(chunk))
+            append(chunk_line(chunk))
             self._pending_chunks += 1
             if chunk.partition == "train":
                 self._pending_train += 1
             else:
                 self._pending_dev += 1
             written += 1
+        self.timings.serialization_seconds += time.monotonic() - started
+        self.timings.json_records_written += written
+        self.timings.chunks_processed += written
+        self.timings.documents_processed += 1
         self._buffer_documents += 1
         self._pending_next_index = index + 1
         self._pending_last_id = document_id
@@ -508,9 +574,11 @@ class PrepareCheckpoint:
 
         Payload first, verified, **then** state -- so a death between them
         leaves the previous checkpoint valid and the new shard simply unused.
-        """
-        import time
 
+        This is the **only** place that touches durable storage: it runs once
+        per `interval` documents, so no fsync, hash, copy or Drive write happens
+        per chunk or per document. Asserted by test.
+        """
         if self._buffer_first_index is None or self._pending_next_index is None:
             return None
         if not force and self._buffer_documents < self.interval:
@@ -557,7 +625,10 @@ class PrepareCheckpoint:
         self._write_state()
 
         self.checkpoint_bytes += len(payload)
-        self.checkpoint_seconds += time.monotonic() - started
+        elapsed = time.monotonic() - started
+        self.checkpoint_seconds += elapsed
+        self.timings.checkpoint_commit_seconds += elapsed
+        self.timings.checkpoint_bytes += len(payload)
         self.commits += 1
         self._buffer.clear()
         self._buffer_documents = 0
@@ -603,7 +674,9 @@ class StreamedCounts:
     membership_digest: str = ""
 
 
-def _external_sorted_digest(keys: Iterable[str], workdir: Path) -> str:
+def _external_sorted_digest(
+    keys: Iterable[str], workdir: Path, timings: "Stage6Timings | None" = None
+) -> str:
     """sha256 over **sorted** `chunk_id\\ttab\\tpartition` lines, bounded memory.
 
     `chunk_membership_digest` sorts, so the digest is order-independent -- but
@@ -616,6 +689,9 @@ def _external_sorted_digest(keys: Iterable[str], workdir: Path) -> str:
     block: list[str] = []
 
     def spill(rows: list[str]) -> None:
+        """One sorted block -> one file. Blocks are `_EXTERNAL_SORT_BLOCK` keys,
+        so a 27.8 M-chunk corpus spills ~14 times in total, not per key."""
+        started = time.monotonic()
         rows.sort()
         path = workdir / f"keys-{len(spills):06d}.txt"
         with open(path, "w", encoding="utf-8") as handle:
@@ -623,6 +699,9 @@ def _external_sorted_digest(keys: Iterable[str], workdir: Path) -> str:
             if rows:
                 handle.write("\n")
         spills.append(path)
+        if timings is not None:
+            timings.membership_spill_seconds += time.monotonic() - started
+            timings.membership_spills += 1
 
     for key in keys:
         block.append(key)
@@ -649,7 +728,9 @@ def _external_sorted_digest(keys: Iterable[str], workdir: Path) -> str:
             path.unlink(missing_ok=True)
 
 
-def stream_counts(lines: Iterable[str], workdir: Path) -> StreamedCounts:
+def stream_counts(
+    lines: Iterable[str], workdir: Path, timings: "Stage6Timings | None" = None
+) -> StreamedCounts:
     """Derive every manifest count from the payload stream.
 
     Equivalent to `build_manifest`'s in-memory accounting, including the
@@ -680,7 +761,13 @@ def stream_counts(lines: Iterable[str], workdir: Path) -> StreamedCounts:
                 )
             yield f"{record['chunk_id']}\t{partition}"
 
-    counts.membership_digest = _external_sorted_digest(key_stream(), spill_dir)
+    started = time.monotonic()
+    counts.membership_digest = _external_sorted_digest(key_stream(), spill_dir, timings)
+    if timings is not None:
+        # Accumulation net of the spill/merge time counted inside the sorter.
+        timings.membership_accumulator_seconds += (
+            time.monotonic() - started - timings.membership_spill_seconds
+        )
     counts.parent_documents_total = len(seen_documents)
     del seen_documents, keys
     return counts

@@ -60,9 +60,13 @@ from unmark.stage1.corpus import (  # noqa: E402
     verify_corpus_root,
 )
 from unmark.linguistics import make_classifier, try_load_inventory  # noqa: E402
-from unmark.stage1.chunking import chunk_document  # noqa: E402
+from unmark.stage1.parallel import (  # noqa: E402
+    ordered_document_chunks,
+    resolve_worker_count,
+)
 from unmark.stage1.checkpoint import (  # noqa: E402
     COMPLETE_NAME,
+    Stage6Timings,
     resolve_repository_head,
     CheckpointIdentity,
     PrepareCheckpoint,
@@ -230,18 +234,39 @@ def run_prepare_corpus(args) -> int:
     started = time.monotonic()
     heartbeats = (1, 10, 50, 100, 500, 1_000, 5_000, 10_000)
     produced = state.chunks_total
+    every = max(1, total // 100)
+    timings = checkpoint.timings
+
+    workers = resolve_worker_count(args.prepare_workers)
+    if workers > 1:
+        print(f"  compute workers: {workers} (operational only -- output is "
+              f"identical for any worker count)")
+
+    def _tokenizer_factory():
+        return _load_tokenizer(args.revision)
 
     try:
-        for index in range(state.next_document_index, total):
-            document = kept[index]
-            chunks = chunk_document(
-                document, partition.assignment[document.document_id],
-                reference_length=reference_length, base_length=base_length,
-                max_length=MAX_LENGTH, classifier=classifier,
-            )
+        stream = ordered_document_chunks(
+            kept, partition.assignment,
+            start_index=state.next_document_index,
+            tokenizer_factory=_tokenizer_factory,
+            workers=workers,
+            max_length=MAX_LENGTH,
+            serial_length_functions=(reference_length, base_length),
+            classifier=classifier,
+            on_wait=lambda seconds: setattr(
+                timings, "collector_wait_seconds",
+                timings.collector_wait_seconds + seconds,
+            ),
+        )
+        compute_mark = time.monotonic()
+        for index, document, chunks in stream:
+            now = time.monotonic()
+            timings.chunk_compute_seconds += now - compute_mark
             produced += checkpoint.add_document(index, document.document_id, chunks)
+            compute_mark = time.monotonic()
             done = index + 1
-            if done in heartbeats or done % max(1, total // 100) == 0 or done == total:
+            if done in heartbeats or done % every == 0 or done == total:
                 elapsed = time.monotonic() - started
                 rate = (done - state.next_document_index) / elapsed if elapsed > 0 else 0.0
                 print(f"    chunking {done}/{total} documents ({100 * done / total:.1f}%), "
@@ -263,6 +288,8 @@ def run_prepare_corpus(args) -> int:
           f"evictions {counters.run_cache_evictions}, incremental appends "
           f"{counters.incremental_appends}, full fallbacks {counters.full_fallbacks}, "
           f"authoritative verifications {counters.authoritative_queries}")
+    timings.stage6_total_seconds = time.monotonic() - started
+    print(timings.report(), flush=True)
     print(f"    checkpoint: {checkpoint.commits} commits, "
           f"{checkpoint.checkpoint_bytes / 1e6:.1f} MB, "
           f"{checkpoint.checkpoint_seconds:.1f}s "
@@ -275,7 +302,7 @@ def run_prepare_corpus(args) -> int:
     payload_bytes, payload_digest = concatenate_shards(shard_paths, output / CHUNKS_NAME)
 
     with open(output / CHUNKS_NAME, encoding="utf-8") as handle:
-        counts = stream_counts(handle, checkpoint.staging / "finalise")
+        counts = stream_counts(handle, checkpoint.staging / "finalise", timings)
 
     manifest = build_manifest_from_counts(
         source=source,
@@ -506,6 +533,15 @@ def build_parser() -> argparse.ArgumentParser:
                               "exact contamination screen")
     prepare.add_argument("--revision", default=ENCODER_REVISION,
                          help="tokenizer revision; defaults to the pinned revision")
+    prepare.add_argument(
+        "--prepare-workers", type=int, default=None,
+        help="OPERATIONAL ONLY: how many processes compute chunks in parallel "
+             "(default 1). Workers compute document-local chunks and nothing "
+             "else; the main process alone serialises, accumulates membership, "
+             "and owns the checkpoint. Output is byte-identical for any worker "
+             "count -- asserted for 1/2/4/8 in tests. Changes no scientific "
+             "value, no seed, no ordering, no chunk id.",
+    )
     prepare.add_argument(
         "--checkpoint-dir", default=None,
         help="OPERATIONAL ONLY: durable directory for Stage-6 resume state and "

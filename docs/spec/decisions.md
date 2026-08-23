@@ -39,6 +39,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-S1B-002 (Stage-1 corpus `undertheseanlp/UVW-2026` + contamination contract), D-S1B-003 (scope mixture, `pi_strip = 0.25`, stream separation), D-S1B-004 (Stage-1 optimizer/training lock), D-S1B-005 … D-S1B-008 (seed roles, metric unit, FP32, pipeline/resume) |
 | **RESOLVED DECISION** (cont.) | D-S1B-009 — **implementation correction**: chunk boundaries are orthographically-safe offsets, not whitespace only. Found by real-corpus evidence after commit `0a34083` |
 | **RESOLVED DECISION** (cont.) | D-S1B-010 — Stage-6 corpus preparation is **streamed and durably resumable**; token lengths use the **public tokenizer wrapper** only (operational, no scientific change) |
+| **RESOLVED DECISION** (cont.) | D-S1B-011 — Stage-6 **compute** may fan out across processes (`--prepare-workers`, default 1); **order, serialisation, membership and checkpoint durability stay with the single main process**. Output byte-identical for 1/2/4/8 workers (operational, no scientific change) |
 | **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
@@ -4229,7 +4230,7 @@ specification deliberately leaves open — it does not alter a scientific one.
 | 4 | Tokenizer/BPE **caches are performance-only** and are never serialised | A fresh runtime resumes cold and correct. Correctness depends solely on the source data, the locked protocol and the committed shards |
 | 5 | Token lengths are counted with the **public wrapper** `tokenizer.tokenize(run)` **only**. A direct `tokenizer.bpe(run)` path is **forbidden** | `PreTrainedTokenizer.tokenize` splits the text on added/special tokens *before* `_tokenize` runs. `bpe` skips that, so a run containing e.g. `<mask>` miscounts — which would change `fits()` and therefore chunk boundaries |
 | 6 | Per-run composition is **gated** on the tokenizer's own added-token collection: disabled if any added token contains whitespace, or if the collection cannot be read | The wrapper matches added tokens as literal substrings anywhere, including across whitespace; such a token would be lifted out whole by `tokenize` but split by the composition. Unknown is treated as unsafe |
-| 7 | **Multiprocessing remains unadopted** | Measured exact and 1.78x at two workers, but it complicates the contiguous-committed-prefix invariant durability rests on, and the blocking risks are already resolved. Revisit only with real evidence |
+| 7 | ~~**Multiprocessing remains unadopted**~~ — **SUPERSEDED by D-S1B-011**, which adopts it as an *optional, off-by-default* ordered compute path | The 3c reasoning stands for the *unordered* design it was rejecting. D-S1B-011 keeps the contiguous-committed-prefix invariant by construction: workers compute only, and the main process emits strictly in document order |
 
 **Scientific values unchanged.** Chunk boundaries, ids, source ranges, both
 recorded lengths, text, ordering, partitioning, every manifest scientific field,
@@ -4250,3 +4251,70 @@ Stage-1 training has occurred.
 | | |
 |---|---|
 | **Proposal updated** | **NO, and none is required.** The proposal does not prescribe execution, persistence or resume mechanics, and no scientific value changed. Recording an operational mechanism in the scientific specification would misplace it. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-S1B-011 — Stage-6 compute may fan out; order, serialisation and durability may not
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (implementation / operational) |
+| **Owner** | Stage-1B |
+| **Date** | 2026-08-23 |
+| **Supersedes** | D-S1B-010 row 7 (multiprocessing unadopted) |
+
+**What the proposal says.** *Nothing.* As with [D-S1B-010](#d-s1b-010--stage-6-preparation-is-streamed-resumable-and-wrapper-only),
+`unmark-proposal.md` prescribes the corpus, the chunking contract and
+`max_length`, but prescribes **no execution parallelism and no persistence
+mechanism**. This entry records an operational decision the specification
+deliberately leaves open.
+
+**Why now.** A real run at `cc2b710` reported Stage 6 at **4.2 documents/s**
+against **29.46 documents/s** measured at `4c72639`. The investigation
+([Audit 029 §Y](../audits/029-stage1-runner-implementation.md)) measured the
+streaming writer at **~0.5 %** of Stage-6 time and found the two `lengths.py`
+versions algorithmically identical, so **the regression is not attributed to the
+Revision-3c code**. What the measurement *did* establish is that Stage 6 is
+~95 % `chunk_document` compute on one core while the runtime exposes 48.
+
+**Implemented decisions.**
+
+| # | Decision | Reason |
+|---|---|---|
+| 1 | Document-level compute may run in a **process pool**, enabled only by the operational flag `--prepare-workers` (**default 1**) | Stage 6 is CPU tokenizer and Python work. Defaulting to 1 keeps the committed behaviour unchanged unless a run explicitly asks otherwise |
+| 2 | **Workers compute `chunk_document` and nothing else.** They never serialise the payload, never write the destination, never touch checkpoint state, and never see the document order | The durability guarantee rests on a single writer owning the committed prefix. Distributing that ownership is what made multiprocessing unsafe in D-S1B-010 |
+| 3 | The collector **emits strictly in original document index order**, whatever order results complete in | Chunk ids, JSONL line order and the committed prefix are all order-dependent. Ordering at the collector makes worker scheduling irrelevant to output |
+| 4 | **In-flight documents are bounded** (`workers x 4` by default) | Peak memory must not grow with corpus size; an unbounded pool would reintroduce the accumulation D-S1B-010 removed |
+| 5 | A worker failure is **fatal, provenanced, and cannot be outrun** | It is re-raised in the main process naming the document index and id. Because emission is ordered, no document beyond the failure can have been emitted, so the checkpoint cannot have advanced past it |
+| 6 | Each worker builds **its own** tokenizer, length functions and classifier once, at pool start | The pinned tokenizer is a mutable Python object; sharing it across processes is unsafe. Caches are memoisation of pure functions, so a cold worker is correct, only slower |
+| 7 | `--prepare-workers` is **not** part of the checkpoint identity, the manifest, or any seed | It changes throughput only. Making it identity would make an operational retry look like a different scientific run |
+
+**Evidence.** Byte-identical payloads asserted for **1, 2, 4 and 8** workers, and
+every scientific field (chunk id, document id, partition, chunk index, text,
+source range, both lengths, source shard, order) compared field by field.
+Local benchmark on a real-shaped synthetic workload with a **tokenizer double**
+(8 physical cores): 33.4 / 58.3 / 105.3 docs/s at 1 / 2 / 4 workers, collapsing
+to 34.5 at 8 on this oversubscribed box. **No real-tokenizer speedup is claimed
+from a double**, and no production worker count is chosen here.
+
+**Scientific values unchanged.** Chunk boundaries, ids, source ranges, both
+recorded lengths, text, ordering, partitioning, every manifest scientific field,
+the membership digest, `max_length = 256`, `RAW_BASE`, the corpus pin, the
+contamination criterion, the split, the seeds, `pi_strip` and the sealed-TEST
+policy. Direct BPE **remains forbidden** (D-S1B-010 row 5). 21 scientific
+constants re-compared against `cc2b710`: **none changed**.
+
+**Affected files.** `unmark/stage1/parallel.py` (new),
+`scripts/stage1_runner.py` (`--prepare-workers`, ordered stream, Stage-6 timing
+report), `unmark/stage1/checkpoint.py` (additive `Stage6Timings`; the commit
+path is unchanged), `scripts/stage1_prepare_benchmark.py` (new, operational),
+`tests/test_stage1_parallel.py` (new), `tests/test_stage1_prepare_cli.py`
+(patch site moved with the call site). `chunking.py`, `corpus.py`,
+`lengths.py`, `manifest.py`, `protocol.py` and `canon()` are **not** modified.
+
+**Affected experiments.** None. Stage 6 has still never completed, and no
+Stage-1 training has occurred.
+
+| | |
+|---|---|
+| **Proposal updated** | **NO, and none is required.** Execution parallelism is operational, not scientific: the proposal prescribes what is computed, not how many processes compute it, and no scientific value changed. PDF stale: **YES** (unchanged) |

@@ -4,17 +4,18 @@
 |---|---|
 | **Audit id** | 029 |
 | **Created (UTC)** | 2026-08-22 |
-| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), then this consistency cleanup (§X) |
+| **Last revised (UTC)** | 2026-08-23 — runner-wiring repair (§W), consistency cleanup (§X), then the performance-regression investigation and ordered parallel compute (§Y) |
 | **Original baseline HEAD** | `5b07430` (`docs: lock Stage-1 scientific configuration`) — the state at creation |
-| **Current baseline HEAD** | `f9c23fe` (`feat: add resumable Stage-1 corpus preparation`) |
+| **Current baseline HEAD** | `cc2b710` (`fix: repair resumable corpus preparation wiring`) |
 | **Predecessor** | [028](028-stage1-scientific-config-review.md) Revision 2 — the authoritative config lock |
 | **Scope — as created** | *(historical, superseded)* "Implement the complete pre-training Stage-1 execution stack from the locked Audit 028 configuration. **Execute none of it.**" That was true on 2026-08-22 and is **no longer** the state: the stack has since been run repeatedly against the real pinned corpus. |
 | **Scope — CURRENT** | The Stage-1 **corpus-preparation** stack and its repair history against real data. Stages 1-5 execute and pass on the real corpus; Stage 6 is implemented, streamed and resumable but **has never completed and has never committed one checkpoint interval**. Stage-1 *training* is implemented but unexecuted and out of scope here. |
-| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§W each record a defect that appeared only against the real corpus or the real pinned tokenizer, not in the local suite. |
-| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1), and at `f9c23fe` **crashed at document 0** on runner wiring (§W). |
+| **Type** | Implementation + tests + **post-commit real-data defect repair**. Revisions §P–§Y each record a defect, or an investigation of one, that surfaced only against the real corpus or the real pinned tokenizer, not in the local suite. §Y is the exception that proves the discipline: the reported regression was **not** reproducible from the code. |
+| **What HAS run on real data** | Real pinned-tokenizer probe **PASS** (`vinai/phobert-base` @ `01daacda…`, Transformers 4.57.6). Real UVW-2026 downloaded and inspected **in Colab, never in this environment**. **Stages 1-5 PASS on all 1 118 224 documents** — 0 contaminated, 296 628 length-guard skips, 821 596 prefilter checks, 0 candidates, split **1 113 224 / 5 000**. Stage 6 has chunked at most **5 000 documents** in a pre-checkpoint timing run at `4c72639` (§U.1); at `f9c23fe` it **crashed at document 0** on runner wiring (§W); at `cc2b710` it ran to **500 documents / 9 862 chunks in 119.2 s (4.2 docs/s)** and was **stopped deliberately** before the first checkpoint (§Y). |
 | **What has NOT run** | **No completed Stage-6 prepare. No Stage-6 checkpoint interval ever committed. No real Drive resume. No encoder load, no forward pass, no optimizer, no training. No downstream task.** Official UIT-VSFC TEST **SEALED** and structurally unreachable. Local `.venv` remains **ML-free**; nothing was downloaded here. Compiled proposal PDF **STALE**. |
-| **Next step** | The real Drive **START → checkpoint → kill → RESUME** probe. Not the full corpus run, and not training — **neither is authorised by this audit**. |
+| **Next step** | The real pinned-tokenizer **multicore Drive probe** (§A): benchmark **workers 1/2/4/8** → read the §Y.4 timing breakdown for the compute/writer/checkpoint shares → reach a committed **5 000-document checkpoint** → **deliberate kill** → **cold-process RESUME** → next committed checkpoint. **16 workers only if 8 still scales strongly and memory is safe.** Not the full corpus run, and not training — **neither is authorised by this audit**. |
 | **NOT** | **This is not the PRE-TRAIN audit.** That happens after a completed real prepare, a demonstrated real Drive resume, the proposal/PDF synchronisation, and a no-update real-model smoke available for review |
+| **Revision 3c performance repair** | **2026-08-23** — a real run at `cc2b710` reported Stage 6 at **4.2 docs/s** against 29.46 at `4c72639`. Measured A/B: the streaming writer is **~0.5 %** of Stage-6 time and the two `lengths.py` versions are algorithmically identical, so **the regression is not attributed to the Revision-3c code and no root cause is claimed**. Added the Stage-6 timing breakdown and an optional ordered parallel compute path. See §Y. |
 | **Revision 3c runner-wiring repair** | **2026-08-23** — the real Colab probe crashed at `[6/6]`: `prepare-corpus` read `args.repository_head`, a flag it never defined. HEAD is now derived from the executing tree; a second latent crash (`RAW_BASE_POLICY` unimported) was found by the new real-parser end-to-end test. See §W. |
 | **Revision 3c hardening** | **2026-08-23** — pre-commit review: the direct-BPE fast path **bypassed the wrapper's added-token split** and would have miscounted any run containing e.g. `<mask>`. Removed. Composition additionally gated on the tokenizer's own added tokens. Verdict/metadata consistency repaired. See §V. |
 | **Revision 3c** | **2026-08-23** — durable cross-runtime Stage-6 resume (append-only shards, document-boundary commits, failure-atomic state, identity-bound), plus a **second blocker found in inspection**: the pre-3c writer accumulated ~29.9 GB of chunks in RAM. Streaming removes it; output byte-identical. See §U. |
@@ -29,40 +30,70 @@
 
 ## A. VERDICT — CURRENT
 
-**REVISION 3C (2026-08-23): RUNNER-WIRING REPAIR PASS — READY FOR REAL DRIVE RESUME PROBE**
+**REVISION 3C PERFORMANCE REPAIR PASS — READY FOR REAL MULTICORE DRIVE PROBE**
 
 Stage 6 is streamed and durably resumable; the direct-BPE fast path is
 **removed** as unsafe (§V) and the real tokenizer probe confirms it; the
-Stage-6 runner-wiring crash found by the real probe is repaired (§W). Every
-prior verdict below is **HISTORICAL** and superseded.
+runner-wiring crash is repaired (§W); the reported 3.8x slowdown was
+investigated by measurement (§Y). Every prior verdict below is **HISTORICAL**
+and superseded.
 
 **What has actually happened on real data:** the corpus pin, schema,
 contamination screen and document split all pass on all **1 118 224** documents,
-and the pinned-tokenizer probe passes. Stage 6 has been **entered twice**, and
-the two events must not be conflated:
+and the pinned-tokenizer probe passes. Stage 6 has been entered **three times**,
+and the three events must not be conflated — **none of them produced a
+checkpoint**:
 
-* at `4c72639`, **before** checkpointing existed, a timing run chunked **5 000
-  documents** at ~29.5 docs/s (§U.1) — a measurement, not a prepared artifact;
-* at `f9c23fe`, **with** checkpointing, it **crashed at document 0** on runner
-  wiring before any heartbeat (§W).
+| Commit | Runner | What happened | Checkpoint |
+|---|---|---|---|
+| `4c72639` | **before** checkpointing existed | timing run chunked **5 000 documents**, ~26.47 docs/s overall and **29.46 docs/s warm** (§U.1) — a measurement, **not a prepared artifact** | **none** — the code could not write one |
+| `f9c23fe` | checkpoint-capable | **crashed at document 0** on `repository_head` wiring, before any heartbeat (§W) | **none** — nothing was created |
+| `cc2b710` | checkpoint-capable, wiring repaired | ran to **500 documents / 9 862 chunks in 119.2 s = 4.2 docs/s**, then **stopped deliberately** before the first 5 000-document interval (§Y) | **none** — stopped short of the first commit |
 
 So **no checkpoint interval has ever been committed**, and Stage 6 has **never
 completed**.
+
+**What §Y concluded about the `cc2b710` slowdown, stated exactly:**
+
+* the ≈**3.8x** slowdown against `4c72639` **was not reproduced** from the
+  Revision-3c code diff, and **no root cause is claimed**;
+* measured locally, the streaming writer is **~0.5 %** of Stage-6 time, and the
+  two `lengths.py` versions are **algorithmically identical** (same query count,
+  same characters queried, identical chunk output);
+* there is **no per-chunk fsync, no per-chunk hash and no per-chunk Drive
+  write** — counted as **0 / 0 / 0** in test before the first commit;
+* the real environment difference (the `cc2b710` run reports 48 CPUs /
+  176.88 GiB) is **a hypothesis only** — unmeasured, and not asserted;
+* an **optional ordered parallel compute path** now exists
+  (`--prepare-workers`, default 1), byte-identical for 1/2/4/8 workers on a
+  tokenizer double;
+* **no production worker count has been selected**, and **no real-tokenizer
+  speedup is claimed** — the scaling numbers come from a double.
 
 **What remains true:**
 
 * **no successful full Stage-6 prepare** — and this audit does not authorise one;
 * **no committed Stage-6 checkpoint, and no real Drive resume demonstrated**;
+* **no recovered real throughput** — that requires Colab and is not claimed here;
 * **no encoder training, no optimizer step, no forward pass**;
 * **no downstream scientific Stage-1 run**;
 * **official UIT-VSFC TEST sealed** and structurally unreachable;
 * **compiled proposal PDF STALE**.
 
-**The next step is the real Drive START → checkpoint → kill → RESUME probe** —
-a bounded experiment that must reach at least one committed 5 000-document
-checkpoint, survive a deliberate runtime kill, and resume at the committed
-prefix. It is **not** the full 1 118 224-document run, and it is **not**
-training. Neither is authorised here.
+**The next step is the real pinned-tokenizer multicore Drive probe**, in this
+order:
+
+1. benchmark **workers 1 / 2 / 4 / 8** on the real tokenizer;
+2. read the **§Y.4 instrumentation** to see the actual compute / writer /
+   checkpoint shares, instead of inferring them;
+3. reach a real **committed 5 000-document checkpoint**;
+4. **deliberate kill**;
+5. **cold-process RESUME**;
+6. reach the **next committed checkpoint**.
+
+**16 workers may be tested only if 8 still scales strongly and memory remains
+safe.** This probe is **not** the full 1 118 224-document run and **not**
+training — neither is authorised here.
 
 ---
 
@@ -2527,7 +2558,284 @@ probe having created no artifacts, 17 real-parser tests, and 3 209 passed /
 
 ---
 
-**STATUS: AUDIT 029 CONSISTENCY CLEANUP PASS — READY TO COMMIT RUNNER-WIRING REPAIR**
+## Y. REVISION 3C PERFORMANCE REPAIR — THE REGRESSION WAS NOT WHERE IT LOOKED
+
+**Date:** 2026-08-23 **Baseline commit:** `cc2b710992e74cd1c982fe37951e0f0df45771ac`
+
+### Y.1 The reported regression
+
+Same pinned corpus, same pinned tokenizer, **same chunk counts at every early
+checkpoint** — so `chunk_document` demonstrably computed the identical thing:
+
+| Documents | Chunks | `4c72639` (Rev 3b) | `cc2b710` (Rev 3c) |
+|---|---|---|---|
+| 1 | 1 | 0.5 s | 0.3 s |
+| 10 | 280 | 1.6 s | 3.0 s |
+| 50 | 1 047 | 4.7 s | 13.0 s |
+| 100 | 2 489 | 9.3 s | 26.4 s |
+| 500 | 9 862 | **31.6 s** | **119.2 s — 4.2 docs/s** |
+| 1 000 | — | 53.1 s | *(stopped)* |
+| 5 000 | — | 188.9 s (**29.46 docs/s** warm) | *(stopped)* |
+
+≈ **3.8x** slower at 500 documents, projecting ~74 h. The run was stopped
+deliberately before the first 5 000-document checkpoint, so **no durable
+checkpoint was ever committed** and nothing about resume was measured. The
+runtime reported **48 CPUs, 176.88 GiB**.
+
+The hardened tokenizer probe **PASSed** at `cc2b710` (`direct_bpe_enabled
+false`, `composition_enabled true`, `added_tokens 5`, `wrapper_fixtures 58`,
+`direct_bpe_mismatches 0`, `status PASS`), so the §V protection held.
+
+### Y.2 Task A — where the regression is NOT, established by measurement
+
+The obvious suspects were eliminated one at a time, each by a measurement rather
+than by reading.
+
+**1. Checkpoint durability cannot be it, structurally.** `commit()` is the only
+function that opens a file, fsyncs, hashes or copies, and `add_document` calls it
+only when `_buffer_documents >= interval`, with `interval = 5 000`. At document
+500 it has **never run**. Pinned by test: after 20 documents,
+`os.fsync` calls **0**, `hashlib.sha256` calls **0**, commits **0** — and after
+`commit(force=True)`, both non-zero. So there is no per-chunk fsync, no
+per-chunk hash, no per-chunk open, and **no Drive write before the first
+checkpoint**. The task's caution against blaming Drive was correct.
+
+**2. The streaming writer is ~0.5 % of Stage 6.** A/B on 60 real-shaped
+documents, identical chunk computation, only the writer swapped:
+
+| Writer | chunk compute | serialise | total | docs/s | payload |
+|---|---|---|---|---|---|
+| `4c72639` (accumulate, serialise at end) | 1.77 s | 0.01 s | 1.78 s | **33.77** | — |
+| `cc2b710` (stream per document) | 1.85 s | 0.01 s | 1.86 s | **32.27** | **byte-identical** |
+
+**3. `lengths.py` — the only hot-path file that changed — is algorithmically
+identical.** Both versions run against the same chunker:
+
+| Version | time | docs/s | length queries | characters queried | authoritative calls |
+|---|---|---|---|---|---|
+| `4c72639` | 1.80 s | 33.33 | 438 976 | 240 879 838 | 514 |
+| `cc2b710` | 1.85 s | 32.49 | **438 976** | **240 879 838** | **514** |
+
+Chunk output identical. The Revision-3c diff to `lengths.py` is **additive**:
+the added-token gate, `composition_enabled`, and three counters. `_compose`,
+`_transform`, `_extendable` and the verification window are unchanged.
+
+**4. `chunking.py` is byte-identical** between the two commits.
+
+**5. The membership sorter is not in the hot path at all.** It runs once, at
+finalisation, over blocks of `_EXTERNAL_SORT_BLOCK = 2 000 000` keys, with a
+single final `heapq.merge`. It does **not** spill per key, fsync per key,
+re-sort the accumulated prefix, or merge the historical prefix at each
+checkpoint — the four pathologies Task D named. 500 keys at a forced block size
+of 50 produce exactly **10** spills, not 500, and the digest is proven
+independent of block size (7 / 64 / 1 000 000 all agree). **No repair was
+needed, so none was made.**
+
+**Conclusion, stated honestly.** **The 3.8x is not reproducible from the
+Revision-3c code diff**, and this audit does **not** claim to have found its
+cause. Every per-document and per-chunk cost the revision added is measured at
+under 1 % of Stage-6 time. The one *unverifiable-from-here* difference is the
+execution environment: the `cc2b710` run reports 48 CPUs / 176.88 GiB, a
+different Colab machine class from the run that produced 29.46 docs/s, and
+single-core throughput on shared high-core vCPUs is commonly much lower. That is
+**a hypothesis, not a finding** — it was not measured and is not asserted.
+
+### Y.3 What the measurement DID find — a real, shared inefficiency
+
+Both commits share it, so it is not the regression, but it is why Stage 6 costs
+hours rather than minutes. Profiled on 25 real-shaped documents:
+
+| Quantity | Value |
+|---|---|
+| length queries | **457 302** for 25 documents = **18 292 per document** |
+| characters queried | **255 369 352** for ~500 000 document characters = **510x** |
+| `canon` calls / characters canonicalised | **42** / **140** |
+| BPE run evaluations / run-cache hits | **80** / **1 367 326** |
+
+Revision 3's repair **held**: `canon`/`decompose` are effectively free now, and
+the tokenizer is consulted 80 times, not per query. What remains is
+**Python-level per-query overhead** — the greedy scan asks `fits()` once per
+segment boundary, and each `fits` costs two `length()` calls through
+`ComposedTransforms._transform`. That is inherent to the chunker's contract,
+which this revision does **not** modify, because modifying it would change
+boundaries.
+
+### Y.4 Task B — instrumentation, so the next real run answers this directly
+
+The reason this question was open at all is that the runner reported **one**
+number, docs/s, so "the chunker is slow" and "the writer is slow" looked
+identical from outside. `Stage6Timings` now reports, once at the end of Stage 6:
+
+```
+stage6_total_seconds  chunk_compute_seconds  serialization_seconds
+shard_buffer_write_seconds  membership_accumulator_seconds
+membership_spill_seconds  checkpoint_commit_seconds  checkpoint_bytes
+json_records_written  chunks_processed  documents_processed
+membership_spills  collector_wait_seconds
+```
+
+plus the existing tokenizer/cache counters. Accumulation is **one clock read per
+document**, never per chunk, so the instrumentation cannot become the cost it
+measures. **Counts and durations only — no corpus text, no UIT-VSFC text**,
+asserted by test. On a 5 200-document CLI test it prints:
+
+```
+    stage 6 total 1.5s, 5200 documents, 5200 chunks, 5200 json records, 1.4 MB committed, 0 membership spills
+      chunk compute              1.4s   95.5%
+      serialisation              0.0s    2.3%
+      checkpoint commit          0.0s    0.8%
+```
+
+### Y.5 Tasks F-H — ordered document-level parallelism
+
+`unmark/stage1/parallel.py` (new). Stage 6 is ~95 % `chunk_document` on one core
+while the runtime exposes 48, so the **compute** fans out and nothing else does:
+
+| Owner | Responsibility |
+|---|---|
+| **Workers** | `chunk_document` for one document. Nothing else — structurally asserted by AST that `_chunk_one` calls no `chunk_line`, `add_document`, `commit`, `open`, `fsync`, `atomic_write_bytes` or `write_completion_marker` |
+| **Main process** | global order, JSON serialisation, membership accumulation, checkpoint state, durable persistence — all unchanged from Revision 3c |
+| **Collector** | emits strictly by original document index, whatever order results complete in; chunks keep `chunk_index` order |
+| **Bound** | `workers x 4` documents in flight, so RAM cannot grow with corpus size |
+| **Failure** | re-raised in the main process naming the document; ordered emission means nothing beyond it was emitted, so the checkpoint cannot have advanced past it |
+| **Tokenizer** | each worker builds **its own** at pool start (D-S1B-011). Caches are memoisation of pure functions — a cold worker is correct, only slower |
+
+`workers == 1` takes a plain serial loop in-process and **creates no pool**, so
+the single-worker path pays nothing for the parallel one existing.
+
+**Task G — the flag is operational.** `--prepare-workers`, **default 1**. It is
+not in the checkpoint identity, not in the manifest, not in any seed. `resolve_worker_count`
+refuses 0 and clamps to the host CPU count.
+
+### Y.6 Tasks E, I — benchmark (synthetic, tokenizer double)
+
+`scripts/stage1_prepare_benchmark.py` (new) exercises the **whole streaming
+writer**, not `chunk_document` alone. 500 documents / ~4 000 chunks, 8 physical
+cores (16 threads), commit interval 250:
+
+| Workers | docs/s | chunks/s | compute | serialise | commit | peak RSS | payload |
+|---|---|---|---|---|---|---|---|
+| 1 | 33.42 | 267.4 | 14.88 s | 0.043 s | 0.031 s | 50 MB | — |
+| 2 | 58.28 | 466.2 | 8.47 s | 0.071 s | 0.028 s | 61 MB | **identical** |
+| 4 | **105.29** | 842.3 | 4.65 s | 0.064 s | 0.030 s | 67 MB | **identical** |
+| 8 | 34.46 | 275.7 | 14.12 s | 0.255 s | 0.113 s | 67 MB | **identical** |
+
+At 1 500 documents: 4 workers **118.84** docs/s, 8 workers **43.10** docs/s — so
+the collapse at 8 is **not** cold-cache warm-up, it persists with three times the
+work. This machine has **8 physical cores** and was under other load, so 8
+workers oversubscribes it. **That is a local artifact of this box, not a scaling
+law**, and no production worker count is chosen here.
+
+**These numbers come from a tokenizer double.** They are evidence about
+*ordering, byte-equality and the writer's share*; they are **not** evidence about
+the real pinned tokenizer, and no real-tokenizer speedup is claimed.
+
+### Y.7 Tasks K, L — equivalence and durability
+
+Payload bytes identical for **1, 2, 4 and 8** workers, and every scientific field
+compared individually: chunk id, document id, partition, chunk index, text,
+`source_start`, `source_end`, reference length, base length, source shard, and
+order. Resume from a non-zero `start_index` reproduces exactly the tail of the
+uninterrupted payload.
+
+**Nothing in the Revision-3c durability design was removed to gain speed.**
+Immutable append-only shards, document-boundary commits, local staging, payload
+committed and re-verified before state, atomic state, COMPLETE written last,
+START / RESUME / ALREADY_COMPLETE, repository-HEAD identity, cold-cache resume —
+all unchanged. All **41** checkpoint/resume interruption tests pass untouched.
+
+### Y.8 Tests
+
+| Suite | Result |
+|---|---|
+| `tests/test_stage1_parallel.py` | **18 passed** (new) |
+| `tests/test_stage1_prepare_cli.py` | 17 passed |
+| `tests/test_stage1_checkpoint.py` | 41 passed |
+| `tests/test_stage1_lengths.py` | 325 passed |
+| `tests/test_stage1_chunking.py` | 35 passed |
+| `tests/test_stage1_runner_contract.py` | 43 passed |
+| `tests/test_stage1_contamination_prefilter.py` | 287 passed |
+| **Full repository** | **3 227 passed, 97 skipped** (was 3 209 / 97) |
+
+One existing test was **updated, not weakened**: `test_stage1_prepare_cli.py`
+patched `cli.chunk_document` to simulate a runtime death, and the call site moved
+into `unmark.stage1.parallel`. It now patches the site the call actually goes
+through; the assertions are unchanged.
+
+### Y.9 Task J — acceptance, honestly
+
+The target was "repaired workers=1 close to Revision-3b compute throughput,
+rather than 4 docs/s". **The measurement says the single-worker path never left
+Revision-3b throughput**: `cc2b710` and `4c72639` are within 3 % of each other
+locally, with identical query counts. So there was no single-worker regression
+*in the code* to repair, and none is claimed to have been repaired.
+
+**Whether the real run recovers to ≥ 20 docs/s is NOT established here and is
+not claimed.** That requires Colab. What this revision provides is (i) the
+instrumentation to localise it in one run instead of by inference, and (ii) an
+optional ordered parallel path that scaled 3.2x at 4 workers on a double.
+
+### Y.10 Limitations
+
+1. **The 3.8x regression is not explained.** It is not reproducible from the
+   code diff, and the environment hypothesis is unverified. This audit does not
+   claim a root cause.
+2. **No real-tokenizer evidence.** Every number here is from a double on a
+   16-thread laptop. Real BPE cost, real worker scaling and real memory are
+   unmeasured.
+3. **Stage 6 has still never completed**, and still has never committed a single
+   checkpoint interval on the real corpus.
+4. **Real Drive resume is still undemonstrated.**
+5. The 8-worker collapse is a local artifact; the real 48-core runtime may scale
+   very differently, in either direction.
+6. No production worker count is chosen. The next Colab probe should benchmark
+   1 / 2 / 4 / 8 with the real tokenizer, and 16 only if 8 still scales strongly
+   and memory is safe.
+7. The per-query overhead of §Y.3 is **not** repaired — doing so would mean
+   changing the chunker's greedy contract, and boundary identity is worth more
+   than the speed.
+
+### Y.11 Self-audit
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Root cause measured, not guessed | **yes** — three A/B measurements, §Y.2; and the honest answer is "not the code" |
+| 2 | 4.2 docs/s regression explained | **NO — explicitly not claimed.** Every 3c-added cost measured under 1 % |
+| 3 | Same chunk counts remain identical | **yes** — asserted field by field |
+| 4 | Direct BPE remains absent | **yes** — AST-asserted; real probe confirms |
+| 5 | Real tokenizer contract unchanged | **yes** — `lengths.py` not modified |
+| 6-8 | No per-chunk Drive op / fsync / whole-prefix hash | **yes** — counted in test: 0 / 0 / 0 before commit |
+| 9 | Buffered serialisation preserves exact bytes | **yes** — byte-identical vs the `4c72639` writer |
+| 10 | Membership digest exact | **yes** — block-size independent, 3 block sizes |
+| 11 | Streaming bounded-memory | **yes** — RSS 50→67 MB across 1→8 workers |
+| 12-13 | Checkpoint design unchanged; resume byte-identical | **yes** — 41 tests untouched |
+| 14-15 | Workers compute only; main process alone serialises/checkpoints | **yes** — AST-asserted |
+| 16 | Collector restores exact document order | **yes** — tested |
+| 17 | Checkpoint advances only on a contiguous prefix | **yes** — unchanged, and ordering makes it structural |
+| 18 | Worker failure fails closed | **yes** — provenanced, emission stops |
+| 19 | In-flight work bounded | **yes** — window observed ≤ configured |
+| 20 | workers 1/2/4/8 output identical | **yes** |
+| 21 | No scientific constant changed | **yes** — 21 compared against `cc2b710`, none changed |
+| 22-26 | Sealed TEST; no encoder, forward, optimizer, training | **yes** |
+| 27-28 | Focused and full suites pass | **yes** — 766 focused, 3 227 full |
+| 29-30 | `git diff --check` clean; nothing staged | **yes** |
+| 31-32 | Audit 029 revised in place; decision log updated | **yes** — §Y, D-S1B-011 |
+| 33 | Real throughput claimed recovered? | **NO** |
+
+---
+
+**STATUS: REVISION 3C PERFORMANCE REPAIR PASS — READY FOR REAL MULTICORE DRIVE PROBE**
+**THE 3.8x REGRESSION IS NOT REPRODUCIBLE FROM THE REVISION-3C DIFF — NO ROOT CAUSE CLAIMED (§Y.2)**
+**MEASURED: STREAMING WRITER ~0.5% OF STAGE 6; `lengths.py` VERSIONS ALGORITHMICALLY IDENTICAL**
+**NO PER-CHUNK FSYNC, HASH, OPEN OR DRIVE WRITE — COUNTED AS 0 IN TEST BEFORE THE FIRST COMMIT**
+**MEMBERSHIP SORTER ALREADY BLOCK-BASED AND FINALISATION-ONLY — NO REPAIR NEEDED, NONE MADE**
+**STAGE-6 TIMING BREAKDOWN ADDED SO THE NEXT REAL RUN LOCALISES THIS IN ONE RUN**
+**ORDERED PARALLEL COMPUTE ADDED (`--prepare-workers`, DEFAULT 1); WORKERS COMPUTE ONLY**
+**PAYLOAD BYTE-IDENTICAL FOR 1/2/4/8 WORKERS; 3.2x AT 4 WORKERS ON A TOKENIZER DOUBLE**
+**NO REAL-TOKENIZER SPEEDUP CLAIMED; NO PRODUCTION WORKER COUNT CHOSEN**
+**STAGE 6 STILL NEVER COMPLETED, STILL NEVER COMMITTED ONE CHECKPOINT INTERVAL**
+
+~~**STATUS: AUDIT 029 CONSISTENCY CLEANUP PASS — READY TO COMMIT RUNNER-WIRING REPAIR**~~ **— superseded by §Y**
 **VERDICT UNCHANGED: REVISION 3C RUNNER-WIRING REPAIR PASS — READY FOR REAL DRIVE RESUME PROBE**
 **CLEANUP WAS AUDIT-ONLY: NO CODE, NO TEST, NO SCIENTIFIC CONFIG, NO DECISION TOUCHED (§X)**
 **CURRENT METADATA NOW DESCRIBES REALITY; "EXECUTE NONE OF IT" LABELLED HISTORICAL**

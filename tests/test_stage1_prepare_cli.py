@@ -212,7 +212,8 @@ def test_resume_path_runs_without_attribute_error(wired, tmp_path, monkeypatch):
     cli, corpus_root, docs = wired
     output = tmp_path / "out"
 
-    real_chunk = cli.chunk_document
+    import unmark.stage1.parallel as parallel
+    real_chunk = parallel.chunk_document
     calls = {"n": 0}
 
     def dying(document, partition, **kwargs):
@@ -221,12 +222,12 @@ def test_resume_path_runs_without_attribute_error(wired, tmp_path, monkeypatch):
             raise KeyboardInterrupt("simulated runtime death")
         return real_chunk(document, partition, **kwargs)
 
-    monkeypatch.setattr(cli, "chunk_document", dying)
+    monkeypatch.setattr(parallel, "chunk_document", dying)
     with pytest.raises(KeyboardInterrupt):
         run(cli, argv(corpus_root, output))
     assert (output / "_checkpoint" / STATE_NAME).is_file()
 
-    monkeypatch.setattr(cli, "chunk_document", real_chunk)
+    monkeypatch.setattr(parallel, "chunk_document", real_chunk)
     parsed, status = run(cli, argv(corpus_root, output))
     assert status == 0
     assert not hasattr(parsed, "repository_head")
@@ -245,7 +246,8 @@ def test_a_checkpoint_from_another_head_cannot_resume(wired, tmp_path, monkeypat
     cli, corpus_root, _ = wired
     output = tmp_path / "out"
 
-    real_chunk = cli.chunk_document
+    import unmark.stage1.parallel as parallel
+    real_chunk = parallel.chunk_document
     calls = {"n": 0}
 
     def dying(document, partition, **kwargs):
@@ -254,10 +256,10 @@ def test_a_checkpoint_from_another_head_cannot_resume(wired, tmp_path, monkeypat
             raise KeyboardInterrupt
         return real_chunk(document, partition, **kwargs)
 
-    monkeypatch.setattr(cli, "chunk_document", dying)
+    monkeypatch.setattr(parallel, "chunk_document", dying)
     with pytest.raises(KeyboardInterrupt):
         run(cli, argv(corpus_root, output))
-    monkeypatch.setattr(cli, "chunk_document", real_chunk)
+    monkeypatch.setattr(parallel, "chunk_document", real_chunk)
 
     monkeypatch.setattr(cli, "resolve_repository_head", lambda *a, **k: "b" * 40)
     with pytest.raises(CheckpointViolation, match="identity mismatch"):
