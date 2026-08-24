@@ -24,16 +24,39 @@
 | **Revision 14 — cross-candidate leakage** | 2026-08-23 — the positive nominal-run-independence gate found a **scientific defect**: `build_objective` is called **once, outside** the run loop, so every nominal run in a stage shares one `UnmarkEncoder` and candidates 2..N inherit the previous candidate's **trained** adapter. `lr-pilot` would be one trajectory with two LR changes; the three `final-main` seeds would not be independent replicates. **Implementation stopped; nothing implemented.** No campaign has run, so no result is contaminated. See **§AD** |
 | **Revision 15 — device/init/independence repair** | 2026-08-23 — **D-S1B-015, D-S1B-016 and D-S1B-017 persisted and implemented** at `3a5368c`. Every nominal run now builds a **fresh adapter** from a domain-separated, CPU-initialised seed (21230→3203, 36930→51800, 7309→45833, 5993→15758); the frozen encoder is the only shared model state. CUDA required and fail-closed under an enforced *and re-asserted* deterministic true-fp32 policy. Checkpoints are adapter-only and strict (schema **v2**). **3 572 passed, 101 skipped.** CUDA half pending a GPU. See **§AE** |
 | **Revision 15a — pre-commit correction** | 2026-08-23 — a targeted review of the §AE draft found a **real defect in it**: `torch.manual_seed` seeds *all* devices, so pairing it with `fork_rng(devices=[])` perturbed CUDA RNG without restoring it. Repaired to `torch.default_generator.manual_seed`. Also corrected: **four** init-hash groups `[8,1,1,1]`, not two; **GPU model is now resume-blocking**. And the torch runtime tests are recorded as **IMPLEMENTED, NOT EXECUTED** — no torch exists on this machine. See **§AE** |
+| **Revision 16 — fresh-CUDA runtime verification** | 2026-08-24 — the torch/CUDA contracts §AE could only *implement* are now **executed** on a fresh Colab runtime (torch 2.11.0+cu128, CUDA 12.8, transformers 4.57.6, RTX PRO 6000 Blackwell, cc 12.0, cuDNN 91900), bound to implementation commit `3c3489b9`. **Stage-1 1 344 passed / 1 skipped; full 3 754 passed / 1 skipped; 0 failed, 0 errors.** Four H0 hashes and the `[8,1,1,1]` grouping recorded in full. **Two claims reserved** — CUDA resume byte-identity and optimizer-state placement *on CUDA*. See **§AE.11** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN IMPLEMENTATION RUNTIME VERIFICATION INCOMPLETE — DO NOT COMMIT YET**
+**FRESH-CUDA RUNTIME VERIFICATION PASS — READY FOR HUMAN REVIEW**
 
-> **§AE is the current verdict, after a pre-commit correction pass that found a
-> real defect in §AE's own first draft.** `torch.manual_seed` seeds *all* devices,
+> **§AE.11 is the current verdict.** The torch and CUDA contracts that §AE could
+> only *implement* have now **executed on real hardware** — a fresh Colab runtime
+> at torch 2.11.0+cu128 / CUDA 12.8 / transformers 4.57.6 on an RTX PRO 6000
+> Blackwell — bound to implementation commit `3c3489b9`. Stage-1 **1 344 passed /
+> 1 skipped**, full suite **3 754 passed / 1 skipped**, **0 failed, 0 errors**; the
+> single skip is order-sensitive by design and passed alone in a fresh subprocess.
+> The four H0 hashes, the `[8, 1, 1, 1]` grouping, the cuBLAS-before-CUDA ordering
+> and the 13-field resume-blocking set are all recorded in full.
+>
+> **This closes the implementation/runtime-verification gate ONLY. It is not
+> "Stage-1 training ready."** Two claims are deliberately **reserved** — CUDA
+> interrupted-vs-uninterrupted byte identity, and optimizer-state placement *on
+> CUDA* — because no committed test evidences them (AE.11.8). And nothing here
+> touched the real prepared corpus: the two zero-update acceptance probes, the
+> performance measurement, the **FINAL CONFIGURATION FREEZE**, the final
+> repository-wide review and **human approval** all remain.
+>
+> §T–§AD and §AE.1–§AE.10 are preserved verbatim. **Training remains
+> unauthorised.**
+
+~~**PRE-TRAIN IMPLEMENTATION RUNTIME VERIFICATION INCOMPLETE — DO NOT COMMIT YET**~~ **— the runtime gate is closed by §AE.11**
+
+> **The superseded verdict, after a pre-commit correction pass that found a
+> real defect in §AE's own first draft:** `torch.manual_seed` seeds *all* devices,
 > so pairing it with `fork_rng(devices=[])` perturbed CUDA RNG and never restored
 > it — the opposite of what D-S1B-016 requires. Repaired to
 > `torch.default_generator.manual_seed`. Two further corrections: there are
@@ -3839,6 +3862,11 @@ device/determinism/init override. The §W preflight-ordering test now targets
 
 #### AE.9.1 IMPLEMENTED is not EXECUTED
 
+> **Superseded by AE.11 (2026-08-24).** Every row below was accurate on the
+> ML-free development machine. The fresh-CUDA runtime has since executed them;
+> see **AE.11.3** for the counts and **AE.11.8** for the two claims that remain
+> reserved. The table is kept unedited as the record of what was pending.
+
 **There is no torch anywhere on this machine** — the development venv is
 deliberately ML-free and no pinned-torch environment was available before commit,
 so `tests/test_stage1_run_independence_runtime.py` **skipped in its entirety**.
@@ -3891,6 +3919,221 @@ the contracts marked above.
 | **FINAL STAGE-1 CONFIGURATION FREEZE**, machine-readable and mechanically compared against code | **REQUIRED** |
 | Final proposal-aware repository-wide review | **REQUIRED** |
 | Human approval | **REQUIRED** |
+
+### AE.11 FRESH-CUDA RUNTIME VERIFICATION — 2026-08-24
+
+**Everything above this subsection is preserved as written.** AE.9.1's
+"IMPLEMENTED, NOT EXECUTED" table is history: it was accurate on the ML-free
+development machine, and this subsection is what closes it. The evidence below
+binds specifically to implementation commit
+**`3c3489b9701fb45fc92e0737c1b765f1b0d2aebd`**, on a **fresh** Colab CUDA runtime
+created after the previous runtime had been deleted.
+
+#### AE.11.1 Environment
+
+| | |
+|---|---|
+| Python | **3.13.15** |
+| torch | **2.11.0+cu128** |
+| torch CUDA build | **12.8** |
+| transformers | **4.57.6** |
+| GPU | **NVIDIA RTX PRO 6000 Blackwell Server Edition** |
+| Compute capability | **12.0** |
+| cuDNN | **91900** |
+| At the gate | `torch.cuda.is_available() == True`, `torch.cuda.is_initialized() == False` |
+
+> **The image shipped with transformers 5.15.0.** It was corrected to the locked
+> **4.57.6** and the Python session **restarted** before authoritative
+> verification. **Nothing observed under 5.15.0 is used as evidence here.**
+
+#### AE.11.2 Pinned inventory, provisioned by the repository's own fetcher
+
+| | |
+|---|---|
+| Source | `all-vietnamese-syllables.txt` by `hieuthi` |
+| Gist revision | `135a4d9716e49a981624474156d6f247b9b46f6a` |
+| SHA-256 | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| Bytes | **116 290** |
+| Raw / unique canonical / unique stripped | **17 974 / 17 954 / 2 489** |
+| Collisions after strip | **15 465** |
+| License | `NO_EXPLICIT_LICENSE` |
+
+The fetcher reported **"Verified and cached"**; no alternate or moving upstream
+revision was accepted, and the raw list remains outside Git.
+
+#### AE.11.3 Regression evidence
+
+Before provisioning, failures were **fail-closed `InventoryUnavailable` /
+`EligibilityUnresolved`** — the §W contract working, **not** implementation
+failures. After provisioning the exact pinned inventory:
+
+| Suite | Result |
+|---|---|
+| **Stage-1 suite** | **1 344 passed, 1 skipped, 0 failed, 0 errors** — 91.65 s |
+| **Full suite** | **3 754 passed, 1 skipped, 0 failed, 0 errors** — 100.44 s |
+
+**The single skip, stated plainly rather than hidden.**
+`tests/test_stage1_run_independence_runtime.py:126` —
+`test_initialisation_does_not_initialise_cuda_as_a_side_effect` — skipped with
+*"CUDA was already initialised by an earlier test"*. That is a **test-order-sensitive
+skip by design**: the contract is only meaningful in a virgin process, and the
+test declines rather than asserting something vacuous. It was then executed
+**alone in a fresh Python subprocess**: **1 passed in 0.76 s**.
+
+So the combined suite is **3 754 passed, 1 skipped** — **not** "3 755 passed" —
+and the skipped contract is separately evidenced under the condition it requires.
+
+#### AE.11.4 Fresh-initialisation hashes — the four H0 values
+
+Executed with the real Stage-1 initialisation helpers at `hidden_size=768`:
+
+| `run_seed` | `init_seed` | H0 |
+|---|---|---|
+| **21230** | **3203** | `4ef7ee1a2357d0b9819225aca6708d2ad04614ceda8191dc5a46176a47fa3d25` |
+| **36930** | **51800** | `cf1a28cf640f6697075d086486cc5395e9a9ff0ef994ca0a06576325f7de68ad` |
+| **7309** | **45833** | `d90186c0f77e434d73f173426a401a99aa93e6c0d90a5bb38efd732bba607516` |
+| **5993** | **15758** | `660db230168dd5cf6fc9758aa9e868e70fc5f44a60a8cb0b6422160af1be2842` |
+
+Runtime assertions: **distinct H0 groups = 4**, schedule multiplicities
+**[8, 1, 1, 1]**. The eight selection candidates intentionally share `run_seed`
+21230 and therefore share H0 — that is the paired design of D-S1B-016, not a
+collision. **Four groups, not two.**
+
+#### AE.11.5 cuBLAS-before-CUDA ordering, measured in a fresh subprocess
+
+| Step | Observation |
+|---|---|
+| Process start | `CUDA available: True`, `CUDA initialized: False` |
+| `require_deterministic_cublas_workspace()` | returned **`:4096:8`**, set `CUBLAS_WORKSPACE_CONFIG=:4096:8`, **`CUDA initialized == False`** |
+| Numerical policy established | deterministic algorithms **True**; `cudnn.deterministic` **True**; `cudnn.benchmark` **False**; float32 matmul **highest**; `cuda.matmul.allow_tf32` **False**; `cudnn.allow_tf32` **False**; **`CUDA initialized == False`** |
+| **Then** device resolution | `device = cuda`, `CUDA initialized == True` |
+
+This is the measurement §AC.6 and AE.7 asked for: the deterministic cuBLAS
+workspace was in place **before** anything initialised CUDA, so the policy is
+effective rather than merely declared.
+
+#### AE.11.6 Authoritative execution fingerprint
+
+```
+backend                   cuda
+device                    cuda
+gpu_name                  NVIDIA RTX PRO 6000 Blackwell Server Edition
+compute_capability        12.0
+torch_version             2.11.0+cu128
+cuda_version              12.8
+cudnn_version             91900
+deterministic_algorithms  true
+cudnn_deterministic       true
+cudnn_benchmark           false
+cublas_workspace_config   :4096:8
+float32_matmul_precision  highest
+cuda_matmul_allow_tf32    false
+cudnn_allow_tf32          false
+```
+
+`AUTHORITATIVE EXECUTION FINGERPRINT: PASS`. **AMP remains absent** — no
+`autocast`, `GradScaler`, fp16 or bf16 anywhere.
+
+#### AE.11.7 Resume-blocking set — 13 fields, confirmed at runtime
+
+`backend`, `gpu_name`, `compute_capability`, `torch_version`, `cuda_version`,
+`cudnn_version`, `deterministic_algorithms`, `cudnn_deterministic`,
+`cudnn_benchmark`, `cublas_workspace_config`, `float32_matmul_precision`,
+`cuda_matmul_allow_tf32`, `cudnn_allow_tf32`.
+
+**GPU model and compute capability both block. Logical CUDA index does not, and
+physical GPU UUID is not recorded as identity at all.** The conservative contract
+stands: **no cross-GPU-model byte identity has been established or claimed.**
+
+#### AE.11.8 ★ Two claims deliberately RESERVED
+
+Traced against the committed tests at `3c3489b9`, because a passing suite total is
+not a substitute for a named contract:
+
+| Claim | Status | Why |
+|---|---|---|
+| **CUDA interrupted-vs-uninterrupted byte identity** | **NOT ESTABLISHED** | No CUDA resume-equivalence test exists in the tree. `test_stage1_training_resume.py` and `test_stage1_training_resume_state.py` contain **zero** CUDA references, so on this runtime they still exercised **CPU** tensors. The claim therefore **remains scoped to CPU**, exactly as before |
+| **Optimizer-state placement on CUDA** | **MECHANISM PROVEN, CUDA PLACEMENT NOT** | `test_optimizer_state_device_is_asserted_recursively` executed, but asserts `torch.device("cpu")` and carries no `needs_cuda` gate. The recursive traversal and its failure mode are evidenced; landing on a **CUDA** device is not |
+
+**What did execute on the real GPU** — four CUDA-gated tests, none of which
+skipped: `test_initialisation_leaves_every_cuda_generator_byte_identical`,
+`test_initialisation_does_not_depend_on_cuda_rng`, and from
+`test_stage1_device_contract_runtime.py`
+`test_a_cuda_objective_receives_cuda_tensors_from_a_cpu_prepared_batch` and
+`test_removing_the_transfer_really_would_fail`. So §Y's device boundary and
+§AE.4's CUDA-RNG isolation are now **real-hardware evidence**.
+
+#### AE.11.9 What this subsection establishes, and what it does not
+
+**Established:** pinned environment identity; exact inventory identity; runtime
+execution of the Stage-1 hardening; Stage-1 and full regression suites with zero
+failures and zero errors; the fresh-process CUDA-initialisation side-effect
+contract; the exact init-seed table; the four H0 hashes; **[8, 1, 1, 1]**
+multiplicities; the CUDA numerical policy; cuBLAS-before-CUDA ordering; the
+authoritative execution fingerprint; the 13-field resume-blocking policy.
+
+**Not established:** the two reserved claims in AE.11.8, and **every real
+prepared-corpus contract** — no acceptance probe, no validation, no performance
+measurement was run here. This runtime verified the *implementation*, not the
+science.
+
+#### AE.11.10 Remaining gates, in order
+
+1. **Human review of this runtime evidence**
+2. Audit-only commit/push by the human
+3. **Delete this verification runtime**
+4. New fresh CUDA runtime at the exact committed HEAD
+5. Real scientific-entry **Probe 1**, zero optimizer updates
+6. Real checkpoint/resume **Probe 2**, zero optimizer updates
+7. Separate populated-optimizer-state placement fixture (see the nuance below)
+8. CUDA tiny resume-equivalence confirmation — **still owed**, per AE.11.8
+9. Non-scientific performance measurement
+10. **FINAL STAGE-1 CONFIGURATION FREEZE**
+11. Final proposal-aware repository-wide review
+12. Explicit human approval
+13. **Only then** may the first scientific `optimizer.step` occur
+
+> **Nuance for Probes 1 and 2.** A virgin `AdamW` has **empty** state before its
+> first `step`, so `exp_avg` / `exp_avg_sq` / `step` do not exist to be placed. A
+> zero-update probe **must not** manufacture a scientific optimizer step merely to
+> populate them. Populated optimizer-state device migration belongs in a separate
+> **synthetic, non-scientific** fixture — which is also what would close the second
+> reserved claim in AE.11.8.
+
+**AE.11 STATUS: FRESH-CUDA RUNTIME VERIFICATION PASS — READY FOR HUMAN REVIEW**
+**BOUND TO IMPLEMENTATION COMMIT `3c3489b9701fb45fc92e0737c1b765f1b0d2aebd`**
+**THIS CLOSES THE IMPLEMENTATION/RUNTIME-VERIFICATION GATE ONLY — IT IS NOT "STAGE-1 TRAINING READY"**
+**STAGE-1 1 344 PASSED / 1 SKIPPED / 0 FAILED; FULL 3 754 PASSED / 1 SKIPPED / 0 FAILED**
+**THE ONE SKIP IS ORDER-SENSITIVE BY DESIGN AND PASSED ALONE IN A FRESH SUBPROCESS**
+**FOUR DISTINCT H0 HASHES, MULTIPLICITIES [8, 1, 1, 1] — RECORDED IN FULL**
+**CUBLAS `:4096:8` WAS SET WHILE CUDA WAS STILL UNINITIALISED — MEASURED, NOT ASSUMED**
+**13 RESUME-BLOCKING FIELDS; GPU MODEL BLOCKS; NO CROSS-MODEL IDENTITY IS CLAIMED**
+**RESERVED: CUDA RESUME BYTE-IDENTITY, AND OPTIMIZER-STATE PLACEMENT *ON CUDA*, ARE NOT ESTABLISHED**
+**NO PROBE, NO VALIDATION, NO PERFORMANCE RUN, NO SCIENTIFIC TRAINING OCCURRED**
+
+---
+
+#### AE.12 HISTORICAL SNAPSHOT — the pre-runtime status block, retained verbatim
+
+> ### ⚠ HISTORICAL ONLY — NOT THE CURRENT STATUS
+>
+> **The status block below is a snapshot of the ML-free development machine, taken
+> before any torch or CUDA runtime existed.** It is reproduced **verbatim and
+> unedited** as audit history, and nothing in it should be read as describing the
+> repository today.
+>
+> Several of its lines are **now out of date** — in particular *"THE TORCH RUNTIME
+> TESTS ARE IMPLEMENTED, NOT EXECUTED"*, *"NO TORCH EXISTS ON THIS MACHINE"* and
+> *"THE FULL LIGHTWEIGHT SUITE PASSES, BUT THE TORCH RUNTIME FILE SKIPPED
+> ENTIRELY"*. Those tests have since been executed on real hardware.
+>
+> **For current runtime status, read §AE.11**, which supersedes this block in its
+> entirety.
+>
+> **Two claims are NOT superseded and remain open** (§AE.11.8): CUDA
+> interrupted-vs-uninterrupted byte identity is **NOT ESTABLISHED**, and
+> optimizer-state placement **on CUDA** is **NOT ESTABLISHED**. §AE.11 does not
+> claim Stage-1 training readiness.
 
 **STATUS: PRE-TRAIN IMPLEMENTATION RUNTIME VERIFICATION INCOMPLETE — DO NOT COMMIT YET**
 **THE TORCH RUNTIME TESTS ARE IMPLEMENTED, NOT EXECUTED: NO TORCH EXISTS ON THIS MACHINE**
