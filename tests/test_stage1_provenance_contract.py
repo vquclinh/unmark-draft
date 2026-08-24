@@ -37,7 +37,9 @@ from unmark.stage1.trainer import (
 )
 
 CONSTRUCTOR_FIELDS = (
-    "run_seed", "corruption_seed", "learning_rate", "r",
+    # D-S1B-016 added `init_seed`: it determines the run's initial weights, so it
+    # is scientific identity and must be gated exactly like the other fields.
+    "run_seed", "init_seed", "corruption_seed", "learning_rate", "r",
     "corpus_manifest_digest", "repository_head",
     "backbone_checkpoint", "backbone_revision", "protocol_version", "precision",
     # D-S1A-008, added by Audit 030 §W: the pinned syllable inventory decides
@@ -59,7 +61,7 @@ INVENTORY = InventoryIdentity(
 
 def provenance(**overrides) -> RunProvenance:
     base = dict(
-        run_seed=36930, corruption_seed=35422, learning_rate=3e-4, r=1.0,
+        run_seed=36930, init_seed=51800, corruption_seed=35422, learning_rate=3e-4, r=1.0,
         corpus_manifest_digest="d" * 64, repository_head="a" * 40,
         inventory=INVENTORY,
     )
@@ -165,6 +167,7 @@ def test_the_lifecycle_survives_a_json_round_trip():
 
 @pytest.mark.parametrize("field,value", [
     ("run_seed", 7309),
+    ("init_seed", 45833),
     ("corruption_seed", 1),
     ("learning_rate", 1e-3),
     ("r", 4.0),

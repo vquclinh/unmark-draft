@@ -49,7 +49,16 @@ from unmark.stage1.protocol import (
 from unmark.stage1.sampler import DeterministicSampler
 from unmark.stage1.selection import ValidationPoint, budget_decision, select_checkpoint
 
-CHECKPOINT_SCHEMA_VERSION = "stage1-checkpoint-v1"
+CHECKPOINT_SCHEMA_VERSION = "stage1-checkpoint-v2"
+"""**v2** (Audit 030 §AE): `adapter_state` is now the ADAPTER's own `state_dict`
+— trainable parameters only — restored with `strict=True`, and the payload
+carries `execution` and `init_seed`. v1 stored the whole `UnmarkEncoder`,
+including the frozen encoder, and restored it with `strict=False`, so a key
+mismatch silently restored nothing.
+
+No migration path is offered and none is needed: **no scientific Stage-1 campaign
+has ever run**, so no v1 checkpoint of scientific value exists. A v1 payload now
+fails closed rather than being reinterpreted under v2 semantics."""
 
 
 class TrainerContractViolation(Stage1ContractViolation):
@@ -64,6 +73,13 @@ class RunProvenance:
     """Everything a resume must match. A mismatch fails closed."""
 
     run_seed: int
+    """Seeds the data order — `DeterministicSampler(seed=run_seed)`. **Unchanged**
+    by D-S1B-016: the existing realization is preserved exactly."""
+    init_seed: int
+    """Seeds the adapter's initial weights, domain-separated from `run_seed` via
+    `protocol.adapter_init_seed` (D-S1B-016). Part of scientific identity because
+    it determines the state the run starts from; a GPU name is not, and lives in
+    the operational execution fingerprint instead."""
     corruption_seed: int
     learning_rate: float
     r: float
@@ -117,6 +133,7 @@ class RunProvenance:
         """
         return {
             "run_seed": self.run_seed,
+            "init_seed": self.init_seed,
             "corruption_seed": self.corruption_seed,
             "learning_rate": self.learning_rate,
             "r": self.r,
@@ -134,7 +151,7 @@ class RunProvenance:
         """Refuse to resume into a different experiment."""
         mine = self.to_dict()
         for key in (
-            "run_seed", "corruption_seed", "learning_rate", "r",
+            "run_seed", "init_seed", "corruption_seed", "learning_rate", "r",
             "corpus_manifest_digest", "backbone_checkpoint", "backbone_revision",
             "protocol_version", "precision",
             # `repository_head` was recorded but never compared until the Audit
@@ -285,6 +302,7 @@ def checkpoint_payload(
     cap: int,
     budget_limited: bool,
     points: Sequence[Any] = (),
+    execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Everything required to resume **exactly**. No raw corpus text.
 
@@ -304,6 +322,7 @@ def checkpoint_payload(
         "cap": cap,
         "budget_limited": budget_limited,
         "points": [p.to_dict() if hasattr(p, "to_dict") else dict(p) for p in points],
+        "execution": dict(execution) if execution is not None else None,
     }
 
 
@@ -316,7 +335,73 @@ REQUIRED_CHECKPOINT_KEYS = (
     "sampler_state",
     "cap",
     "points",
+    "execution",
 )
+
+
+def require_optimizer_parameter_identity(optimizer: Any, adapter: Any) -> None:
+    """Every optimizer parameter **is** a current adapter parameter, and vice versa.
+
+    Object identity, never value equality (Audit 030 §AD.6(C)). This catches the
+    classic resume failure where a restored adapter is used for the forward while
+    the optimizer still holds the previous nominal run's `Parameter` objects — a
+    value comparison cannot see that, because the values may legitimately match.
+    """
+    grouped = [p for group in optimizer.param_groups for p in group["params"]]
+    grouped_ids = [id(p) for p in grouped]
+    current = {id(p): name for name, p in adapter.named_parameters()}
+
+    foreign = [i for i in grouped_ids if i not in current]
+    if foreign:
+        raise TrainerContractViolation(
+            f"{len(foreign)} optimizer parameter(s) are not parameters of the current "
+            "adapter: the optimizer is bound to stale, foreign or frozen-encoder "
+            "tensors and would update something the forward pass never reads."
+        )
+    duplicates = len(grouped_ids) - len(set(grouped_ids))
+    if duplicates:
+        raise TrainerContractViolation(
+            f"{duplicates} adapter parameter(s) appear more than once in the optimizer "
+            "parameter groups; they would receive multiple updates per step."
+        )
+    missing = sorted(name for i, name in current.items() if i not in set(grouped_ids))
+    if missing:
+        raise TrainerContractViolation(
+            f"adapter parameter(s) {missing} are absent from the optimizer; they would "
+            "never be trained while still contributing to the loss."
+        )
+
+
+def require_optimizer_state_device(optimizer: Any, device: Any) -> None:
+    """Every tensor in optimizer state sits on `device`. Asserted, not assumed.
+
+    `Optimizer.load_state_dict` casts state to each parameter's device, so this is
+    a **postcondition** of supported PyTorch behaviour rather than a migration
+    this repository implements (Audit 030 §AC.6). Traversed recursively, because
+    Adam's state nests and a stray CPU `exp_avg` beside a CUDA parameter is
+    exactly the cross-device step this guards.
+    """
+    import torch
+
+    def walk(value: Any, path: str) -> None:
+        if torch.is_tensor(value):
+            # Adam's `step` may legitimately be a CPU scalar; only real state moves.
+            if value.dim() == 0 and path.endswith("step"):
+                return
+            if value.device != device:
+                raise TrainerContractViolation(
+                    f"optimizer state {path} is on {value.device}, not the training "
+                    f"device {device}. A cross-device optimizer step would follow."
+                )
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+
+    for index, state in optimizer.state_dict().get("state", {}).items():
+        walk(state, f"state[{index}]")
 
 
 def verify_checkpoint(payload: dict[str, Any], provenance: RunProvenance) -> None:
@@ -476,6 +561,7 @@ def train_run(
     resume: dict[str, Any] | None = None,
     checkpoint_dir: Path | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    execution: Any = None,
 ) -> RunResult:
     """One Stage-1 run, to `cap` updates. **Imports torch lazily.**
 
@@ -498,6 +584,7 @@ def train_run(
 
     if not train_chunks:
         raise TrainerContractViolation("no training chunks supplied")
+    adapter = objective.unmark_encoder.adapter
     if not corruption_policy.is_locked_mixture:
         raise TrainerContractViolation(
             "scientific training requires the locked corruption mixture (D-S1B-003); a "
@@ -509,14 +596,24 @@ def train_run(
         [(n, p) for n, p in objective.unmark_encoder.named_parameters() if p.requires_grad],
         provenance.learning_rate,
     )
+    # Bound to THIS nominal run's adapter, and proven so by object identity
+    # (D-S1B-017). Checked here for a fresh run and again after any restore.
+    require_optimizer_parameter_identity(optimizer, adapter)
     sampler = DeterministicSampler(tuple(sorted(train_chunks)), seed=provenance.run_seed)
     global_update = 0
     result = RunResult(provenance=provenance, cap=cap)
 
     if resume is not None:
         verify_checkpoint(resume, provenance)
-        objective.unmark_encoder.load_state_dict(resume["adapter_state"], strict=False)
+        if execution is not None and resume.get("execution") is not None:
+            execution.require_compatible(resume["execution"])
+        # STRICT, into the adapter that the forward pass actually uses. v1 loaded
+        # the whole wrapper with strict=False, so a key mismatch restored nothing
+        # and training silently continued from fresh weights (Audit 030 §AC.9).
+        adapter.load_state_dict(resume["adapter_state"], strict=True)
         optimizer.load_state_dict(resume["optimizer_state"])
+        require_optimizer_parameter_identity(optimizer, adapter)
+        require_optimizer_state_device(optimizer, module_device(objective))
         sampler = DeterministicSampler.from_state(tuple(sorted(train_chunks)), resume["sampler_state"])
         global_update = int(resume["global_update"])
         result.points = [ValidationPoint(**p) for p in resume.get("points", [])]
@@ -591,13 +688,14 @@ def train_run(
                     checkpoint_dir,
                     checkpoint_payload(
                         provenance=provenance,
-                        adapter_state=objective.unmark_encoder.state_dict(),
+                        adapter_state=adapter.state_dict(),
                         optimizer_state=optimizer.state_dict(),
                         global_update=global_update,
                         sampler_state=sampler.state_dict(),
                         cap=cap,
                         budget_limited=result.budget_limited,
                         points=result.points,
+                        execution=execution.to_dict() if execution is not None else None,
                     ),
                     is_best=is_best,
                 )

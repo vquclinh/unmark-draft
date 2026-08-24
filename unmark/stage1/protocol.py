@@ -196,6 +196,41 @@ CORRUPTION_SEED: int = derive_seeds(CORRUPTION_SEED_TAG, 1)[0]
 SPLIT_SEED: int = derive_seeds(SPLIT_SEED_TAG, 1)[0]
 VALIDATION_CORRUPTION_SEED: int = derive_seeds(VALIDATION_CORRUPTION_SEED_TAG, 1)[0]
 
+ADAPTER_INIT_SEED_TAG = f"{SEED_ROOT_TAG}|adapter-init"
+"""Domain tag for adapter initialisation (**D-S1B-016**).
+
+`run_seed` keeps its existing meaning -- it seeds `DeterministicSampler`, and
+that data-order semantics is unchanged. Initialisation gets its **own**
+domain-separated stream derived from the same `run_seed`, in the established
+style of `CORRUPTION_SEED_TAG` / `SPLIT_SEED_TAG`.
+
+**Nothing else may enter the derivation.** Learning rate, `r`, candidate label,
+execution order, device and GPU identity are all excluded, because all eight
+hyperparameter-selection candidates deliberately share `run_seed`
+(`SELECTION_SEED`): they must therefore share one initialisation, so an LR or
+`r` sweep is a **paired** comparison that varies only its target. If LR entered
+this derivation, "LR A beats LR B" would be confounded with "initialisation A
+was luckier than initialisation B".
+"""
+
+
+def adapter_init_seed(run_seed: int) -> int:
+    """The deterministic adapter-initialisation seed for a nominal run.
+
+    A pure function of `run_seed` alone (D-S1B-016). Recomputable by anyone from
+    the tag string, exactly as every other Stage-1 seed is.
+    """
+    if isinstance(run_seed, bool) or not isinstance(run_seed, int):
+        raise TypeError(f"run_seed must be an int, got {run_seed!r}")
+    return derive_seeds(f"{ADAPTER_INIT_SEED_TAG}|{run_seed}", 1)[0]
+
+
+ADAPTER_INIT_SEEDS: dict[int, int] = {
+    seed: adapter_init_seed(seed) for seed in (SELECTION_SEED, *TRAIN_SEEDS)
+}
+"""The four init seeds the locked schedule actually uses. Recorded so the
+FINAL CONFIGURATION FREEZE can compare code against a written table."""
+
 ALL_SEEDS: dict[str, int] = {
     SELECTION_SEED_TAG: SELECTION_SEED,
     **{tag: seed for tag, seed in zip(TRAIN_SEED_TAGS, TRAIN_SEEDS)},
@@ -203,6 +238,12 @@ ALL_SEEDS: dict[str, int] = {
     SPLIT_SEED_TAG: SPLIT_SEED,
     VALIDATION_CORRUPTION_SEED_TAG: VALIDATION_CORRUPTION_SEED,
 }
+
+if set(ADAPTER_INIT_SEEDS.values()) & set(ALL_SEEDS.values()):  # pragma: no cover - import guard
+    raise AssertionError(
+        f"adapter-init seeds collide with role seeds: {sorted(ADAPTER_INIT_SEEDS.items())}. "
+        "Domain separation exists so initialisation and data order cannot share an integer."
+    )
 
 if len(set(ALL_SEEDS.values())) != len(ALL_SEEDS):  # pragma: no cover - import guard
     raise AssertionError(

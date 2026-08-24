@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+import re
 import sys
 
 import pytest
@@ -66,17 +67,44 @@ def test_every_batch_assembler_routes_through_the_shared_boundary(module_path, f
     )
 
 
-def test_no_hard_coded_device_anywhere_in_stage1():
-    """No `cuda`, no env var, no global default tensor device."""
+def test_no_hard_coded_physical_gpu_anywhere_in_stage1():
+    """No physical GPU index, no `.cuda()`, no global default device.
+
+    Refined for D-S1B-015: `unmark/stage1/device.py` now legitimately names the
+    **logical** device `torch.device("cuda")`, which is precisely what honours
+    `CUDA_VISIBLE_DEVICES`. What must never appear is a *physical* index
+    (`cuda:0`), a `.cuda()` call, a global default-device mutation, or code that
+    rewrites the visibility environment out from under the operator.
+    """
     for path in sorted((REPO / "unmark/stage1").glob("*.py")):
-        source = path.read_text(encoding="utf-8")
         code = "\n".join(
-            line for line in source.splitlines() if not line.strip().startswith("#")
+            line for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.strip().startswith("#")
         )
-        assert '"cuda"' not in code and "'cuda'" not in code, path.name
+        assert not re.search(r"cuda:\d", code), f"{path.name} names a physical GPU index"
         assert ".cuda(" not in code, path.name
         assert "set_default_device" not in code, path.name
-        assert "CUDA_VISIBLE_DEVICES" not in code, path.name
+        assert 'environ["CUDA_VISIBLE_DEVICES"]' not in code, path.name
+        assert "get_device_name(0)" not in code, f"{path.name} hardcodes device 0"
+
+
+def test_only_the_device_resolver_names_cuda():
+    """One authoritative resolver. No scattered `.cuda()` or ad-hoc selection."""
+    named = sorted(
+        path.name for path in (REPO / "unmark/stage1").glob("*.py")
+        if '"cuda"' in path.read_text(encoding="utf-8")
+    )
+    assert named == ["device.py"], named
+
+
+def test_the_scientific_cli_offers_no_device_or_determinism_override():
+    """No `--cpu`, `--device`, `--allow-tf32`, `--init-seed`, ... (D-S1B-015/016)."""
+    source = (REPO / "scripts/stage1_runner.py").read_text(encoding="utf-8")
+    for forbidden in ("--cpu", "--device", "--allow-cpu", "--no-cuda",
+                      "--allow-nondeterministic", "--allow-tf32", "--init-seed",
+                      "--reuse-adapter", "--skip-device-check",
+                      "--skip-execution-fingerprint"):
+        assert forbidden not in source, forbidden
 
 
 def test_the_objective_does_not_move_its_own_inputs():

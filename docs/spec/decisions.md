@@ -4494,3 +4494,240 @@ No Stage-1 training has occurred.
 | | |
 |---|---|
 | **Proposal updated** | **NO, and none is required.** §4.2 already specifies "recomposition of the base" over an *enumerated* Vietnamese mark set, and §4.4 already places non-Vietnamese text outside the channels. The implementation had drifted from the specification; the specification was right. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-S1B-015 — scientific Stage-1 training requires CUDA under an explicit deterministic numerical policy
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (operational contract). **BLOCKING for scientific Stage-1 training.** |
+| **Date** | 2026-08-23 |
+| **Evidence** | [audit 030](../audits/030-pretrain-repository-wide-audit.md) §AC.4, §AC.6, §AC.8, §AC.11, §AE |
+
+**Original proposal wording.** §8.4 Compute: *"One GPU. Stage 1 is a few hours;
+the full stage-2 grid is the larger cost and should be scripted, checkpointed,
+and resumable from the start. Colab or Kaggle is sufficient."* §5.1.1 locks
+**FP32** in the optimizer row. §7 marks G0 as *"Day 1, no GPU"*, implying later
+stages do use one.
+
+**What the proposal does NOT say.** It specifies no device-selection mechanism,
+no device index, no CPU-fallback policy, no deterministic-algorithm policy and no
+TF32 policy. Before this entry `docs/spec/decisions.md` contained no device entry
+at all.
+
+**What inspecting the implementation showed.** `unmark/stage1/` contained **no**
+`torch.cuda`, no `is_available`, no model `.to(device)`, no AMP and no TF32 flag.
+`AutoModel.from_pretrained` returns a CPU model and nothing moved it, so
+**scientific training would have run silently end-to-end on CPU**, recorded in no
+artifact — neither `RunProvenance` nor the runner-smoke report carries a device
+field. Separately, optimizer-state placement depends on *when* the model is
+placed, and that ordering was unwritten and untested.
+
+**Implemented decision.** Only the scientific training entry points —
+`lr-pilot`, `r-phase1`, `final-main` — require CUDA. They:
+
+* **fail closed** when CUDA is unavailable; there is **no automatic CPU fallback**;
+* select the **logical visible** device (`torch.device("cuda")`), honouring
+  `CUDA_VISIBLE_DEVICES` and **never** hardcoding a physical GPU identifier;
+* establish, and then separately **re-assert**, a deterministic numerical policy:
+  `torch.use_deterministic_algorithms(True)`, `cudnn.deterministic = True`,
+  `cudnn.benchmark = False`, and a deterministic cuBLAS workspace
+  (`CUBLAS_WORKSPACE_CONFIG=:4096:8`). Because cuBLAS reads that variable when its
+  handle is created, setting it after CUDA initialisation is silently ineffective:
+  the resolver **refuses** rather than claiming a determinism it does not have;
+* enforce **true fp32** matmul — `torch.set_float32_matmul_precision("highest")`
+  and TF32 off — so the effective arithmetic matches the `precision: fp32` every
+  artifact already records;
+* place the objective on the device **before optimizer construction and before
+  optimizer-state loading**, then assert optimizer state landed there;
+* record an **execution fingerprint** (backend, device, GPU name, compute
+  capability, torch/CUDA/cuDNN versions, deterministic and TF32 states, cuBLAS
+  workspace) in every checkpoint, and refuse a continuation that crosses a
+  numerically different environment.
+
+`smoke`, the measurement tool and the test suite are **explicitly exempt** and
+remain CPU-capable.
+
+**Resume compatibility, precisely.** The blocking fields are those that can change
+the arithmetic: backend, **GPU model name**, compute capability, torch version,
+CUDA version, cuDNN version, deterministic-algorithm state, cuDNN
+deterministic/benchmark, cuBLAS workspace, float32 matmul precision and both TF32
+states.
+
+**GPU model blocks, conservatively.** Compute capability is the property one would
+*expect* to govern kernel selection, but nothing in this repository has
+demonstrated that two different models sharing a capability train byte-identically
+across an interruption, and the project's reproducibility claim is too strong to
+rest on that assumption. A continuation therefore stays on the same model until a
+CUDA experiment proves cross-model identity; relaxing it is a later explicit
+decision, not a default.
+
+**Logical device index and physical GPU UUID are deliberately not blocking** —
+`CUDA_VISIBLE_DEVICES` renumbers the index freely and the UUID is not recorded as
+identity at all; neither changes the arithmetic, so neither may block a legitimate
+crash-resume onto the same model of card.
+
+**Scope of the determinism claim.** The policy is enforced process-globally, which
+is not the same as every guarded backend feature being exercised: this
+architecture uses no convolution, so the cuDNN deterministic flag guards nothing
+today and is set so that a future change cannot quietly introduce nondeterminism.
+The repository's byte-identical resume-equivalence claim is established on CPU;
+**its CUDA counterpart is a CUDA-gated test that has not yet run**, and until it
+does the claim is scoped to CPU.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/stage1/device.py` (new), `execute.py`, `trainer.py` |
+| **Affected experiments** | every Stage-1 run. None has occurred |
+| **Proposal updated** | **NO** — §8.4 already assumes one GPU; this names the mechanism it left unstated. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-S1B-016 — adapter initialisation is deterministic, domain-separated and performed on CPU
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (scientific — reproducibility). **BLOCKING for scientific Stage-1 training.** |
+| **Date** | 2026-08-23 |
+| **Evidence** | [audit 030](../audits/030-pretrain-repository-wide-audit.md) §AC.7, §AD.5, §AE |
+
+**Original proposal wording.** §7: *"**Seeds.** At least three per configuration;
+report mean and standard deviation. If the improvement is within seed variance,
+there is no result."* §11: *"Public repository with code, configs, **and
+seeds**"*, and *"raw **per-seed** numbers, not only aggregates."* Reproducibility
+is assumed throughout; the initialisation RNG is never named.
+
+**What inspecting the implementation showed.** `run_seed` was consumed at exactly
+one place — `DeterministicSampler(seed=run_seed)`, i.e. **data order only** — and
+nothing anywhere called `torch.manual_seed`. The adapter's embeddings, linear
+layers and LayerNorm were therefore initialised from PyTorch's **unseeded global
+RNG**, so a published seed could not reproduce its own run and
+`RunProvenance.run_seed` identified a run it did not determine.
+
+**Implemented decision.**
+
+* A new pinned domain tag `UNMARK-STAGE1-v1|adapter-init`, used with the
+  repository's existing `derive_seeds` primitive:
+  `adapter_init_seed(run_seed) = derive_seeds(f"{tag}|{run_seed}", 1)[0]`.
+* **The sampler is untouched.** `DeterministicSampler` still receives `run_seed`
+  itself, so the existing data-order realization is unchanged.
+* The derivation is a pure function of `run_seed` **alone**. Learning rate, `r`,
+  candidate label, execution order, device and GPU identity are all excluded.
+* Initialisation runs **on CPU**, inside `torch.random.fork_rng(devices=[])`,
+  seeding **`torch.default_generator.manual_seed(init_seed)`** — the CPU default
+  generator specifically. **`torch.manual_seed` is forbidden here**: its documented
+  contract is to seed *all* devices, calling `torch.cuda.manual_seed_all` before
+  the CPU generator, while `fork_rng(devices=[])` snapshots only CPU state. That
+  pairing would perturb every CUDA generator without restoring it, and when CUDA
+  is not yet initialised it would queue a deferred seed through `_lazy_call` that
+  fires at CUDA init. `torch.default_generator` is what a CPU
+  `reset_parameters` draws from, so seeding it is exactly sufficient and strictly
+  confined: no CUDA generator is read, written or initialised. Ambient CPU state
+  is restored on exit. A scientific starting point must not depend on the
+  accelerator a run happened to get.
+* `init_seed` is persisted in `RunProvenance`, compared by `require_match`, and
+  emitted in the run artifact.
+
+**The locked values**, which the FINAL CONFIGURATION FREEZE must carry:
+
+| `run_seed` | used by | `init_seed` |
+|---|---|---|
+| `21230` (`SELECTION_SEED`) | all **8** hyperparameter-selection candidates | **3203** |
+| `36930` | `final-main` seed 1 | **51800** |
+| `7309` | `final-main` seed 2 | **45833** |
+| `5993` | `final-main` seed 3 | **15758** |
+
+**Why LR and `r` must not enter the derivation.** All eight selection candidates
+deliberately share `SELECTION_SEED`, so they share one data-order realization and
+one initialisation. That makes the LR and `r` sweeps **paired** comparisons in
+which only the target hyperparameter varies. If LR entered this derivation,
+*"LR A beats LR B"* would be confounded with *"initialisation A was luckier than
+initialisation B"*.
+
+The expected grouping across the eleven nominal runs is therefore **four distinct
+initialisation hashes with multiplicities [8, 1, 1, 1]** — one shared by the eight
+selection candidates, and one each for the three final seeds. Not eleven, and not
+two: there are **two methodological categories** (paired selection, seed-varied
+final-main) but **four** initialisation groups, and conflating the two counts is
+the error this sentence now fixes.
+
+**Methodological limitation, carried forward deliberately.** Hyperparameter
+selection is consequently optimised on **one** paired stochastic realization; seed
+variability is assessed separately by the three precommitted `final-main` seeds.
+This is a **documented limitation, not a defect**: it is the price of the paired
+design, it does not justify extra runs, and it does not change the 3 + 5 + 3
+protocol. The FINAL CONFIGURATION FREEZE and the eventual write-up must state it.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/stage1/protocol.py`, `initialisation.py` (new), `execute.py`, `trainer.py` |
+| **Affected experiments** | every Stage-1 run. None has occurred |
+| **Proposal updated** | **NO** — §7 and §11 already require per-seed reproducibility; this names the stream that was missing. PDF stale: **YES** (unchanged) |
+
+---
+
+### D-S1B-017 — nominal Stage-1 runs are independent fresh-start experiments
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** (scientific). **BLOCKING for scientific Stage-1 training.** |
+| **Date** | 2026-08-23 |
+| **Evidence** | [audit 030](../audits/030-pretrain-repository-wide-audit.md) §AD, §AE |
+
+**Original proposal wording / assumption.** §5.1.1 schedules **11 nominal runs**
+— 3 LR-pilot, 5 `r`-phase-1, 3 final-main — and §7 treats the three final seeds as
+replicates whose spread is the seed variance. Independence of the runs is assumed
+everywhere and stated nowhere, because it never occurred to anyone to state it.
+
+**What inspecting the implementation showed.** `execute_stage` called
+`build_objective` **once, before** the schedule loop, and each iteration wrapped
+the **same** `UnmarkEncoder` — `Stage1Objective` stores it by reference — while
+`train_run` mutated those shared parameters in place via `optimizer.step()`.
+Every nominal run in a stage command therefore shared one adapter, and candidates
+2..N began from the **previous candidate's trained weights**. `lr-pilot` would
+have been one adapter trajectory with the learning rate changed twice, and the
+three `final-main` seeds would not have been independent replicates at all.
+
+**Implemented decision.**
+
+* The pinned frozen encoder **may** be loaded once per stage command, placed once,
+  and shared across nominal runs — it is immutable pinned backbone state, and it
+  is the **only** model state permitted to cross nominal runs.
+* Sharing it is legal only under three guards: the existing structural
+  `UnmarkEncoder.train()` override that forces the encoder back to `eval`; a
+  **runtime** assertion that `encoder.training is False` immediately before **every**
+  encoder forward, on both the reference and the adapted boundary; and a
+  **full `state_dict` hash** — parameters *and* persistent buffers — asserted
+  unchanged after every nominal run, alongside zero trainable parameters and no
+  accumulated gradients.
+* Every nominal run constructs a **new** adapter, **new** trainable `Parameter`
+  objects and storage, a **new** wrapper and objective, a **new** optimizer and a
+  **new** sampler.
+* At update 0 of every fresh run, the adapter's canonical hash must equal the
+  expected fresh-init hash for its `init_seed`.
+* Because the eight selection candidates share an init seed, **equal hashes are
+  expected and prove nothing about independence**; storage independence is a
+  separate contract, proven by mutation isolation.
+* Optimizer binding is asserted by **Python object identity**: every parameter in
+  `optimizer.param_groups` **is** a current-adapter parameter, each appearing
+  exactly once, with no stale, duplicate, missing, foreign or frozen-encoder
+  parameter.
+* The **only** legal trained-state inheritance is the same nominal run's
+  20 000 → 40 000 continuation, which restores the checkpoint state (`Hc`) and must
+  **not** be reset to fresh-init state (`H0`), and must not re-derive run identity
+  or `init_seed`.
+
+**Checkpoint consequence.** Persisted model state became the **adapter's own**
+`state_dict` — exactly the 3 551 232 trainable parameters, no frozen-encoder keys
+— restored with `strict=True`. The previous payload stored the whole wrapper and
+restored it with `strict=False`, so a key mismatch silently restored nothing.
+`CHECKPOINT_SCHEMA_VERSION` is bumped to `stage1-checkpoint-v2` and **v1 fails
+closed**; no migration is offered or needed, because **no scientific Stage-1
+campaign has ever run**.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/stage1/execute.py`, `trainer.py`, `initialisation.py` (new), `unmark/modeling/adapter.py`, `unmark/stage1/objective.py` |
+| **Affected experiments** | all 11 nominal Stage-1 runs. **None has occurred, so no result is contaminated** |
+| **Proposal updated** | **NO** — §5.1.1's 11-run schedule and §7's seed-variance requirement already presuppose independent runs; the implementation did not provide it. PDF stale: **YES** (unchanged) |

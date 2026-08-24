@@ -68,6 +68,61 @@ def load_prepared_chunks(directory: Path) -> tuple[dict[str, str], dict[str, str
     return train, dev
 
 
+def build_backbone(revision: str):
+    """Tokenizer + the pinned FROZEN encoder. `(tokenizer, encoder, hidden_size)`.
+
+    Stage-scope immutable state (D-S1B-017): loaded once per stage command and
+    shared by every nominal run. It deliberately does **not** build an adapter —
+    that is per-run, deterministic and CPU-first under D-S1B-016.
+    """
+    from transformers import AutoModel, AutoTokenizer
+
+    if revision != ENCODER_REVISION:
+        raise Stage1ContractViolation(
+            f"backbone revision {revision!r} is not the locked {ENCODER_REVISION!r}"
+        )
+    tokenizer = AutoTokenizer.from_pretrained(
+        ENCODER_CHECKPOINT, revision=revision, use_fast=False
+    )
+    encoder = AutoModel.from_pretrained(ENCODER_CHECKPOINT, revision=revision)
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    encoder.eval()
+    hidden = int(encoder.config.hidden_size)
+    if hidden != HIDDEN_SIZE:
+        raise Stage1ContractViolation(f"hidden size {hidden} != locked {HIDDEN_SIZE}")
+    return tokenizer, encoder, hidden
+
+
+def require_frozen_backbone_unchanged(encoder, expected_hash: str, label: str) -> None:
+    """The shared encoder is unchanged after a nominal run (D-S1B-017).
+
+    Full `state_dict` — parameters *and* persistent buffers — because parameters
+    alone would miss a mutated buffer. Plus: still zero trainable parameters, and
+    no gradient was ever accumulated onto it.
+    """
+    from unmark.stage1.initialisation import module_state_hash
+
+    observed = module_state_hash(encoder)
+    if observed != expected_hash:
+        raise Stage1ContractViolation(
+            f"after {label} the shared frozen backbone CHANGED "
+            f"({expected_hash[:12]}... -> {observed[:12]}...). It is shared across "
+            "nominal runs, so every later candidate would be contaminated."
+        )
+    trainable = [n for n, p in encoder.named_parameters() if p.requires_grad]
+    if trainable:
+        raise Stage1ContractViolation(
+            f"after {label} the frozen backbone has {len(trainable)} trainable "
+            f"parameter(s), e.g. {trainable[:3]}"
+        )
+    with_grad = [n for n, p in encoder.named_parameters() if p.grad is not None]
+    if with_grad:
+        raise Stage1ContractViolation(
+            f"after {label} the frozen backbone carries gradients, e.g. {with_grad[:3]}"
+        )
+
+
 def build_objective(revision: str):
     """Frozen pinned encoder + the locked adapter. **Lazy torch/transformers.**"""
     from transformers import AutoModel, AutoTokenizer
@@ -113,8 +168,24 @@ def execute_stage(
     interrupted after two of five runs redoes neither of the two.
     """
     from unmark.linguistics import make_classifier, try_load_inventory
+    from unmark.modeling.adapter import UnmarkEncoder
+    from unmark.stage1.device import (
+        current_fingerprint,
+        enforce_numerical_policy,
+        require_deterministic_cublas_workspace,
+        resolve_scientific_device,
+        verify_numerical_policy,
+    )
+    from unmark.stage1.initialisation import (
+        expected_fresh_init_hash,
+        fresh_adapter,
+        module_state_hash,
+        trainable_state,
+        trainable_state_hash,
+    )
     from unmark.stage1.objective import Stage1Objective
     from unmark.stage1.preflight import verify_scientific_inputs
+    from unmark.stage1.protocol import adapter_init_seed
     from unmark.stage1.validation import HeldOutExample, at_update, evaluate, prepare_condition_batch
     from unmark.stage1.protocol import VALIDATION_CONDITIONS
 
@@ -126,8 +197,34 @@ def execute_stage(
     print(f"  inventory {inputs.inventory.source_name} @ {inputs.inventory.source_revision[:12]} "
           f"sha256 {inputs.inventory.sha256[:12]} ({inputs.report['inventory_shape']['unique_stripped_form_count']} stripped forms)")
 
+    # --- SCIENTIFIC EXECUTION CONTRACT (D-S1B-015) ---------------------------
+    # Before any model work: CUDA or nothing, and a numerical policy that is
+    # enforced and then re-asserted, so a global setting changed elsewhere in the
+    # process cannot reach a run whose artifact claims fp32 and determinism.
+    require_deterministic_cublas_workspace()
+    device = resolve_scientific_device()
+    enforce_numerical_policy()
+    verify_numerical_policy()
+    execution = current_fingerprint(device)
+    print(f"scientific execution VERIFIED: {execution.backend} {execution.gpu_name} "
+          f"(cc {execution.compute_capability}), torch {execution.torch_version}, "
+          f"CUDA {execution.cuda_version}")
+    print(f"  deterministic={execution.deterministic_algorithms} "
+          f"cudnn.deterministic={execution.cudnn_deterministic} "
+          f"cudnn.benchmark={execution.cudnn_benchmark} "
+          f"cublas={execution.cublas_workspace_config} "
+          f"matmul={execution.float32_matmul_precision}")
+
     train_text, dev_text = load_prepared_chunks(prepared_corpus)
-    tokenizer, unmark_encoder, objective_cls = build_objective(revision)
+    # STAGE-SCOPE IMMUTABLE STATE. The frozen encoder is loaded once, placed once
+    # and shared by every nominal run -- it is pinned, immutable backbone state,
+    # and shuttling ~135M parameters per candidate would buy nothing. It is the
+    # ONLY model state permitted to cross nominal runs (D-S1B-017).
+    tokenizer, frozen_encoder, hidden_size = build_backbone(revision)
+    frozen_encoder.to(device)
+    encoder_state_hash = module_state_hash(frozen_encoder)
+    print(f"frozen backbone VERIFIED on {device}: state_dict sha256 "
+          f"{encoder_state_hash[:12]}... ({hidden_size}d)")
     classifier = make_classifier(try_load_inventory())
     pad_token_id = tokenizer.pad_token_id
     held_out = [HeldOutExample(cid, text) for cid, text in sorted(dev_text.items())]
@@ -158,6 +255,7 @@ def execute_stage(
         lambda_align, lambda_clean = lambdas_for_r(planned.r)
         provenance = RunProvenance(
             run_seed=planned.seed,
+            init_seed=adapter_init_seed(planned.seed),
             corruption_seed=CORRUPTION_SEED,
             learning_rate=planned.learning_rate,
             r=planned.r,
@@ -165,7 +263,33 @@ def execute_stage(
             repository_head=repository_head,
             inventory=inputs.inventory,
         )
+        # --- FRESH NOMINAL RUN (D-S1B-016 / D-S1B-017) ----------------------
+        # A NEW adapter, initialised on CPU from this run's domain-separated
+        # init seed, then moved to the already-resident encoder's device. New
+        # Parameter objects and new storage every time: candidates 2..N used to
+        # inherit the previous candidate's TRAINED weights (Audit 030 §AD).
+        adapter = fresh_adapter(hidden_size, provenance.init_seed)
+        fresh_hash = trainable_state_hash(trainable_state(adapter))
+        adapter.to(device)
+        unmark_encoder = UnmarkEncoder(encoder=frozen_encoder, adapter=adapter)
         objective = objective_cls(unmark_encoder, provenance.weights)
+
+        placed_hash = trainable_state_hash(trainable_state(adapter))
+        if placed_hash != fresh_hash:
+            raise Stage1ContractViolation(
+                f"{planned.label}: moving the adapter to {device} changed its state "
+                f"({fresh_hash[:12]}... -> {placed_hash[:12]}...); initialisation must "
+                "be hardware-independent"
+            )
+        expected = expected_fresh_init_hash(hidden_size, planned.seed)
+        if fresh_hash != expected:
+            raise Stage1ContractViolation(
+                f"{planned.label}: fresh adapter hash {fresh_hash[:12]}... != the "
+                f"{expected[:12]}... that run_seed {planned.seed} (init_seed "
+                f"{provenance.init_seed}) must produce"
+            )
+        print(f"  {planned.label}: fresh adapter init_seed {provenance.init_seed} "
+              f"hash {fresh_hash[:12]}...")
         corruption = CorruptionRatePolicy(seed=CORRUPTION_SEED)
 
         def evaluate_fn(update: int, _obj=objective) -> Any:
@@ -186,6 +310,7 @@ def execute_stage(
             classifier=classifier,
             cap=INITIAL_MAX_UPDATES,
             checkpoint_dir=run_checkpoints,
+            execution=execution,
             # Explicit: a checkpoint is used only when the operator asked to
             # resume. `train_run` verifies its identity before touching it.
             resume=load_training_checkpoint(run_checkpoints) if resume else None,
@@ -217,7 +342,11 @@ def execute_stage(
                 cap=result.cap,
                 resume=carried,
                 checkpoint_dir=run_checkpoints,
+                execution=execution,
             )
+        # The shared backbone must come out of this run exactly as it went in.
+        require_frozen_backbone_unchanged(frozen_encoder, encoder_state_hash, planned.label)
+
         candidates.append(
             Candidate(
                 label=planned.label,

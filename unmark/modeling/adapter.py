@@ -541,6 +541,24 @@ class UnmarkEncoder(nn.Module):
         """Position ids for `input_ids`, matching the encoder's own `input_ids` path."""
         return authoritative_position_ids(self.encoder, input_ids)
 
+    def require_frozen_encoder_eval(self) -> None:
+        """Assert the frozen encoder is in eval mode. Called before every forward.
+
+        `train()` below is the **structural** guarantee and is unchanged. This is
+        the **runtime** one: a direct `wrapper.encoder.train()` bypasses wrapper
+        discipline entirely, and under Audit 030 §AD.6(A) the encoder is now shared
+        across nominal runs, so a single stray call would silently contaminate
+        every later candidate with dropout noise. Cheap, and checked where it
+        matters rather than assumed.
+        """
+        if self.encoder.training:
+            raise RuntimeError(
+                "the frozen encoder is in TRAIN mode at a forward boundary. Stage-1 "
+                "requires it in eval always: dropout would make the reference branch "
+                "h(x) and the adapted branch see different draws of the same frozen "
+                "encoder, and the encoder is shared across nominal runs (D-S1B-017)."
+            )
+
     def train(self, mode: bool = True) -> UnmarkEncoder:
         """Put the adapter in `mode`; keep the frozen encoder in eval, always.
 
@@ -608,6 +626,7 @@ class UnmarkEncoder(nn.Module):
         else:
             self._require_authoritative_positions(position_ids, derived)
         encoder_kwargs["position_ids"] = position_ids
+        self.require_frozen_encoder_eval()
         return self.encoder(inputs_embeds=z, attention_mask=attention_mask, **encoder_kwargs)
 
     @staticmethod

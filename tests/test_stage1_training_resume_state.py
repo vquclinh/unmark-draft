@@ -44,7 +44,7 @@ BATCH = 3
 
 def provenance(**overrides) -> RunProvenance:
     base = dict(
-        run_seed=36930, corruption_seed=35422, learning_rate=3e-4, r=1.0,
+        run_seed=36930, init_seed=51800, corruption_seed=35422, learning_rate=3e-4, r=1.0,
         corpus_manifest_digest="d" * 64, repository_head="a" * 40,
     )
     base.update(overrides)

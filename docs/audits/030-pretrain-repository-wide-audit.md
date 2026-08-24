@@ -22,15 +22,53 @@
 | **Revision 12 — no-update smoke CLOSED** | 2026-08-23 — the §AA CLI repair was committed and the **corrected real runner smoke PASSED** at `2363e33`: return code 0, 24.36 s, real encoder frozen (`encoder_trainable_parameters 0`, adapter 3 551 232), prepared corpus verified against its Drive `COMPLETE.json`, real forward `loss 0.6354566812515259`, and `backward_called false` / `optimizer_constructed false` / `parameters_updated 0`. With §AA.1 this closes the **PRE-TRAIN no-update smoke gate**. AA.1 was reused, not rerun. See **§AB** |
 | **Revision 13 — final device audit** | 2026-08-23 — the dedicated phase-boundary **training-device audit** at `0588b72`. Confirms training would run **silently end-to-end on CPU** (no placement anywhere in `execute_stage`/`train_run`, recorded in no artifact) and finds a **second, scientific blocker**: the adapter is initialised from an **unseeded** global RNG — `run_seed` drives only data order, so a published seed cannot reproduce its run. **Two decision entries required, neither written.** Audit only. See **§AC** |
 | **Revision 14 — cross-candidate leakage** | 2026-08-23 — the positive nominal-run-independence gate found a **scientific defect**: `build_objective` is called **once, outside** the run loop, so every nominal run in a stage shares one `UnmarkEncoder` and candidates 2..N inherit the previous candidate's **trained** adapter. `lr-pilot` would be one trajectory with two LR changes; the three `final-main` seeds would not be independent replicates. **Implementation stopped; nothing implemented.** No campaign has run, so no result is contaminated. See **§AD** |
+| **Revision 15 — device/init/independence repair** | 2026-08-23 — **D-S1B-015, D-S1B-016 and D-S1B-017 persisted and implemented** at `3a5368c`. Every nominal run now builds a **fresh adapter** from a domain-separated, CPU-initialised seed (21230→3203, 36930→51800, 7309→45833, 5993→15758); the frozen encoder is the only shared model state. CUDA required and fail-closed under an enforced *and re-asserted* deterministic true-fp32 policy. Checkpoints are adapter-only and strict (schema **v2**). **3 572 passed, 101 skipped.** CUDA half pending a GPU. See **§AE** |
+| **Revision 15a — pre-commit correction** | 2026-08-23 — a targeted review of the §AE draft found a **real defect in it**: `torch.manual_seed` seeds *all* devices, so pairing it with `fork_rng(devices=[])` perturbed CUDA RNG without restoring it. Repaired to `torch.default_generator.manual_seed`. Also corrected: **four** init-hash groups `[8,1,1,1]`, not two; **GPU model is now resume-blocking**. And the torch runtime tests are recorded as **IMPLEMENTED, NOT EXECUTED** — no torch exists on this machine. See **§AE** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**PRE-TRAIN CROSS-CANDIDATE LEAKAGE RECORDED — THREE DECISIONS AWAIT IMPLEMENTATION**
+**PRE-TRAIN IMPLEMENTATION RUNTIME VERIFICATION INCOMPLETE — DO NOT COMMIT YET**
 
-> **§AD is the current verdict, and it records the most serious finding in this
+> **§AE is the current verdict, after a pre-commit correction pass that found a
+> real defect in §AE's own first draft.** `torch.manual_seed` seeds *all* devices,
+> so pairing it with `fork_rng(devices=[])` perturbed CUDA RNG and never restored
+> it — the opposite of what D-S1B-016 requires. Repaired to
+> `torch.default_generator.manual_seed`. Two further corrections: there are
+> **four** init-hash groups with multiplicities **[8, 1, 1, 1]**, not two; and
+> **GPU model name is now resume-blocking**, conservatively.
+>
+> **The blocker on committing is evidence, not code.** No torch exists on this
+> machine, so the torch runtime tests are **IMPLEMENTED, NOT EXECUTED** — AE.9.1
+> lists every contract that status covers. They must run under pinned torch before
+> commit; the CUDA-gated half must run on the GPU.
+>
+> §T–§AD are preserved verbatim. **Training remains unauthorised.**
+
+~~**PRE-TRAIN IMPLEMENTATION PASS — FRESH CUDA ZERO-UPDATE PROBES REQUIRED**~~ **— superseded by the correction pass**
+
+> **The superseded §AE verdict claimed:** the three decisions §AC and §AD proposed are
+> **persisted and implemented**: scientific training now requires CUDA and fails
+> closed under a deterministic, true-fp32 policy that is enforced *and*
+> re-asserted; every nominal run builds a **fresh adapter** initialised on CPU
+> from a domain-separated seed, with the frozen encoder the only shared model
+> state; checkpoints are adapter-only and strictly restored.
+>
+> **Two things are deliberately not claimed.** The CUDA-gated tests — including
+> **CUDA resume byte-identity** — could not run in this ML-free venv, so that
+> claim stays **scoped to CPU** until a GPU executes them. And no fresh-runtime
+> probe has run.
+>
+> §T–§AD are preserved verbatim. **Training remains unauthorised**: both
+> zero-update probes, the performance measurement, the FINAL CONFIGURATION
+> FREEZE, the final repository-wide review and human approval are all still
+> outstanding.
+
+~~**PRE-TRAIN CROSS-CANDIDATE LEAKAGE RECORDED — THREE DECISIONS AWAIT IMPLEMENTATION**~~ **— superseded by §AE**
+
+> **§AD was the previous verdict, and it records the most serious finding in this
 > audit.** `build_objective` is called **once, before** the nominal-run loop, and
 > `Stage1Objective` stores the encoder **by reference**, so all runs in a stage
 > command share one adapter and the optimizer mutates it in place. Candidates
@@ -3550,3 +3588,323 @@ final repository-wide review, and **human approval** all remain outstanding.
 **THE FROZEN ENCODER MAY BE SHARED AND MAY STAY RESIDENT; TRAINABLE STATE NEVER MAY**
 **NO SCIENTIFIC TRAINING HAS OCCURRED — NO RESULT IS CONTAMINATED**
 **AUDIT ONLY — NO CODE, NO TESTS, NO decisions.md; TRAINING REMAINS FORBIDDEN**
+
+---
+
+## AE. DEVICE / INITIALISATION / NOMINAL-INDEPENDENCE REPAIR
+
+**Revision 15.** Implementation of the three decisions §AC and §AD proposed,
+starting from HEAD `3a5368c4b7951c9ba370611ff5e32e7d9c64e4ae`, **plus a pre-commit
+correction pass that found a real defect in this section's own first draft**.
+
+**No scientific Stage-1 campaign was run. Training is not authorised.**
+
+> **Three corrections were made to this section before commit, and they are stated
+> up front rather than buried:**
+>
+> 1. **The CPU-only initialisation claim was WRONG.** The first draft used
+>    `torch.manual_seed` inside `fork_rng(devices=[])` and claimed it did not touch
+>    CUDA RNG. It does — see AE.4. Repaired to
+>    `torch.default_generator.manual_seed`.
+> 2. **"Two hash groups" was WRONG.** There are **four** initialisation groups
+>    across eleven runs, multiplicities **[8, 1, 1, 1]** — see AE.2. Two is the
+>    number of *methodological categories*, not of groups. (§AD carries the same
+>    slip and is preserved verbatim as history; this section supersedes it.)
+> 3. **GPU model is now resume-blocking**, conservatively — see AE.7.
+>
+> **And the evidence status is separated honestly: the torch runtime tests are
+> IMPLEMENTED, not EXECUTED.** See AE.9.
+
+### AE.1 Decisions persisted
+
+`docs/spec/decisions.md` now carries **D-S1B-015** (CUDA execution + deterministic
+numerical policy), **D-S1B-016** (deterministic, domain-separated, CPU-first
+adapter initialisation) and **D-S1B-017** (nominal-run independence), each with
+its original proposal wording, the implemented decision, the reason, affected
+files and experiments, and an explicit "proposal source updated: NO".
+
+### AE.2 The init-seed derivation, and proof the sampler is untouched
+
+New pinned tag `UNMARK-STAGE1-v1|adapter-init`, used with the **existing**
+`derive_seeds` primitive — no second hash scheme was invented:
+
+```
+adapter_init_seed(run_seed) = derive_seeds(f"UNMARK-STAGE1-v1|adapter-init|{run_seed}", 1)[0]
+```
+
+| `run_seed` | used by | derived `init_seed` |
+|---|---|---|
+| **21230** (`SELECTION_SEED`) | all **8** selection candidates | **3203** |
+| **36930** | `final-main` seed 1 | **51800** |
+| **7309** | `final-main` seed 2 | **45833** |
+| **5993** | `final-main` seed 3 | **15758** |
+
+All four are distinct, none collides with any existing role seed (import-time
+guard added), and each differs from the `run_seed` it derives from.
+
+**The sampler's semantics are unchanged, and that is asserted rather than
+asserted-to.** A test reads the real `DeterministicSampler(...)` call in
+`train_run` from the AST and requires its `seed=` argument to be literally
+`provenance.run_seed`. A second test proves the trainer never *calls*
+`adapter_init_seed` — checked on the call graph, because the trainer's docstrings
+legitimately mention it.
+
+**Paired-selection rationale.** `adapter_init_seed` takes `run_seed` and nothing
+else — enforced by its signature, and tested. So the eight selection candidates
+share one initialisation and the LR/`r` sweeps vary only their target.
+
+**The grouping is FOUR, not two.** Across the eleven nominal runs there are
+**four distinct expected fresh-init hashes**, with multiplicities **[8, 1, 1, 1]**:
+
+| Group | Runs | `init_seed` |
+|---|---|---|
+| 1 | the **8** selection candidates | 3203 |
+| 2 | `final-main` 36930 | 51800 |
+| 3 | `final-main` 7309 | 45833 |
+| 4 | `final-main` 5993 | 15758 |
+
+There are **two methodological categories** — paired selection, and seed-varied
+final-main — and an earlier draft of this section (and §AD) wrote "two hash
+groups", conflating the category count with the group count. A torch-free test now
+asserts `Counter(...) == {3203: 8, 51800: 1, 45833: 1, 15758: 1}` so the number
+cannot drift again.
+
+### AE.3 Construction refactor
+
+`build_objective` is retained unchanged for the CPU-capable `smoke` and
+measurement paths. `execute_stage` no longer uses it:
+
+| Scope | What |
+|---|---|
+| **stage** | `build_backbone(revision)` → tokenizer + frozen encoder + hidden size; device resolved; encoder placed **once**; `E0` = full `state_dict` hash |
+| **per nominal run** | `adapter_init_seed` → `fresh_adapter` on **CPU** → `H0` → `.to(device)` → **new** `UnmarkEncoder(shared encoder, new adapter)` → **new** `Stage1Objective` → **new** optimizer → **new** sampler |
+| **after each run** | `require_frozen_backbone_unchanged`: full `state_dict` hash `== E0`, zero trainable parameters, no gradients |
+
+The frozen backbone is **never moved inside the loop** — asserted structurally, so
+~135M parameters are not shuttled per candidate.
+
+### AE.4 Initialisation isolation — CORRECTED
+
+**The first draft of this repair was wrong, and the claim it made was unsound.**
+It used:
+
+```python
+with torch.random.fork_rng(devices=[]):
+    torch.manual_seed(init_seed)          # WRONG
+```
+
+and asserted that no CUDA RNG was touched. `torch.manual_seed`'s documented
+contract is to seed **all devices**: it calls `torch.cuda.manual_seed_all(seed)`
+before seeding the CPU generator. `fork_rng(devices=[])` snapshots and restores
+**only** the CPU generator. So on a CUDA process the pairing perturbs every CUDA
+generator and never restores it — and when CUDA is *not* yet initialised,
+`manual_seed_all` defers through `_lazy_call`, queueing a seed that fires later at
+CUDA init. Either way an operation that is supposed to be a pure CPU construction
+silently alters accelerator RNG, which is exactly what D-S1B-016 forbids.
+
+**Repaired to the CPU default generator specifically:**
+
+```python
+with torch.random.fork_rng(devices=[]):
+    torch.default_generator.manual_seed(int(init_seed))
+    adapter = OrthographyInputAdapter(AdapterConfig(hidden_size=hidden_size))
+```
+
+`torch.default_generator` **is** the CPU generator that every CPU
+`reset_parameters` draws from, so seeding it is exactly sufficient and strictly
+confined: no CUDA generator is read, written or initialised, and the fork restores
+ambient CPU state on exit. A call-graph test proves `fresh_adapter` calls
+`torch.default_generator.manual_seed` and never `torch.manual_seed`,
+`manual_seed_all`, `.cuda()`, `.to()` or `torch.device`.
+
+The runtime file adds a CUDA-gated proof — `torch.cuda.get_rng_state_all()`
+compared **byte for byte** across `fresh_adapter` — a byte-exact CPU
+`get_rng_state()` restoration check, and a check that `fresh_adapter` does not
+initialise CUDA as a side effect.
+
+### AE.5 Hash contract
+
+One canonical mechanism, `trainable_state_hash`: sorted key names, each
+contributing name, dtype, shape and raw bytes, with tensors moved to CPU and made
+contiguous first — so a hash computed on CPU compares equal against a model
+already placed on an accelerator. `module_state_hash` applies it to a **full**
+`state_dict` for the encoder's immutability check, covering buffers.
+
+`execute_stage` asserts, per run, that the fresh adapter's hash equals
+`expected_fresh_init_hash(hidden, run_seed)` **and** that placement did not change
+it.
+
+### AE.6 Storage independence, proven positively
+
+Because the eight selection candidates deliberately share values, hash equality is
+**expected** and proves nothing. The runtime tests build two adapters from one
+seed and assert equal hashes, `a is not b`, pairwise `pa is not pb`, distinct
+`data_ptr()`, and then **mutate one in place** (TEST-ONLY) and prove the other's
+hash is byte-identical. A further test mutates a "trained" candidate and shows the
+next two candidates still start from the expected hash — §AD's leakage, inverted.
+
+### AE.7 Device, numerics, fp32/TF32, fingerprint
+
+`unmark/stage1/device.py` is the single resolver. CUDA required, fail closed, no
+CPU fallback, logical `torch.device("cuda")` honouring `CUDA_VISIBLE_DEVICES`, no
+physical index anywhere.
+
+`enforce_numerical_policy` sets deterministic algorithms, cuDNN
+deterministic/benchmark, `float32_matmul_precision="highest"` and TF32 off;
+`verify_numerical_policy` re-asserts all of it afterwards, so a global setting
+changed elsewhere in the process cannot reach a run whose artifact claims `fp32`.
+**AMP remains absent** — no `autocast`, `GradScaler`, `fp16` or `bf16` anywhere.
+
+**cuBLAS timing is handled, not guessed.** `CUBLAS_WORKSPACE_CONFIG` is read when
+the cuBLAS handle is created, so `require_deterministic_cublas_workspace` sets it
+only while `torch.cuda.is_initialized()` is False and **refuses** otherwise,
+rather than setting it too late and claiming a determinism the run does not have.
+It is called first in `execute_stage`, before anything touches CUDA.
+
+The `ExecutionFingerprint` records backend, device, GPU name, compute capability,
+torch/CUDA/cuDNN versions, deterministic and TF32 states, cuBLAS workspace and
+matmul precision. **13 fields are resume-blocking.**
+
+**GPU model name now blocks — corrected, and deliberately conservative.** The
+first draft excluded it on the reasoning that compute capability is the
+numerically relevant property. That is what one would *expect*, but nothing in
+this repository has demonstrated that two different GPU models sharing a
+capability produce byte-identical interrupted-vs-uninterrupted training, and this
+project's reproducibility claim is too strong to rest on an untested expectation.
+A continuation therefore stays on the same model until a CUDA experiment proves
+cross-model identity; relaxing it is a later explicit decision.
+
+**Still not blocking:** the logical `device` index, which `CUDA_VISIBLE_DEVICES`
+renumbers freely, and the physical GPU UUID, which is not recorded as identity at
+all. Neither changes the arithmetic, so neither may block a legitimate
+crash-resume onto the same model of card.
+
+**cuBLAS ordering was re-traced after the RNG repair.** Inside `execute_stage`
+only `verify_scientific_inputs` precedes `require_deterministic_cublas_workspace`,
+and the preflight touches no torch at all; `fresh_adapter` has **zero** CUDA
+references in its call graph and runs far later, inside the run loop. Nothing can
+initialise CUDA before the workspace configuration is settled.
+
+### AE.8 Checkpoint, optimizer, continuation
+
+Persisted model state is now `adapter.state_dict()` — proven to be exactly the
+trainable parameter set, with **no** `encoder.` keys — restored with
+`strict=True`. `CHECKPOINT_SCHEMA_VERSION` is `stage1-checkpoint-v2`; v1 fails
+closed and no migration is offered, because no scientific checkpoint exists.
+`execution` joins the payload and `REQUIRED_CHECKPOINT_KEYS`.
+
+`require_optimizer_parameter_identity` asserts by **object identity** that
+optimizer parameters are exactly the current adapter's, each once — no stale,
+duplicate, missing, foreign or frozen parameter — and runs both after fresh
+construction and after restore. `require_optimizer_state_device` walks optimizer
+state **recursively** and asserts placement, treating Adam's scalar `step`
+correctly; it asserts the postcondition of supported PyTorch behaviour rather than
+re-implementing migration.
+
+**Continuation** restores `Hc`, never `H0`, proven by a fixture that deliberately
+mutates state so `Hc != H0`, rebuilds deterministically, restores strictly, and
+then re-checks optimizer identity — **with no scientific optimizer step**.
+
+**Checkpoint-size evidence.** Old model state was the whole wrapper — frozen
+encoder included; new state is the adapter alone, **3 551 232** parameters
+(≈14 MB at fp32 versus an estimated ≈540 MB). The exact real-model file size is
+deferred to the fresh-runtime probe.
+
+### AE.9 Test results
+
+| Suite | Result |
+|---|---|
+| **Full lightweight suite** | **3 575 passed, 101 skipped, 0 failed** |
+| Torch-free structural (`run_independence` + `device_contract`) | **33 passed** |
+| **Torch runtime CPU tests** | **0 passed, 0 failed — the whole module SKIPPED (no torch on this machine)** |
+| **CUDA-only tests** | **0 passed, 0 failed — not reached; the module skipped before gating** |
+
+New: `tests/test_stage1_run_independence.py` — **25 tests, torch-free**, running in
+the ML-free venv: seed derivation and its exclusions, the locked seed table, the
+untouched sampler contract, the construction boundary, device-contract ordering,
+adapter-only checkpoints, strict restore, and both optimizer contracts.
+
+New: `tests/test_stage1_run_independence_runtime.py` — **torch-gated**:
+determinism, CPU-only initialisation, RNG isolation and restoration, hash
+contract, storage independence and mutation isolation, cross-candidate isolation,
+optimizer identity and state-device assertions, strict-restore failure modes,
+the `H0`/`Hc` continuation fixture, encoder immutability including buffers, the
+runtime eval guard, and the device/numerics/fingerprint contracts.
+
+Updated: the §Y device test now forbids a **physical** GPU index rather than the
+string `"cuda"` — `device.py` legitimately names the logical device — plus two new
+assertions that only `device.py` names CUDA and that the scientific CLI exposes no
+device/determinism/init override. The §W preflight-ordering test now targets
+`build_backbone`.
+
+#### AE.9.1 IMPLEMENTED is not EXECUTED
+
+**There is no torch anywhere on this machine** — the development venv is
+deliberately ML-free and no pinned-torch environment was available before commit,
+so `tests/test_stage1_run_independence_runtime.py` **skipped in its entirety**.
+The first draft of this section described several of its contracts as though they
+were established. They are not. The status of every claim whose evidence lives in
+that file:
+
+| Contract | Status |
+|---|---|
+| Deterministic init: same seed → same bytes, different seed → different | **IMPLEMENTED, NOT EXECUTED** |
+| CPU-only initialisation; ambient CPU RNG restored byte-for-byte | **IMPLEMENTED, NOT EXECUTED** |
+| Storage independence + in-place mutation isolation | **IMPLEMENTED, NOT EXECUTED** |
+| Cross-candidate isolation (a mutated candidate cannot move the next) | **IMPLEMENTED, NOT EXECUTED** |
+| Fresh-init hash reproduction; hash survives a device move | **IMPLEMENTED, NOT EXECUTED** |
+| Locked 3 551 232 parameter count at `HIDDEN_SIZE` | **IMPLEMENTED, NOT EXECUTED** |
+| Optimizer parameter object-identity contract, and its failure modes | **IMPLEMENTED, NOT EXECUTED** |
+| Optimizer state-device recursive assertion | **IMPLEMENTED, NOT EXECUTED** |
+| Adapter-only state; strict-restore rejects missing/unexpected/wrong-shape | **IMPLEMENTED, NOT EXECUTED** |
+| `H0` vs `Hc` continuation fixture | **IMPLEMENTED, NOT EXECUTED** |
+| Encoder full-`state_dict` immutability, buffers included | **IMPLEMENTED, NOT EXECUTED** |
+| Runtime encoder-eval guard | **IMPLEMENTED, NOT EXECUTED** |
+| Device fail-closed, perturbed-precision, late-cuBLAS, fingerprint blocking | **IMPLEMENTED, NOT EXECUTED** |
+| **CUDA generators byte-identical across `fresh_adapter`** | **IMPLEMENTED — needs a GPU** |
+| **CUDA resume byte-identity** | **IMPLEMENTED — needs a GPU** |
+
+**What IS executed evidence:** the **25** torch-free structural tests in
+`tests/test_stage1_run_independence.py`, and the full lightweight suite. Those
+cover the seed derivation and its exclusions, the four-group table, the untouched
+sampler contract, the construction boundary, device-contract ordering,
+adapter-only checkpoints, strict restore, both optimizer contracts, and — by AST —
+that `fresh_adapter` seeds only the CPU default generator.
+
+Everything else above is **written and reviewed, not run**. The next environment
+must execute the CPU-capable half under pinned torch **before** the two acceptance
+probes, and the CUDA-gated half on the GPU.
+
+**The repository's byte-identical resume claim remains scoped to CPU.** This
+section does not claim CUDA byte-identity, and does not claim runtime proof of
+the contracts marked above.
+
+### AE.10 What remains
+
+| Requirement | Status |
+|---|---|
+| **Execute the CPU-capable torch runtime tests under pinned torch** (AE.9.1) | **REQUIRED, BEFORE the probes** |
+| Fresh-runtime Probe 1 — real training-entry placement, **zero update** | **REQUIRED** |
+| Fresh-runtime Probe 2 — real checkpoint/resume, **zero update** (optimizer construction allowed, execution not) | **REQUIRED** |
+| CUDA-gated tiny resume byte-identity test executed on a GPU | **REQUIRED** |
+| Non-scientific performance measurement — one full four-condition validation, representative training-path cost | **REQUIRED, separate** |
+| **FINAL STAGE-1 CONFIGURATION FREEZE**, machine-readable and mechanically compared against code | **REQUIRED** |
+| Final proposal-aware repository-wide review | **REQUIRED** |
+| Human approval | **REQUIRED** |
+
+**STATUS: PRE-TRAIN IMPLEMENTATION RUNTIME VERIFICATION INCOMPLETE — DO NOT COMMIT YET**
+**THE TORCH RUNTIME TESTS ARE IMPLEMENTED, NOT EXECUTED: NO TORCH EXISTS ON THIS MACHINE**
+**THREE PRE-COMMIT CORRECTIONS: CPU-ONLY RNG, FOUR HASH GROUPS, GPU MODEL BLOCKS RESUME**
+**`torch.manual_seed` SEEDS ALL DEVICES — REPLACED BY `torch.default_generator.manual_seed`**
+**FOUR INIT-HASH GROUPS ACROSS ELEVEN RUNS, MULTIPLICITIES [8, 1, 1, 1] — NOT TWO**
+**D-S1B-015, D-S1B-016 AND D-S1B-017 PERSISTED; THE §AD LEAKAGE IS REPAIRED**
+**EVERY NOMINAL RUN NOW BUILDS A FRESH ADAPTER; THE FROZEN ENCODER IS THE ONLY SHARED MODEL STATE**
+**INIT SEEDS: 21230→3203 (ALL 8 SELECTION CANDIDATES), 36930→51800, 7309→45833, 5993→15758**
+**LR AND r CANNOT ENTER THE DERIVATION — THE SELECTION SWEEPS STAY PAIRED**
+**THE SAMPLER STILL RECEIVES `run_seed` ITSELF — DATA ORDER IS UNCHANGED, AND AST-ASSERTED**
+**INITIALISATION IS CPU-ONLY INSIDE `fork_rng`, SO IT IS HARDWARE-INDEPENDENT AND RESTORES AMBIENT RNG**
+**CUDA REQUIRED AND FAIL-CLOSED; DETERMINISTIC POLICY ENFORCED *AND* RE-ASSERTED; TRUE fp32 MATMUL**
+**CHECKPOINTS ARE ADAPTER-ONLY AND STRICT; SCHEMA v2 FAILS CLOSED ON v1; NO MIGRATION NEEDED**
+**THE FULL LIGHTWEIGHT SUITE PASSES, BUT THE TORCH RUNTIME FILE SKIPPED ENTIRELY**
+**CUDA BYTE-IDENTICAL RESUME IS NOT YET ESTABLISHED; THE CLAIM STAYS SCOPED TO CPU**
+**NO SCIENTIFIC TRAINING OCCURRED — TRAINING REMAINS UNAUTHORISED**

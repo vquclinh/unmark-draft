@@ -230,7 +230,9 @@ def statement_order(source: str, function: str, first: str, second: str):
 
 
 @pytest.mark.parametrize("module,function,builder", [
-    ("unmark/stage1/execute.py", "execute_stage", "build_objective"),
+    # execute_stage now builds the shared frozen backbone (D-S1B-017); the
+    # preflight must still precede it.
+    ("unmark/stage1/execute.py", "execute_stage", "build_backbone"),
     ("unmark/stage1/execute.py", "smoke_check", "build_objective"),
     ("scripts/stage1_pretrain_measurements.py", "validation_timing", "build"),
 ])
@@ -359,7 +361,7 @@ def provenance(**overrides):
     from unmark.stage1.trainer import RunProvenance
 
     base = dict(
-        run_seed=36930, corruption_seed=35422, learning_rate=3e-4, r=1.0,
+        run_seed=36930, init_seed=51800, corruption_seed=35422, learning_rate=3e-4, r=1.0,
         corpus_manifest_digest="d" * 64, repository_head="a" * 40,
         inventory=identity(),
     )

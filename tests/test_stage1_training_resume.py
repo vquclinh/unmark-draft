@@ -58,6 +58,7 @@ class TinyAdapter(torch.nn.Module):
 def provenance() -> RunProvenance:
     return RunProvenance(
         run_seed=36930,
+        init_seed=51800,
         corruption_seed=35422,
         learning_rate=3e-4,
         r=1.0,

@@ -132,6 +132,10 @@ class Stage1Objective(nn.Module):
         correct -- the adapted branches must never be wrapped in it.
         """
         encoder = self.unmark_encoder.encoder
+        # The reference branch calls the frozen encoder directly, so it needs the
+        # same runtime guard the adapted path gets inside `UnmarkEncoder.forward`.
+        # These are the only two encoder forward boundaries in Stage-1.
+        self.unmark_encoder.require_frozen_encoder_eval()
         with torch.no_grad():
             outputs = encoder(input_ids=input_ids, attention_mask=attention_mask)
             hidden = _hidden_states(outputs)
