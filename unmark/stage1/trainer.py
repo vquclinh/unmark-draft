@@ -562,6 +562,7 @@ def train_run(
     checkpoint_dir: Path | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     execution: Any = None,
+    preparation_pool: Any = None,
 ) -> RunResult:
     """One Stage-1 run, to `cap` updates. **Imports torch lazily.**
 
@@ -581,6 +582,7 @@ def train_run(
         prepare_example,
     )
     from unmark.stage1.optim import build_optimizer
+    from unmark.stage1.preparation import prepare_serially
 
     if not train_chunks:
         raise TrainerContractViolation("no training chunks supplied")
@@ -627,18 +629,26 @@ def train_run(
     window = MonitorWindow()
     objective.train(True)
     while global_update < cap:
+        # The MAIN process alone advances the sampler and fixes batch membership,
+        # order and visits. Exactly ONE batch is consumed per training step --
+        # there is no look-ahead, because checkpointing commits sampler state
+        # together with the completed update (Audit 030 §AG).
         pairs = sampler.next_batch(BATCH_SIZE)
-        prepared = []
-        for chunk_id, visit in pairs:
-            item = prepare_example(
-                Stage1Example(text=train_chunks[chunk_id], sample_id=chunk_id),
-                tokenizer,
-                corruption_policy=corruption_policy,
-                truncation=truncation,
-                visit=visit,
-                classifier=classifier,
-                unk_token_id=unk_token_id,
+        tasks = [(chunk_id, visit, train_chunks[chunk_id]) for chunk_id, visit in pairs]
+
+        # Preparation is the only thing that moves off this process, and only as
+        # a pure function of an already-chosen (sample_id, visit, text). Results
+        # come back in INPUT order, so worker completion order cannot reach
+        # scientific order. No serial fallback: a broken pool fails loudly.
+        if preparation_pool is not None:
+            prepared = preparation_pool.prepare(tasks)
+        else:
+            prepared = prepare_serially(
+                tasks, tokenizer, corruption_policy=corruption_policy,
+                truncation=truncation, classifier=classifier, unk_token_id=unk_token_id,
             )
+
+        for (chunk_id, _visit), item in zip(pairs, prepared):
             if item is None:
                 raise TrainerContractViolation(
                     f"chunk {chunk_id!r} overflowed at training time; after correct "
@@ -646,7 +656,6 @@ def train_run(
                 )
             window.tone_channel_differs += int(item.channels_differ)
             window.letter_channel_differs += int(item.letter_channels_differ)
-            prepared.append(item)
 
         # Same one boundary as `validation.evaluate`: the batch follows the
         # model, derived from the objective's own parameters. A no-op on CPU.

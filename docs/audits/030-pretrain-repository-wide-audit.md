@@ -25,15 +25,65 @@
 | **Revision 15 — device/init/independence repair** | 2026-08-23 — **D-S1B-015, D-S1B-016 and D-S1B-017 persisted and implemented** at `3a5368c`. Every nominal run now builds a **fresh adapter** from a domain-separated, CPU-initialised seed (21230→3203, 36930→51800, 7309→45833, 5993→15758); the frozen encoder is the only shared model state. CUDA required and fail-closed under an enforced *and re-asserted* deterministic true-fp32 policy. Checkpoints are adapter-only and strict (schema **v2**). **3 572 passed, 101 skipped.** CUDA half pending a GPU. See **§AE** |
 | **Revision 15a — pre-commit correction** | 2026-08-23 — a targeted review of the §AE draft found a **real defect in it**: `torch.manual_seed` seeds *all* devices, so pairing it with `fork_rng(devices=[])` perturbed CUDA RNG without restoring it. Repaired to `torch.default_generator.manual_seed`. Also corrected: **four** init-hash groups `[8,1,1,1]`, not two; **GPU model is now resume-blocking**. And the torch runtime tests are recorded as **IMPLEMENTED, NOT EXECUTED** — no torch exists on this machine. See **§AE** |
 | **Revision 16 — fresh-CUDA runtime verification** | 2026-08-24 — the torch/CUDA contracts §AE could only *implement* are now **executed** on a fresh Colab runtime (torch 2.11.0+cu128, CUDA 12.8, transformers 4.57.6, RTX PRO 6000 Blackwell, cc 12.0, cuDNN 91900), bound to implementation commit `3c3489b9`. **Stage-1 1 344 passed / 1 skipped; full 3 754 passed / 1 skipped; 0 failed, 0 errors.** Four H0 hashes and the `[8,1,1,1]` grouping recorded in full. **Two claims reserved** — CUDA resume byte-identity and optimizer-state placement *on CUDA*. See **§AE.11** |
+| **Revision 17 — real acceptance + performance blocker** | 2026-08-24 — at `ac20cfb7`, **every real zero-update acceptance gate PASSED** on the real corpus and real PhoBERT: Probe 1, Probe 2, CUDA interrupted-vs-uninterrupted exact equivalence, populated optimizer-state CUDA placement, and the full four-condition validation. `optimizer.step` count still **ZERO**. Those runs produced the first real training-path timing and revealed a **material performance blocker**: the path is **preparation-bound** (79.05 % prepare, 12.60 % GPU), projecting **≈403 h / 16.8 days** for the 11 nominal runs. See **§AF** |
+| **Revision 18 — parallel preparation** | 2026-08-24 — the first performance repair §AF called for: **deterministic 8-worker parallel preparation, and nothing else**. Real benchmark: serial 4.605 s/batch → 8-worker 0.666 s (**6.912×**), **all prepared output exactly equal**. Production uses **`spawn`**, never the benchmark's `fork`, because the parent holds CUDA. Tokenizer reuse **rejected** (~5.01 % of preparation); classifier cache **deferred** (1.059× real). 17 new tests executed locally. See **§AG** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**FRESH-CUDA RUNTIME VERIFICATION PASS — READY FOR HUMAN REVIEW**
+**IMPLEMENTED — POST-IMPLEMENTATION CUDA/SPAWN PERFORMANCE VERIFICATION PENDING**
 
-> **§AE.11 is the current verdict.** The torch and CUDA contracts that §AE could
+> **§AG is the current verdict.** §AF's performance blocker has its first repair:
+> **deterministic 8-worker parallel preparation, and deliberately nothing else.**
+> The real benchmark measured serial **4.605 s/batch → 8-worker 0.666 s
+> (6.912×)** with **every prepared output exactly equal**, and two candidates were
+> closed out by evidence rather than taste — tokenizer reuse **rejected** (the real
+> tokenizer is only ~5.01 % of preparation, not worth weakening an independently
+> computed base-invariance check) and the classifier cache **deferred** (1.059× on
+> a real batch).
+>
+> **Production uses `spawn`, never the benchmark's `fork`** — the parent holds a
+> CUDA context by then. So the benchmark establishes parallelisability, order and
+> exact equality, **not production throughput**, and no speedup is claimed for the
+> implementation. §AF.4's caveat is closed: a persistent CUDA resume-equivalence
+> test now exists.
+>
+> **A post-implementation CUDA/spawn benchmark on the authoritative GPU is
+> mandatory**, along with the configuration freeze, the final review and human
+> approval. §T–§AF are preserved verbatim, with §AF.6's over-strong wording
+> corrected in place. **Training is not authorised.**
+
+~~**PRE-TRAIN RUNTIME ACCEPTANCE PASS — PERFORMANCE BLOCKER UNDER REVIEW**~~ **— superseded by §AG**
+
+> **§AF was the previous verdict.** At `ac20cfb786ca770a7296339d48263ff8e09acf66`
+> every real zero-update acceptance gate **passed** against the real prepared
+> corpus and real PhoBERT — Probe 1, Probe 2, **CUDA interrupted-vs-uninterrupted
+> exact equivalence**, populated optimizer-state CUDA placement, and the full
+> four-condition validation (810 forwards, parameter hashes identical). The
+> scientific **`optimizer.step` count is still ZERO** and official UIT-VSFC TEST
+> remains sealed. §AE.11.8's two reserved claims are **closed** — though as a
+> one-off fixture, **not** persistent regression coverage (§AF.4).
+>
+> **A new, material blocker replaces them.** The training path is
+> **preparation-bound**: 79.05 % of each step is `prepare_example`, 87.40 % is
+> CPU-side, and only 12.60 % is GPU. That projects a **lower bound of ≈36.67 h per
+> 20k run and ≈403 h / 16.8 days for the 11 nominal runs**, before
+> `optimizer.step`, checkpoint I/O or any continuation. Root cause: eligibility
+> classification recurses into a **full `decompose` per syllable span** — ≈301
+> `decompose` and ≈602 `canon` calls per example — and 49.7 % of tokenize calls
+> recompute a result the code already proves identical.
+>
+> **Nothing was optimised in this task**, and no speedup of the real path is
+> claimed. §AF also **corrects §AC.15 item 3**: Adam's scalar `step` is
+> legitimately on CPU and production must not be changed to move it.
+>
+> §T–§AE are preserved verbatim. **Training is not authorised.**
+
+~~**FRESH-CUDA RUNTIME VERIFICATION PASS — READY FOR HUMAN REVIEW**~~ **— superseded by §AF**
+
+> **§AE.11 was the previous verdict.** The torch and CUDA contracts that §AE could
 > only *implement* have now **executed on real hardware** — a fresh Colab runtime
 > at torch 2.11.0+cu128 / CUDA 12.8 / transformers 4.57.6 on an RTX PRO 6000
 > Blackwell — bound to implementation commit `3c3489b9`. Stage-1 **1 344 passed /
@@ -4151,3 +4201,691 @@ science.
 **THE FULL LIGHTWEIGHT SUITE PASSES, BUT THE TORCH RUNTIME FILE SKIPPED ENTIRELY**
 **CUDA BYTE-IDENTICAL RESUME IS NOT YET ESTABLISHED; THE CLAIM STAYS SCOPED TO CPU**
 **NO SCIENTIFIC TRAINING OCCURRED — TRAINING REMAINS UNAUTHORISED**
+
+---
+
+## AF. REAL ZERO-UPDATE ACCEPTANCE, AND A NEWLY QUANTIFIED PERFORMANCE BLOCKER
+
+**Revision 17.** Fresh CUDA runtime at HEAD
+`ac20cfb786ca770a7296339d48263ff8e09acf66`. Every acceptance gate §AE.11.10 left
+open has now run against the **real** prepared corpus and the **real** PhoBERT —
+and all of them passed. In doing so they produced the first real timing of the
+training path, which turns the long-deferred performance concern into a
+**material, quantified blocker**.
+
+**Scientific `optimizer.step` count remains ZERO. Training is not authorised.**
+
+### AF.1 Environment and corpus
+
+Same locked stack as §AE.11.1 — torch **2.11.0+cu128**, CUDA **12.8**, cuDNN
+**91900**, transformers **4.57.6**, **NVIDIA RTX PRO 6000 Blackwell Server
+Edition**, compute capability **12.0** — under the locked numerical policy:
+deterministic algorithms **true**, `cudnn.deterministic` **true**,
+`cudnn.benchmark` **false**, `CUBLAS_WORKSPACE_CONFIG` **`:4096:8`**, float32
+matmul **highest**, CUDA matmul TF32 **false**, cuDNN TF32 **false**.
+
+| Prepared corpus | |
+|---|---|
+| Total / train / dev chunks | **2 633 067 / 2 621 624 / 11 443** |
+| Membership digest | `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6` |
+| Authoritative verification | **PASS** |
+
+### AF.2 Acceptance results — all PASS
+
+| Gate | Result |
+|---|---|
+| Prepared-corpus verification | **PASS** |
+| **Probe 1 — real training-entry placement, ZERO update** | **PASS** |
+| **Probe 2 — real checkpoint/resume, ZERO update** | **PASS** |
+| **CUDA interrupted-vs-uninterrupted exact equivalence** | **PASS** |
+| **Populated optimizer-state CUDA placement** | **PASS** |
+| Full four-condition real validation | **PASS** |
+| Representative backward / no-step training path | **PASS** |
+| Repository safety | **PASS** |
+| Scientific `optimizer.step` count | **ZERO** |
+| Official UIT-VSFC TEST | **SEALED / UNTOUCHED** |
+
+**Full four-condition validation.** All **11 443** dev chunks, FULL / P100 / P50 /
+STRIP_ALL, batch 128, validation corruption seed **19225**, **810 real forwards**;
+optimizer constructed **false**, backward calls **0**, optimizer steps **0**,
+parameter updates **0**, parameter hashes **identical** before and after.
+Recurring validation **304.526 s**; **41** evaluations per 20k run; projected
+recurring validation **12 485.6 s** per run; one-time condition setup **1 584.79 s**.
+
+**Representative training path** — explicitly **NON-SCIENTIFIC** acceptance
+measurement: real PhoBERT, real Stage-1 adapter, real prepared examples, batch
+128, one warm-up plus three measured batches. **Backward executed;
+`optimizer.step` NEVER executed.** Adapter hashes identical before/after, encoder
+hashes identical before/after, optimizer state remained **empty**, all **8**
+adapter gradient tensors finite and non-zero, encoder gradient tensors **0**.
+
+### AF.3 ★ CORRECTION — Adam's scalar `step` is legitimately on CPU
+
+**§AC.15's Probe-2 item 3 is SUPERSEDED.** It read:
+
+> *"assert every optimizer state tensor (`exp_avg`, `exp_avg_sq`, `step`) is on the
+> selected device"*
+
+That was **wrong about `step`**. The runtime evidence, and PyTorch's own AdamW
+semantics, are:
+
+* `exp_avg` and `exp_avg_sq` are on **`cuda:0`** after restore — correct, and
+  asserted;
+* Adam's scalar `step` tensors are on **CPU** — **legitimate PyTorch AdamW
+  behaviour**, not a defect.
+
+The production implementation was already right: `require_optimizer_state_device`
+in `unmark/stage1/trainer.py` explicitly exempts zero-dimensional scalar `step`
+(`if value.dim() == 0 and path.endswith("step"): return`). The authoritative
+production optimizer-state postcondition therefore **PASSED**.
+
+**No production change is required, and none should be made to force Adam's
+scalar `step` onto CUDA.** §AC.15 is preserved verbatim as history; this entry
+supersedes its item 3.
+
+### AF.4 ★ The two §AE.11.8 reserved claims are now CLOSED — with one caveat
+
+A tiny **non-scientific** CUDA fixture, driving the **production**
+checkpoint/resume APIs, established:
+
+| Property | Result |
+|---|---|
+| Uninterrupted 16-update execution | **PASS** |
+| Interrupted at update 8 → checkpointed → process rebuilt → resumed to 16 | **PASS** |
+| Final adapter tensors | **exactly equal** |
+| Final optimizer state | **exactly equal** |
+| Sampler state | **exactly equal** |
+| Update count | **exactly equal** |
+| Validation-point history | **exactly equal** |
+
+So **CUDA interrupted-vs-uninterrupted byte identity is ESTABLISHED**, and
+**populated optimizer-state CUDA placement is ESTABLISHED** (under the correct
+Adam semantics of AF.3). Both reserved claims in §AE.11.8 are discharged.
+
+> **Caveat, stated rather than glossed.** This was a **one-off fixture run**, not
+> persistent regression coverage. **The repository still contains no CUDA
+> resume-equivalence test**; `test_stage1_training_resume.py` and
+> `test_stage1_training_resume_state.py` remain CPU-only. Nothing here should be
+> read as "CUDA regression coverage exists".
+>
+> **Stale docstring to fix (documentation only, NOT changed in this task):**
+> `tests/test_stage1_run_independence_runtime.py:7` states *"Synthetic optimizer
+> steps appear ONLY in the CUDA resume-equivalence test"* — **no such test exists
+> in that file.** Proposed replacement for lines 7–9:
+>
+> ```
+> No synthetic optimizer step is taken anywhere in this file. (An earlier draft of
+> this docstring referred to a CUDA resume-equivalence test that was never added;
+> CUDA resume equivalence was established once by an out-of-tree fixture — see
+> Audit 030 §AF.4 — and still has no persistent regression test.)
+> ```
+
+### AF.5 ★ NEW BLOCKER — the training path is preparation-bound
+
+**Measured means, batch 128:**
+
+| Stage | Seconds | Share of pre-step |
+|---|---|---|
+| `prepare_example` ×128 | **4.723522706** | **79.05 %** |
+| collate | **0.498691270** | 8.35 % |
+| H2D | **0.000928833** | 0.02 % |
+| forward | **0.446289907** | 7.47 % |
+| backward | **0.306093282** | 5.12 % |
+| **pre-step total** | **5.975525999** | 100 % |
+
+CPU-side (**prepare + collate**) is **87.40 %**; all GPU work (H2D + forward +
+backward) is **12.60 %**. Peak GPU allocated **27 566 880 768 B** (≈25.7 GiB),
+reserved **28 022 145 024 B** — comfortable on a ~97.9 GiB card, so **memory is
+not the constraint**.
+
+**Campaign projection — lower bound, before `optimizer.step`, checkpoint I/O or
+any continuation:**
+
+| Quantity | Value |
+|---|---|
+| Pre-step path, one 20k run | 20 000 × 5.975526 s = **119 510.5 s ≈ 33.20 h** |
+| Recurring validation, one 20k run | **12 485.6 s ≈ 3.47 h** |
+| **One nominal 20k run** | **≈ 131 996 s ≈ 36.67 h** |
+| **All 11 nominal runs** | **≈ 403.3 h ≈ 16.8 days** single-GPU |
+
+A 40k continuation on any run adds roughly another 36.7 h to that run.
+
+**Amdahl ceilings — theoretical, not achieved.** With preparation at 79.05 % of
+the pre-step path, holding everything else fixed:
+
+| Target | Required preparation speedup |
+|---|---|
+| 2× total training-path | **2.72×** |
+| 4× total training-path | **19.5×** |
+| Ceiling, preparation → 0 | **4.77×** total (floor 1.252 s/step) |
+| Ceiling, preparation **and** collate → 0 | **7.93×** total (floor 0.753 s/step) |
+
+> **Consequence worth stating plainly: prefetch/overlap alone does not solve
+> this.** Overlapping CPU preparation with GPU compute replaces `CPU + GPU` by
+> `max(CPU, GPU)`. Here CPU is **7×** GPU, so perfect overlap buys only ≈12.6 %.
+> Overlap becomes valuable *after* preparation is made much cheaper, not instead
+> of it.
+
+### AF.6 Root cause — traced, and it is NOT tokenisation
+
+> **Wording corrected by §AG (Revision 18).** "It is NOT tokenisation" overstated
+> what was then known — the local profile used a *stub* tokenizer, so it could not
+> measure the real one. The real-runtime measurement has since put the pinned
+> tokenizer at **~5.01 %** of preparation wall time. The better-established
+> statement is: **the real tokenizer accounts for only ~5.01 % of measured
+> preparation wall time; the dominant cost is the deterministic
+> orthography/alignment path.** The conclusion is unchanged and now measured; the
+> original heading is left as written.
+
+
+`prepare_example` → `prepare_with_condition` runs three streams: PATH R
+(reference), PATH C (clean base + channels), PATH K (corrupt base + channels).
+Profiling the deterministic phase on a representative Vietnamese chunk (~99
+whitespace chunks) gives, **per single example**:
+
+| Observation | Count |
+|---|---|
+| `decompose()` invocations | **≈ 301** |
+| `canon()` invocations | **≈ 602** |
+| `tokenizer.tokenize()` invocations | **199** |
+
+**Why 301 decomposes for one example.** Eligibility classification recurses into a
+full decomposition:
+
+```
+decompose(text, eligibility_classifier=classify)
+  └─ _segment_syllables → flush → _build_span → classify(span)
+       └─ classify_candidate(span, inventory)
+            └─ membership_form(span)  =  strip_to_base(canon(span)).casefold()
+                 └─ strip_to_base → decompose(span)   ← a FULL nested decompose
+                      └─ canon(span)                  ← and another canon
+```
+
+So **every candidate syllable span triggers its own `canon` + full `decompose`**,
+and that happens once per span per stream. In the profile, `canon` /
+`apply_modern_placement` accounted for **≈44 %** of deterministic-phase cumulative
+time and the `classify` chain for **≈32 %**. `canon` is additionally called
+redundantly on already-canonical text: `prepare_with_condition` canonicalises,
+`project_text` canonicalises again, and `decompose` canonicalises a third time.
+
+**Second finding — half the tokenizer work is provably redundant.** PATH C and
+PATH K tokenise **byte-identical inputs**: 99 calls each, and instrumentation
+confirms the input lists are equal. The code *already asserts* this —
+`if list(clean_content_ids) != list(corrupt_content_ids): raise
+BaseInvarianceViolation`. Because base invariance holds, `base_text` is identical
+between the clean and corrupted streams, hence identical whitespace chunks,
+tokens, ids and alignment; **only the channel overlays differ**. Measured:
+**99 / 199 = 49.7 %** of tokenizer calls per example are recomputation of a result
+the code has already proven identical (≈30 % of tokenized characters).
+
+### AF.7 Ranked SAFE optimisation candidates
+
+**None implemented in this task.** Each is stated with the exact equivalence proof
+it would need.
+
+| # | Candidate | Evidence | Equivalence proof required |
+|---|---|---|---|
+| **1** | **Memoise the eligibility classifier** (`classify_candidate` / `membership_form`), keyed on the exact span string | **MEASURED: 2.66× on the deterministic phase**, with all prepared fields verified byte-identical; 5 513 hits / 31 misses | Cache key **is** the complete input; `membership_form` is pure given a fixed inventory. Must prove: keyed by exact string (no normalisation of the key); cache scoped to one verified inventory identity (§W) and invalidated if it changes; unbounded-growth bound argued from the ~2 489 stripped-form vocabulary |
+| **2** | **Reuse tokenisation + alignment across PATH C and PATH K** | **MEASURED: 49.7 % of tokenize calls are on identical inputs** | `clean_base == corrupt_base` (already asserted) ⇒ identical chunks ⇒ identical tokens/ids/alignment, tokenisation being a pure function of the string. **Caveat: this converts a computed check into an inferred one** — the existing `clean_content_ids == corrupt_content_ids` assertion would no longer be independently computed. Keep the string equality check, and decide explicitly whether losing the id-level check is acceptable |
+| **3** | **Remove redundant `canon()` on already-canonical text** | ≈602 `canon` calls/example; `canon` is idempotent | Prove `canon(canon(x)) == canon(x)` exhaustively over the corpus alphabet, then pass a canonical-form marker rather than re-canonicalising. Zero output change by idempotence |
+| **4** | **Deterministic prefetch / producer-consumer overlap** | H2D already 0.001 s | Order-preserving only: batches must be reassembled in **exact sampler order** before collation; no change to `(chunk_id, visit)` pairing. **Ceiling ≈12.6 % — do this last, not first** |
+| **5** | **Deterministic multi-process CPU preparation** | Stage-6 already proved this pattern | Main process owns order, membership and collation; workers compute pure functions only. Must reproduce byte-identical batches for 1/2/4/8 workers, exactly as Stage-6's `ordered_document_chunks` was proven |
+| **6** | Collate-path allocation/copy reduction | collate = 8.35 % | Byte-identical padded tensors, identical dtypes, identical padding |
+
+### AF.8 REJECTED — unsafe at any speed
+
+| Rejected | Why |
+|---|---|
+| Batched/vectorised tokenizer calls | The pinned tokenizer is the **slow Python** PhoBERT tokenizer; batching changes the call pattern and cannot be assumed id-identical. Only admissible with an exhaustive corpus-wide byte-equality proof, which is more expensive than candidate 2 |
+| Fast (Rust) tokenizer | Different implementation, unproven id-identity, and `use_fast=False` is part of the locked contract |
+| Caching prepared examples across visits | Corruption is redrawn **per visit** — a cache keyed on `chunk_id` alone would freeze the draw and destroy the experiment |
+| Any asynchronous preparation that can reorder | Would change which example pairs with which visit |
+| Reducing dev set, eval cadence, batch size, or precision | Locked scientific constants — forbidden by construction |
+| Skipping PATH K decomposition entirely | The **channel overlays genuinely differ** between clean and corrupt; only the *tokenisation* is redundant, not the decomposition |
+| Moving Adam's scalar `step` to CUDA | AF.3 — the current behaviour is correct |
+
+### AF.9 Is another micro-profile needed before implementing? — YES
+
+**The one number that decides the plan has not been measured**: how the real
+**4.7235 s** splits between the **real PhoBERT slow tokenizer** and the
+**deterministic phase**. The local profile above used a stub tokenizer, so it
+measured the deterministic phase only; the 2.66× is a measured speedup **of that
+phase**, not of the whole preparation. Candidate 1 attacks the deterministic
+phase and candidate 2 attacks the tokenizer, and their combined effect cannot be
+projected without the split.
+
+**Required Colab micro-profile — read-only, zero update, no `optimizer.step`:**
+
+1. `cProfile` over `prepare_example` for one real batch of 128 real prepared
+   chunks, at the locked tokenizer and inventory;
+2. report cumulative seconds for `tokenizer.tokenize`, `convert_tokens_to_ids`,
+   `canon`, `decompose`, `classify_candidate`, `align_chunk`, `project_piece`;
+3. report per-example counts of `decompose`, `canon` and `tokenize` on **real**
+   corpus text (the local counts used synthetic prose);
+4. re-run the same batch with an `lru_cache` wrapped **around the classifier
+   argument only** — no source change — and report both the wall-clock delta and
+   a byte-equality check of every prepared field;
+5. report distinct-span cache cardinality over ≥10 000 real chunks, to bound
+   memory.
+
+Nothing in that list writes an artifact, constructs an optimizer, or steps one.
+
+### AF.10 Files a future implementation would touch, and the decision question
+
+**Files:** `unmark/linguistics/classify.py` and/or `unmark/linguistics/inventory.py`
+(candidate 1); `unmark/stage1/data.py` — `prepare_with_condition`, `project_text`
+(candidates 2, 3); `unmark/orthography/decompose.py` (candidate 3);
+`unmark/stage1/trainer.py` (candidate 4/5 only); plus new tests asserting
+byte-identical prepared output, and a persistent CUDA resume-equivalence test to
+close AF.4's caveat.
+
+**Decision-log consequence.** Measuring a bottleneck needs **no** decision entry,
+and none is added here. But **candidate 2 would require one**: it replaces an
+independently *computed* base-invariance check with one *inferred* from string
+equality, which narrows a fail-closed guarantee. That is a specification-level
+change and must be recorded in `docs/spec/decisions.md` **before** implementation,
+not alongside it. Candidates 1, 3, 4, 5 and 6 are pure implementation changes with
+byte-identical outputs and need no decision entry — provided their equivalence
+proofs in AF.7 are actually produced.
+
+### AF.11 What this section does and does not establish
+
+**Established:** every acceptance gate in AF.2; the two reserved claims of
+§AE.11.8, subject to AF.4's caveat; the AF.3 correction; and the quantified
+performance blocker with its root cause.
+
+**Not established:** any speedup of the *real* preparation path — the 2.66× is a
+measured result for the deterministic phase under a stub tokenizer, and the 49.7 %
+is a call count, not a time. No optimisation has been implemented. The
+**FINAL STAGE-1 CONFIGURATION FREEZE**, the final proposal-aware review and
+**explicit human approval** all remain outstanding.
+
+**STATUS: PRE-TRAIN RUNTIME ACCEPTANCE PASS — PERFORMANCE BLOCKER UNDER REVIEW**
+**ALL REAL ZERO-UPDATE ACCEPTANCE GATES PASSED AT `ac20cfb7` ON THE REAL CORPUS AND REAL PhoBERT**
+**SCIENTIFIC `optimizer.step` COUNT IS STILL ZERO; OFFICIAL UIT-VSFC TEST REMAINS SEALED**
+**§AE.11.8's TWO RESERVED CLAIMS ARE CLOSED — BUT AS A ONE-OFF FIXTURE, NOT REGRESSION COVERAGE**
+**CORRECTION: ADAM'S SCALAR `step` IS LEGITIMATELY ON CPU; §AC.15 ITEM 3 IS SUPERSEDED**
+**NO PRODUCTION CHANGE MAY BE MADE TO FORCE SCALAR `step` ONTO CUDA**
+**THE TRAINING PATH IS PREPARATION-BOUND: 79.05 % PREPARE, 87.40 % CPU-SIDE, 12.60 % GPU**
+**LOWER BOUND ≈36.67 h PER 20k RUN AND ≈403 h / 16.8 DAYS FOR THE 11 NOMINAL RUNS**
+**ROOT CAUSE: ELIGIBILITY CLASSIFICATION RECURSES INTO A FULL `decompose` PER SYLLABLE SPAN**
+**≈301 `decompose` AND ≈602 `canon` CALLS PER EXAMPLE; 49.7 % OF TOKENIZE CALLS ARE REDUNDANT**
+**MEASURED: CLASSIFIER MEMOISATION GIVES 2.66x ON THE DETERMINISTIC PHASE, OUTPUT BYTE-IDENTICAL**
+**PREFETCH ALONE CANNOT FIX THIS — ITS CEILING IS 12.6 % WHILE CPU EXCEEDS GPU SEVENFOLD**
+**A COLAB MICRO-PROFILE OF THE TOKENIZER/DETERMINISTIC SPLIT IS REQUIRED BEFORE IMPLEMENTING**
+**CANDIDATE 2 WOULD NARROW A FAIL-CLOSED CHECK AND WOULD REQUIRE A DECISION ENTRY FIRST**
+**NO OPTIMISATION IMPLEMENTED; NO SCIENTIFIC CODE, TEST, CONFIG OR CONSTANT CHANGED**
+**TRAINING IS NOT AUTHORISED**
+
+---
+
+## AG. DETERMINISTIC PARALLEL PREPARATION — FIRST PERFORMANCE REPAIR
+
+**Revision 18.** Implementation of the smallest safe repair §AF identified, from
+base HEAD `ac20cfb786ca770a7296339d48263ff8e09acf66`.
+
+**Scientific `optimizer.step` count remains ZERO. Official UIT-VSFC TEST remains
+sealed and unused. Training is not authorised.**
+
+### AG.1 New real measurements that decided the plan
+
+Real prepared corpus, real pinned PhoBERT **slow** tokenizer, batch 128, on a
+24-physical / 48-logical-core host:
+
+| Configuration | Seconds / batch | Speedup | Prepared output |
+|---|---|---|---|
+| serial | **4.605099308** | 1.000× | — |
+| 2 workers | 2.328961237 | **1.977319×** | **exactly equal** |
+| 4 workers | 1.210541180 | **3.804166×** | **exactly equal** |
+| **8 workers** | **0.666244782** | **6.912023×** | **exactly equal** |
+| 8 workers + per-worker classifier cache | 0.602913878 | 7.638071× | **exactly equal** |
+
+And the measurements that **narrowed** the plan:
+
+| Finding | Value | Consequence |
+|---|---|---|
+| Real tokenizer share of preparation | **~5.01 %** | **Tokenizer reuse is not worth it.** §AF candidate 2 would have traded an independently *computed* base-invariance check for an *inferred* one to chase ~5 %. **Rejected** — and with it the decision-log entry §AF.10 said it would need |
+| Classifier memoisation, real batch | only **1.059×** | Far below the 2.66× measured on the stub-tokenizer deterministic phase. **Deferred**, not implemented |
+| Exact-span cache cardinality, 10 000 real chunks | **50 092** | Larger than the ~2 489 stripped-form vocabulary suggested; a real memory question |
+| Exact-span cache hit fraction | **97.29 %** | High, but 1.059× makes the complexity unjustified for a first repair |
+
+> **§AF.6's wording is corrected accordingly** (see the note now in §AF.6): the
+> tokenizer is **~5.01 %** of preparation, not negligible-by-assertion, and the
+> dominant cost remains the deterministic orthography/alignment path.
+
+**Decision for this repair: deterministic 8-worker parallel preparation ONLY.**
+No classifier cache, no tokenizer reuse, no `canon` de-duplication, no prefetch.
+
+### AG.2 ★ Production uses `spawn`, and the benchmark's `fork` must not be copied
+
+The benchmark above used **`fork`**, legitimately: it was a CPU-only process in
+which CUDA had never been initialised. **Production is the opposite.** By the time
+`train_run` reaches its first batch the parent holds a CUDA context, the placed
+model and the optimizer. Forking a CUDA-initialised parent copies state that is
+invalid in the child; it is documented as unsupported and tends to deadlock rather
+than fail cleanly.
+
+`MULTIPROCESSING_START_METHOD = "spawn"`, and a source-level test asserts
+`get_context(...)` is called with that constant and that no `"fork"` literal can
+reappear. That also explains a design consequence: a spawned worker inherits
+nothing, so it must **rebuild** its tokenizer and inventory from identity.
+
+**Therefore the benchmark establishes parallelisability, order and exact output
+equality — NOT production spawn throughput.** No speedup is claimed for the
+implementation; see AG.7.
+
+### AG.3 Architecture
+
+New `unmark/stage1/preparation.py`:
+
+| Component | Contract |
+|---|---|
+| `PREPARATION_WORKERS = 8` | **Operational, not scientific** — see AG.6 |
+| `PreparationPool` | Persistent for the whole stage command, not per batch: under `spawn` each worker reloads the pinned tokenizer and re-verifies the inventory. Context-managed, so it shuts down on normal completion, on exception and on fail-closed abort alike |
+| `_initialise_worker` | Once per process: pinned tokenizer via `pinned_tokenizer` (refuses any revision but the locked one, **before** importing transformers), `load_inventory()` — the strict loader, so a missing or altered cache raises rather than degrading eligibility — and the classifier built from it |
+| `_prepare_one` | Calls the **authoritative** `prepare_example`. Scientific preparation logic is not reimplemented in the worker |
+| `worker_config` | Deliberately tiny and picklable. **The 2.6M-entry corpus dictionary never appears in it**; only the text of already-selected examples travels, one batch at a time |
+| `prepare_serially` | The serial reference — **tests and diagnostics only**, never reachable as a fallback |
+
+`train_run` changed in exactly one place. The main process still does:
+
+```
+pairs = sampler.next_batch(BATCH_SIZE)          ← main process, once per step
+tasks = [(chunk_id, visit, train_chunks[chunk_id]) for chunk_id, visit in pairs]
+prepared = preparation_pool.prepare(tasks)      ← the ONLY thing that moved
+batch = batch_to_device(collate_stage1_batch(prepared, pad_token_id), ...)
+objective(batch) → zero_grad → backward → gradient_report → step → global_update += 1
+```
+
+> **Loop order re-verified from source at pre-commit, not carried over from this
+> prose** (§AH). The AST-extracted order inside the real `while` loop is
+> `next_batch` (636) → `prepare` (644) → `batch_to_device`/`collate` (662–663) →
+> `objective` (665) → `zero_grad` (667) → `backward` (668) → `gradient_report`
+> (669) → `step` (677) → `global_update += 1` (678). **The forward runs before
+> `zero_grad`** — that is the pre-existing production order, it is unchanged by
+> this repair, and it is equivalent because nothing accumulates into `.grad`
+> between the forward and `zero_grad`. `gradient_report` is added to the summary
+> above for precision; it reads `.grad` between `backward` and `step`, which is
+> where it must be.
+
+**Workers never** own or advance a sampler, choose a sample or a visit, reorder
+anything, construct an optimizer, touch CUDA, write a checkpoint, increment
+`global_update`, run validation, or load model weights. They receive
+`(sample_id, visit, text)` triples the main process already chose. Asserted on the
+call graph, and `preparation.py` imports no torch at all.
+
+### AG.4 Order, and the absence of prefetch
+
+Results are reconstructed with `Executor.map`, which yields in **input** order
+regardless of completion order — no unordered API is used. A test submits a
+deliberately slow task **first** so it finishes last, and requires the returned
+sequence to match sampler order exactly.
+
+**No prefetch, deliberately.** Exactly one `next_batch` per training step,
+asserted by AST on the real loop. Checkpointing commits sampler state together
+with the completed update, so consuming future batches would create a
+resume-state problem this change is not scoped to solve. `PREFETCH_ENABLED` is
+`False` and the module uses no `submit`, `as_completed`, `Queue` or `Thread`.
+
+### AG.5 Failure is loud; there is no silent serial fallback
+
+`prepare` re-raises any worker exception as `PreparationContractViolation`, so a
+partial batch can never reach training. Degrading silently to serial would hide a
+broken pool behind a merely slow run. Tested both ways: a worker whose tokenizer
+identity cannot be established, and a task that raises inside preparation.
+
+### AG.6 Worker count is operational provenance, not scientific identity
+
+Recorded in the stage artifact:
+
+```
+preparation_backend  multiprocessing_spawn
+preparation_workers  8
+order_preserving     true
+prefetch             false
+```
+
+**It is deliberately NOT in `RunProvenance` and NOT resume-blocking.** The
+reasoning is the equivalence proof: prepared output is byte-identical across
+worker counts, so worker count changes wall-clock and nothing else. A run
+interrupted with 8 workers may legitimately resume with 4 and remain the same
+experiment; making it resume-blocking would reject a scientifically identical
+continuation — a cost with no corresponding guarantee.
+
+**Exactly how far that proof currently reaches, stated precisely:**
+
+| Evidence | Status |
+|---|---|
+| Real-tokenizer CPU benchmark, serial vs 2/4/8, real inputs | **established** — but it used **`fork`** and was **not the production spawn implementation** |
+| Persistent local tests: serial vs **1 / 2 / 4** spawn workers, exact equality | **established**, executed locally — but with a **tiny injected tokenizer** |
+| **Production `spawn` + the REAL pinned PhoBERT tokenizer** | **POST-IMPLEMENTATION AUTHORITATIVE VERIFICATION PENDING** |
+
+So the non-resume-blocking classification is **by design and consistent with all
+current evidence**, but the final production-real equivalence has **not** yet been
+executed. It must be established on Colab before the configuration freeze. Worker
+count is **not** being made resume-blocking to paper over that gap.
+
+### AG.7 Tests
+
+New `tests/test_stage1_parallel_preparation.py` — **17 tests, all executed
+locally**, starting real spawn worker processes with a tiny injected tokenizer
+(no PhoBERT downloaded):
+
+| Requirement | Evidence |
+|---|---|
+| **A** serial vs parallel exact equality | every field of `PreparedStage1Example`, no tolerance, over fixtures spanning multiple sample ids, **three visits**, marked/unmarked syllables, punctuation, mixed Vietnamese/non-Vietnamese, and lengths from one character to near-`MAX_LENGTH` |
+| **B** order preservation | slow task submitted first; returned order matches sampler order and every example matches serial |
+| **C** worker-count invariance | 1 / 2 / 4 workers all byte-identical to serial; the production constant 8 asserted structurally |
+| **D** failure propagation | worker-init failure and in-task failure both abort; no partial batch; no fallback |
+| **E** sampler ownership | `preparation.py` calls no `next_batch`, `DeterministicSampler`, optimizer, checkpoint, `evaluate`, `backward`, `step`, `AutoModel`, collate or device helper; imports no torch; no CUDA call |
+| **F** no look-ahead | exactly one `next_batch` per step; `global_update` incremented exactly once; no async primitives |
+| **G** CUDA safety | `spawn` asserted; `get_context` must use the locked constant; no `"fork"` literal can reappear; `execute_stage` must take the pinned factory and never inject one |
+| **H** scientific output | the full suite is unchanged — see AG.9 |
+
+New `tests/test_stage1_cuda_resume_equivalence.py` — **CUDA-gated, closes §AF.4's
+caveat.** It uses the production `checkpoint_payload` / `save_training_checkpoint`
+/ `load_training_checkpoint` / `verify_checkpoint` /
+`require_optimizer_parameter_identity` / `require_optimizer_state_device` helpers
+on a tiny synthetic model, and proves uninterrupted 16-update execution equals
+interrupt-at-8 → checkpoint → **fresh reconstruction** → resume → finish, with
+exact equality of adapter tensors, populated optimizer state, sampler state,
+update count and validation-point history. Respecting real AdamW semantics
+(§AF.3): `exp_avg` / `exp_avg_sq` asserted on **concrete CUDA**, the
+zero-dimensional scalar `step` left on CPU and **not** forced across.
+
+**The stale docstring §AF.4 reported is fixed** —
+`tests/test_stage1_run_independence_runtime.py:7` no longer claims a CUDA
+resume-equivalence test that did not exist, and now points at the file above.
+
+### AG.8 Two issues found while testing — one production, one fixture
+
+Both were found by tests that failed for the right reason, and both were repaired.
+**They are not the same kind of thing**, and an earlier draft of this heading
+called both "production defects", which was wrong about the second:
+
+1. **`pinned_tokenizer` imported transformers *before* checking the revision** —
+   an **implementation defect, found and repaired**. A worker handed a foreign
+   revision would have failed on the way to fetching one rather than refusing it.
+   The revision check now precedes the import.
+2. **The order-preservation test fixture exceeded `MAX_LENGTH`** — a
+   **test-fixture defect. Production behaviour was CORRECT**: the fail-closed
+   overflow guard fired exactly as specified (`reference sequence length 802
+   exceeds max_length 256`). Nothing in production was changed; the fixture was
+   resized to stay under the ceiling while still finishing last.
+
+### AG.9 Test results
+
+All figures below are the **actual** output of the commands named, re-run at
+pre-commit (§AH). Nothing here is recorded as "PASS" that was not observed.
+
+| Command | Result |
+|---|---|
+| `pytest -q tests/test_stage1_parallel_preparation.py` | **19 passed, 0 skipped, 0 failed** — 15.85 s |
+| `pytest -q` *(full lightweight suite)* | **3 594 passed, 102 skipped, 0 failed, 0 errors** — 133.03 s |
+| `pytest -q` over preparation + Stage-1 data/corruption + checkpoint/resume + run-independence + provenance | **738 passed, 17 skipped, 0 failed** — 22.40 s |
+| `pytest -q tests/test_stage1_cuda_resume_equivalence.py` | **0 passed, 1 skipped** — `needs torch` |
+
+**Skips are not passes.** The two Stage-1 modules that skipped in the targeted
+run did so for stated reasons: `test_stage1_cuda_resume_equivalence.py:24`
+(*needs torch*) and `test_stage1_run_independence_runtime.py:22` (*the runtime
+half needs torch*).
+
+**Could not execute locally, and therefore NOT claimed:** everything requiring
+torch, CUDA or transformers — the new CUDA resume-equivalence file, and the
+production pool driving the **real** PhoBERT tokenizer. The local pool tests use
+a tiny injected tokenizer, which is precisely what makes them runnable here and
+also what keeps them short of authoritative.
+
+### AG.10 Decision log and proposal — unchanged
+
+**No decision-log entry was added, and none is required.** §AF classified
+deterministic parallel execution as a pure engineering change *if* output
+equivalence is proven; it is proven in AG.7. Nothing scientific or fail-closed was
+weakened — in particular the base-invariance check remains **independently
+computed**, because tokenizer reuse was rejected in AG.1. `docs/spec/decisions.md`
+and the proposal source are **untouched**.
+
+### AG.11 What remains
+
+| Requirement | Status |
+|---|---|
+| **Post-implementation CUDA/spawn benchmark on the authoritative GPU** | **MANDATORY** — no production speedup is claimed |
+| Execute `test_stage1_cuda_resume_equivalence.py` on the GPU | **REQUIRED** |
+| Execute the pool tests against the real pinned tokenizer | **REQUIRED** |
+| Classifier memoisation (1.059× real, 50 092 distinct spans) | **DEFERRED** |
+| Tokenizer reuse | **REJECTED** — ~5.01 % gain, would weaken a computed check |
+| Redundant `canon` removal, prefetch | **DEFERRED** |
+| **FINAL STAGE-1 CONFIGURATION FREEZE**, final review, human approval | **REQUIRED** |
+
+**STATUS: IMPLEMENTED — POST-IMPLEMENTATION CUDA/SPAWN PERFORMANCE VERIFICATION PENDING**
+**DETERMINISTIC 8-WORKER PARALLEL PREPARATION ONLY; NO CACHE, NO TOKENIZER REUSE, NO PREFETCH**
+**PRODUCTION USES `spawn`, NEVER `fork` — THE BENCHMARK'S FORK MUST NOT REACH A CUDA PARENT**
+**BENCHMARK ESTABLISHES PARALLELISABILITY AND EXACT EQUALITY, NOT PRODUCTION SPAWN THROUGHPUT**
+**SERIAL 4.605099308 s → 8-WORKER 0.666244782 s (6.912023x), ALL OUTPUTS EXACTLY EQUAL**
+**TOKENIZER IS ONLY ~5.01 % OF PREPARATION — TOKENIZER REUSE REJECTED, NOT MERELY DEFERRED**
+**CLASSIFIER CACHE GAVE ONLY 1.059x ON A REAL BATCH; 50 092 DISTINCT SPANS; DEFERRED**
+**MAIN PROCESS STILL OWNS SAMPLER, VISITS, ORDER, UPDATE, CHECKPOINT, OPTIMIZER AND CUDA**
+**EXACTLY ONE SAMPLER BATCH PER STEP — NO PREFETCH, NO LOOK-AHEAD, AST-ASSERTED**
+**ORDER RECONSTRUCTED BY `Executor.map`; COMPLETION ORDER CANNOT REACH SCIENTIFIC ORDER**
+**FAILURE ABORTS LOUDLY; THERE IS NO SILENT SERIAL FALLBACK ON THE SCIENTIFIC PATH**
+**WORKER COUNT IS OPERATIONAL PROVENANCE, NOT RUN IDENTITY AND NOT RESUME-BLOCKING**
+**§AF.4's CAVEAT CLOSED: A PERSISTENT CUDA RESUME-EQUIVALENCE TEST NOW EXISTS**
+**NO DECISION ENTRY REQUIRED; decisions.md AND THE PROPOSAL ARE UNTOUCHED**
+**SCIENTIFIC `optimizer.step` COUNT IS ZERO; OFFICIAL UIT-VSFC TEST IS SEALED AND UNUSED**
+**TRAINING IS NOT AUTHORISED**
+
+---
+
+## AH. PRE-COMMIT VERIFICATION OF THE PARALLEL-PREPARATION REPAIR
+
+**Revision 19.** Verification only — re-derived **from source**, not from §AG's
+prose. Base HEAD `ac20cfb786ca770a7296339d48263ff8e09acf66`, working tree
+carrying the §AF/§AG changes.
+
+### AH.1 Architecture, re-derived from the AST
+
+| Question | Verified answer |
+|---|---|
+| Where is `PreparationPool` constructed? | `execute.py:274`, **once** |
+| Persistent, or per batch? | **Persistent** — one construction, and the schedule loop (line 275) is nested inside its `with` |
+| When is it shut down? | `__exit__` → `shutdown(wait=True)`; a context manager, so on normal completion, on exception and on fail-closed abort alike |
+| Start method | `multiprocessing.get_context(MULTIPROCESSING_START_METHOD)` = **`"spawn"`**; **no `"fork"` literal exists in the module** |
+| Worker initializer | `_initialise_worker` — pinned tokenizer via `pinned_tokenizer`, strict `load_inventory()`, classifier |
+| Worker task payload | `[(chunk_id, visit, train_chunks[chunk_id]) for chunk_id, visit in pairs]` |
+| Can the 2.6M-entry dict reach a worker? | **No.** `worker_config` holds 8 small scalars; `train_chunks` appears nowhere in it. Only the selected texts travel, one batch at a time |
+| Workers touching sampler / CUDA / model / optimizer / checkpoints? | **None.** No such call appears in `preparation.py`, and **it imports no torch** |
+| Order preserved? | `Executor.map` only; **no** `submit`, `as_completed` or unordered API |
+| Serial fallback? | See AH.4 |
+| Prefetch / look-ahead? | **None.** Exactly one `next_batch` per step |
+
+### AH.2 ★ The training-loop order — AG.3 was CORRECT, and a proposed "fix" was not
+
+The pre-commit brief suggested AG.3 might need correcting to
+`zero_grad → objective → backward → step`. **It does not: that order is not what
+the code does**, and applying it would have made the audit *less* accurate. The
+AST-extracted order inside the real `while` loop is:
+
+```
+636  next_batch          644  prepare             662  batch_to_device
+663  collate             665  objective           667  zero_grad
+668  backward            669  gradient_report     677  step
+678  global_update += 1  681  evaluate_fn         696  save_training_checkpoint
+```
+
+**The forward runs before `zero_grad`.** That is pre-existing production
+behaviour, untouched by this repair, and equivalent — nothing accumulates into
+`.grad` between the forward and `zero_grad`. AG.3 has been left as it was and
+extended only to name `gradient_report`, which reads `.grad` between `backward`
+and `step`. **No training semantics were changed by this verification.**
+
+### AH.3 Spawn-specific hazards — reviewed, all clear
+
+| Hazard | Finding |
+|---|---|
+| Picklability of initializer / worker callable / factory | `_initialise_worker`, `_prepare_one`, `pinned_tokenizer` are module-level; round-trip verified `is`-identical |
+| Importability under spawn | all live in `unmark.stage1.preparation`, an ordinary package module |
+| `__main__` recursion | `scripts/stage1_runner.py` ends in `if __name__ == "__main__":`, so a spawned child re-importing `__main__` does **not** re-enter `main()` |
+| CUDA state in workers | none — no CUDA call, no torch import |
+| Model-weight loading in workers | none — `AutoTokenizer` only, never `AutoModel` |
+| HF revision advancement | `pinned_tokenizer` refuses any revision but the locked one, **before** importing transformers |
+| Inventory fallback | strict `load_inventory()`, never `try_load_inventory` |
+| Pool startup failure / worker crash / partial results | re-raised as `PreparationContractViolation`; tested both for initializer failure and in-task failure |
+| Shutdown on exception | context manager |
+| Ordering under unequal completion | tested with a deliberately slow task submitted **first** |
+| Repeated process construction per batch | none — one pool per stage command |
+
+**One concrete confirmation of the `spawn` decision.** CUDA is resolved at
+`execute.py:211` and the backbone placed at `:230` — both **before** the pool is
+created at `:274`. So at pool-creation time the parent *does* hold a CUDA context.
+Under `fork` that is the documented-unsupported case; under `spawn` it is
+irrelevant. The design choice is load-bearing, not precautionary.
+
+### AH.4 The serial branch — examined, and classified
+
+`train_run` retains `if preparation_pool is not None: ... else: prepare_serially(...)`.
+Assessed rather than waved through:
+
+* It is **not a failure fallback.** A pool failure raises out of `prepare`; there
+  is no `try/except` that degrades. A test now asserts no exception handler
+  contains both `preparation_pool` and `prepare_serially`.
+* `execute_stage` passes the pool at **both** `train_run` call sites, so the
+  scientific path never reaches the serial branch.
+* Residual risk is **silent 7× degradation**, not incorrectness — serial output is
+  byte-identical. But it is the same drift class this audit has been bitten by
+  twice (§AA parser/handler, §AD construction-outside-the-loop).
+
+**Closed structurally rather than by convention:** a new test asserts every
+`train_run` call inside `execute_stage` passes `preparation_pool=preparation_pool`.
+**No production behaviour changed.**
+
+### AH.5 Wording corrections made to §AG
+
+| Location | Correction |
+|---|---|
+| **AG.3** | Extended to name `gradient_report`; loop order re-verified from source and recorded. The suggested reordering was **rejected as inaccurate** (AH.2) |
+| **AG.6** | Now states exactly how far the equivalence proof reaches: the real-tokenizer benchmark used **fork** and was not the production implementation; the local spawn tests used a **tiny injected tokenizer**; **production spawn + real pinned PhoBERT is POST-IMPLEMENTATION AUTHORITATIVE VERIFICATION PENDING**. Worker count remains non-resume-blocking **by design**, not to avoid that wording |
+| **AG.8** | Retitled *"Two issues found while testing — one production, one fixture"*. Item 1 is an **implementation defect, repaired**; item 2 is a **test-fixture defect** where **production fail-closed behaviour was correct** and nothing in production changed. The earlier heading called both production defects, which was wrong |
+| **AG.9** | Dangling *"see the summary below AG.11"* removed; replaced with the **actual** commands and counts, and an explicit statement that skips are not passes |
+
+### AH.6 Result
+
+**No implementation defect was discovered by this verification.** The one
+production defect in this repair (`pinned_tokenizer` import ordering) was already
+found and fixed during implementation and is recorded in AG.8. The only change
+made here is **two additional guard tests**; production source is otherwise
+untouched by this task.
+
+`docs/spec/decisions.md` and the proposal remain **unchanged**.
+
+**STATUS: PARALLEL PREPARATION IMPLEMENTED — AUTHORITATIVE CUDA/SPAWN VERIFICATION PENDING**
+**ARCHITECTURE RE-DERIVED FROM SOURCE: PERSISTENT POOL, SPAWN, ORDERED map, NO PREFETCH**
+**AG.3's LOOP ORDER WAS ALREADY CORRECT — THE PROPOSED REORDERING WOULD HAVE BEEN WRONG**
+**FORWARD RUNS BEFORE `zero_grad`; THAT IS PRE-EXISTING AND UNCHANGED BY THIS REPAIR**
+**CUDA IS LIVE IN THE PARENT BEFORE THE POOL IS BUILT — `spawn` IS LOAD-BEARING, NOT PRECAUTIONARY**
+**THE 2.6M-ENTRY CORPUS DICT CANNOT REACH A WORKER; ONLY SELECTED TEXTS TRAVEL PER BATCH**
+**SERIAL BRANCH IS NOT A FAILURE FALLBACK; A NEW TEST PINS THE POOL TO EVERY `train_run` CALL**
+**AG.8 RECLASSIFIED: ONE IMPLEMENTATION DEFECT, ONE TEST-FIXTURE DEFECT WITH CORRECT PRODUCTION BEHAVIOUR**
+**AG.9's DANGLING REFERENCE REPLACED WITH MEASURED COUNTS: FULL SUITE 3 594 PASSED / 102 SKIPPED / 0 FAILED**
+**REAL-TOKENIZER SPAWN EQUIVALENCE IS EXPLICITLY MARKED PENDING, NOT ASSUMED**
+**NO NEW OPTIMISATION; NO PRODUCTION SEMANTIC CHANGE; decisions.md AND PROPOSAL UNTOUCHED**
+**TRAINING IS NOT AUTHORISED**

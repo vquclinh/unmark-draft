@@ -4,9 +4,10 @@ Executes the contracts its torch-free companion asserts structurally. Tiny
 fixtures throughout: **no PhoBERT is downloaded**. The CUDA-gated tests skip off
 a GPU and are authoritative only in the fresh CUDA runtime.
 
-Synthetic optimizer steps appear ONLY in the CUDA resume-equivalence test and are
-**TEST-ONLY**: they use a tiny fixture, never the real backbone or the prepared
-corpus, and produce no scientific artifact.
+No synthetic optimizer step is taken anywhere in this file. (An earlier draft of
+this docstring referred to a CUDA resume-equivalence test that was never added
+here; that coverage now lives in `test_stage1_cuda_resume_equivalence.py` — see
+Audit 030 §AF.4 and §AG.)
 """
 
 from __future__ import annotations

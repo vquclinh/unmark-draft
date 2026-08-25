@@ -185,6 +185,12 @@ def execute_stage(
     )
     from unmark.stage1.objective import Stage1Objective
     from unmark.stage1.preflight import verify_scientific_inputs
+    from unmark.stage1.preparation import (
+        PREPARATION_WORKERS,
+        PreparationPool,
+        preparation_provenance,
+        worker_config,
+    )
     from unmark.stage1.protocol import adapter_init_seed
     from unmark.stage1.validation import HeldOutExample, at_update, evaluate, prepare_condition_batch
     from unmark.stage1.protocol import VALIDATION_CONDITIONS
@@ -248,117 +254,137 @@ def execute_stage(
     candidates: list[Candidate] = []
     output_dir.mkdir(parents=True, exist_ok=resume)
 
-    for planned in schedule:
-        # One checkpoint namespace per run, named by the run's own label, so two
-        # runs in a stage can never overwrite each other's state.
-        run_checkpoints = output_dir / f"run-{planned.label.replace('=', '')}" / "_checkpoint"
-        lambda_align, lambda_clean = lambdas_for_r(planned.r)
-        provenance = RunProvenance(
-            run_seed=planned.seed,
-            init_seed=adapter_init_seed(planned.seed),
-            corruption_seed=CORRUPTION_SEED,
-            learning_rate=planned.learning_rate,
-            r=planned.r,
-            corpus_manifest_digest=manifest_digest,
-            repository_head=repository_head,
-            inventory=inputs.inventory,
-        )
-        # --- FRESH NOMINAL RUN (D-S1B-016 / D-S1B-017) ----------------------
-        # A NEW adapter, initialised on CPU from this run's domain-separated
-        # init seed, then moved to the already-resident encoder's device. New
-        # Parameter objects and new storage every time: candidates 2..N used to
-        # inherit the previous candidate's TRAINED weights (Audit 030 §AD).
-        adapter = fresh_adapter(hidden_size, provenance.init_seed)
-        fresh_hash = trainable_state_hash(trainable_state(adapter))
-        adapter.to(device)
-        unmark_encoder = UnmarkEncoder(encoder=frozen_encoder, adapter=adapter)
-        objective = objective_cls(unmark_encoder, provenance.weights)
+    # ONE persistent preparation pool for the whole stage command. Under `spawn`
+    # each worker reloads the pinned tokenizer and re-verifies the inventory, so
+    # rebuilding it per batch would cost far more than it saves. It is closed on
+    # normal completion, on exception and on fail-closed abort alike.
+    preparation = worker_config(
+        encoder_checkpoint=ENCODER_CHECKPOINT,
+        encoder_revision=revision,
+        corruption_policy=CorruptionRatePolicy(seed=CORRUPTION_SEED),
+        truncation=TRUNCATION,
+        unk_token_id=getattr(tokenizer, "unk_token_id", None),
+    )
+    provenance_of_preparation = preparation_provenance(PREPARATION_WORKERS)
+    print(f"preparation: {provenance_of_preparation['preparation_backend']} x"
+          f"{PREPARATION_WORKERS}, order_preserving="
+          f"{provenance_of_preparation['order_preserving']}, "
+          f"prefetch={provenance_of_preparation['prefetch']}")
 
-        placed_hash = trainable_state_hash(trainable_state(adapter))
-        if placed_hash != fresh_hash:
-            raise Stage1ContractViolation(
-                f"{planned.label}: moving the adapter to {device} changed its state "
-                f"({fresh_hash[:12]}... -> {placed_hash[:12]}...); initialisation must "
-                "be hardware-independent"
-            )
-        expected = expected_fresh_init_hash(hidden_size, planned.seed)
-        if fresh_hash != expected:
-            raise Stage1ContractViolation(
-                f"{planned.label}: fresh adapter hash {fresh_hash[:12]}... != the "
-                f"{expected[:12]}... that run_seed {planned.seed} (init_seed "
-                f"{provenance.init_seed}) must produce"
-            )
-        print(f"  {planned.label}: fresh adapter init_seed {provenance.init_seed} "
-              f"hash {fresh_hash[:12]}...")
-        corruption = CorruptionRatePolicy(seed=CORRUPTION_SEED)
+    with PreparationPool(preparation, PREPARATION_WORKERS) as preparation_pool:
+      for planned in schedule:
+          # One checkpoint namespace per run, named by the run's own label, so two
+          # runs in a stage can never overwrite each other's state.
+          run_checkpoints = output_dir / f"run-{planned.label.replace('=', '')}" / "_checkpoint"
+          lambda_align, lambda_clean = lambdas_for_r(planned.r)
+          provenance = RunProvenance(
+              run_seed=planned.seed,
+              init_seed=adapter_init_seed(planned.seed),
+              corruption_seed=CORRUPTION_SEED,
+              learning_rate=planned.learning_rate,
+              r=planned.r,
+              corpus_manifest_digest=manifest_digest,
+              repository_head=repository_head,
+              inventory=inputs.inventory,
+          )
+          # --- FRESH NOMINAL RUN (D-S1B-016 / D-S1B-017) ----------------------
+          # A NEW adapter, initialised on CPU from this run's domain-separated
+          # init seed, then moved to the already-resident encoder's device. New
+          # Parameter objects and new storage every time: candidates 2..N used to
+          # inherit the previous candidate's TRAINED weights (Audit 030 §AD).
+          adapter = fresh_adapter(hidden_size, provenance.init_seed)
+          fresh_hash = trainable_state_hash(trainable_state(adapter))
+          adapter.to(device)
+          unmark_encoder = UnmarkEncoder(encoder=frozen_encoder, adapter=adapter)
+          objective = objective_cls(unmark_encoder, provenance.weights)
 
-        def evaluate_fn(update: int, _obj=objective) -> Any:
-            return at_update(
-                evaluate(_obj, prepared_by_condition, pad_token_id, batch_size=BATCH_SIZE),
-                update,
-            )
+          placed_hash = trainable_state_hash(trainable_state(adapter))
+          if placed_hash != fresh_hash:
+              raise Stage1ContractViolation(
+                  f"{planned.label}: moving the adapter to {device} changed its state "
+                  f"({fresh_hash[:12]}... -> {placed_hash[:12]}...); initialisation must "
+                  "be hardware-independent"
+              )
+          expected = expected_fresh_init_hash(hidden_size, planned.seed)
+          if fresh_hash != expected:
+              raise Stage1ContractViolation(
+                  f"{planned.label}: fresh adapter hash {fresh_hash[:12]}... != the "
+                  f"{expected[:12]}... that run_seed {planned.seed} (init_seed "
+                  f"{provenance.init_seed}) must produce"
+              )
+          print(f"  {planned.label}: fresh adapter init_seed {provenance.init_seed} "
+                f"hash {fresh_hash[:12]}...")
+          corruption = CorruptionRatePolicy(seed=CORRUPTION_SEED)
 
-        result = train_run(
-            objective=objective,
-            provenance=provenance,
-            train_chunks=train_text,
-            tokenizer=tokenizer,
-            corruption_policy=corruption,
-            truncation=TRUNCATION,
-            evaluate_fn=evaluate_fn,
-            pad_token_id=pad_token_id,
-            classifier=classifier,
-            cap=INITIAL_MAX_UPDATES,
-            checkpoint_dir=run_checkpoints,
-            execution=execution,
-            # Explicit: a checkpoint is used only when the operator asked to
-            # resume. `train_run` verifies its identity before touching it.
-            resume=load_training_checkpoint(run_checkpoints) if resume else None,
-        )
-        if result.continued:
-            # SAME run, continued -- not a new candidate. The locked budget rule
-            # requires preserving adapter, optimizer, visit, cursor and streams
-            # across the 20k boundary. This passed `resume=None` until the Audit
-            # 030 F3 hardening, which rebuilt the optimizer and restarted the
-            # sampler at visit 0 -- a continuation in name only. It now resumes
-            # from the checkpoint the first leg wrote at exactly `cap`, so the
-            # continuation uses the same mechanism as a crash resume.
-            carried = load_training_checkpoint(run_checkpoints)
-            if carried is None:
-                raise Stage1ContractViolation(
-                    "the 20k leg produced no checkpoint to continue from; a "
-                    "continuation must preserve optimizer and sampler state"
-                )
-            result = train_run(
-                objective=objective,
-                provenance=provenance,
-                train_chunks=train_text,
-                tokenizer=tokenizer,
-                corruption_policy=corruption,
-                truncation=TRUNCATION,
-                evaluate_fn=evaluate_fn,
-                pad_token_id=pad_token_id,
-                classifier=classifier,
-                cap=result.cap,
-                resume=carried,
-                checkpoint_dir=run_checkpoints,
-                execution=execution,
-            )
-        # The shared backbone must come out of this run exactly as it went in.
-        require_frozen_backbone_unchanged(frozen_encoder, encoder_state_hash, planned.label)
+          def evaluate_fn(update: int, _obj=objective) -> Any:
+              return at_update(
+                  evaluate(_obj, prepared_by_condition, pad_token_id, batch_size=BATCH_SIZE),
+                  update,
+              )
 
-        candidates.append(
-            Candidate(
-                label=planned.label,
-                learning_rate=planned.learning_rate,
-                r=planned.r,
-                selected=result.selected,
-                budget_limited=result.budget_limited,
-            )
-        )
-        (output_dir / f"run-{planned.label.replace('=', '')}.json").write_text(
-            json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+          result = train_run(
+              objective=objective,
+              provenance=provenance,
+              train_chunks=train_text,
+              tokenizer=tokenizer,
+              corruption_policy=corruption,
+              truncation=TRUNCATION,
+              evaluate_fn=evaluate_fn,
+              pad_token_id=pad_token_id,
+              classifier=classifier,
+              cap=INITIAL_MAX_UPDATES,
+              checkpoint_dir=run_checkpoints,
+              execution=execution,
+              preparation_pool=preparation_pool,
+              # Explicit: a checkpoint is used only when the operator asked to
+              # resume. `train_run` verifies its identity before touching it.
+              resume=load_training_checkpoint(run_checkpoints) if resume else None,
+          )
+          if result.continued:
+              # SAME run, continued -- not a new candidate. The locked budget rule
+              # requires preserving adapter, optimizer, visit, cursor and streams
+              # across the 20k boundary. This passed `resume=None` until the Audit
+              # 030 F3 hardening, which rebuilt the optimizer and restarted the
+              # sampler at visit 0 -- a continuation in name only. It now resumes
+              # from the checkpoint the first leg wrote at exactly `cap`, so the
+              # continuation uses the same mechanism as a crash resume.
+              carried = load_training_checkpoint(run_checkpoints)
+              if carried is None:
+                  raise Stage1ContractViolation(
+                      "the 20k leg produced no checkpoint to continue from; a "
+                      "continuation must preserve optimizer and sampler state"
+                  )
+              result = train_run(
+                  objective=objective,
+                  provenance=provenance,
+                  train_chunks=train_text,
+                  tokenizer=tokenizer,
+                  corruption_policy=corruption,
+                  truncation=TRUNCATION,
+                  evaluate_fn=evaluate_fn,
+                  pad_token_id=pad_token_id,
+                  classifier=classifier,
+                  cap=result.cap,
+                  resume=carried,
+                  checkpoint_dir=run_checkpoints,
+                  execution=execution,
+                  preparation_pool=preparation_pool,
+              )
+          # The shared backbone must come out of this run exactly as it went in.
+          require_frozen_backbone_unchanged(frozen_encoder, encoder_state_hash, planned.label)
+
+          candidates.append(
+              Candidate(
+                  label=planned.label,
+                  learning_rate=planned.learning_rate,
+                  r=planned.r,
+                  selected=result.selected,
+                  budget_limited=result.budget_limited,
+              )
+          )
+          (output_dir / f"run-{planned.label.replace('=', '')}.json").write_text(
+              json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
 
     artifact = {
         "stage": stage,
@@ -366,6 +392,10 @@ def execute_stage(
         "repository_head": repository_head,
         "corpus_manifest_digest": manifest_digest,
         "candidates": [c.to_dict() for c in candidates],
+        # OPERATIONAL provenance, deliberately separate from RunProvenance:
+        # prepared output is byte-identical across worker counts, so this changes
+        # wall-clock and nothing scientific, and is not resume-blocking.
+        "preparation": provenance_of_preparation,
         "raw_text_persisted": False,
         "official_test_used": False,
         "downstream_score_used": False,
