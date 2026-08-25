@@ -5670,3 +5670,349 @@ adapter and encoder unchanged and optimizer state empty.
 **OFFICIAL UIT-VSFC TEST IS SEALED BY RAISING GATES, NOT BY DECLARATION**
 **SCIENTIFIC `optimizer.step` COUNT IS ZERO; NO TRAINING WAS RUN BY THIS AUDIT**
 **THIS AUDIT DOES NOT AUTHORISE TRAINING — A HUMAN MUST**
+
+---
+
+## AL. FINAL TRAINING-LAUNCH READINESS REVIEW
+
+This is an additional independent handoff review after the final forensic
+scientific audit. It does **not** replace §AK, does **not** reopen official
+UIT-VSFC TEST, and did **not** start scientific training or execute a scientific
+`optimizer.step`.
+
+### AL.1 Repository state and commit-diff proof
+
+| Item | Result |
+|---|---|
+| Current documentation HEAD | `855a1d3c9179477680153b093546f872b8846b2a` |
+| Audited scientific HEAD | `479fac5bb5fb7be4518e8ed36162c137700851ed` |
+| Review-start working tree | clean |
+| Review-start staged changes | none |
+| Exact diff between the two commits | `M docs/audits/030-pretrain-repository-wide-audit.md` |
+| Actual diff contents | Audit 030 text only: §AK append/correction |
+| Production/scientific code diff | none under `unmark/`, `scripts/`, `configs/`, or `tests/` |
+| Proposal / decisions / freeze diff | none for `unmark-proposal.md`, `docs/spec/decisions.md`, or `docs/spec/stage1-final-freeze.json` |
+
+The source tree mechanically supports the expected conclusion: current
+documentation HEAD `855a1d3c...` and audited scientific HEAD `479fac5...` have
+byte-identical scientific execution code, tests, proposal, decisions and freeze
+JSON. Only Audit 030 changed between them.
+
+### AL.2 Findings
+
+| ID | Severity | Finding | Launch consequence |
+|---|---:|---|---|
+| **AL-B1** | **BLOCKER** | `execute_stage` imports `Stage1Objective` but constructs `objective = objective_cls(...)`; `objective_cls` is not bound on the scientific stage path. | The first real `lr-pilot` command would fail before entering `train_run`, before any optimizer step, so the campaign cannot actually launch from the audited code. The defect exists at both `479fac5...` and `855a1d3...`. |
+| **AL-B2** | **BLOCKER** | Stage handoff artifacts are under-validated. `_load_selection()` checks only `stage` and `protocol_version`; it does not check the artifact's `repository_head`, `corpus_manifest_digest`, selected LR/r grid membership, or campaign identity against the current verified corpus and executing code. | An operator can silently feed an old or foreign LR artifact into `r-phase1`, or old/foreign LR/r artifacts into `final-main`, as long as the stage/protocol labels match. |
+| **AL-B3** | **BLOCKER** | Training `--repository-head` is optional and caller-supplied. Unlike `prepare-corpus`, the scientific training path does not auto-resolve and compare the actual executing Git HEAD. | A run can record `None`, or record a manually supplied SHA that is not the checkout actually executing. Resume then compares against that same caller-supplied value, so wrong-commit provenance is not fail-closed. |
+| **AL-B4** | **BLOCKER** | Crash resume from the 20k-to-40k continuation leg is not reconstructed from checkpoint state. `execute_stage()` always starts the first call with `cap=INITIAL_MAX_UPDATES`; `train_run()` loads `global_update` and points but does not restore `cap` from the checkpoint payload. | A Colab death after the automatic 20k continuation has begun can resume under a 20k cap, causing an exception or an incorrect budget decision instead of continuing the 40k leg reliably. |
+| **AL-I1** | INFORMATIONAL | Normal CLI monitoring is sparse. `train_run()` can emit update/validation/gradient events through `on_event`, but `execute_stage()` does not pass an event sink. | Console output shows stage setup, corpus/inventory/CUDA/fresh-H0 evidence and final artifacts, but not live validation metrics or checkpoint cadence. This does not change the science, but the operator should expect long quiet intervals. |
+
+**Finding counts:** 4 BLOCKER, 0 MAJOR, 0 MINOR, 1 INFORMATIONAL.
+
+Because BLOCKER findings exist, this review stops launch readiness here. The
+scientific conclusions of §AK are not rewritten: §AL only reports that the
+operator launch path is not yet safe to authorise.
+
+### AL.3 Chronological evidence chain
+
+| Gate | Status | Handoff reading |
+|---|---:|---|
+| Proposal Stage-1 plan | PASS | §4.6/§5.1.1/§8.4 define the model, data, 11 nominal runs and GPU expectation. |
+| Decisions | PASS | D-S1B-001 through D-S1B-017 are represented in code/freeze; no new decision file edit in this review. |
+| Stage-6 preparation | PASS | Prepared corpus is bound by `COMPLETE.json`, artifact sizes/hashes, membership digest and inventory identity; official TEST is not opened. |
+| Pre-train hardening F1-F5 | PASS / SUPERSEDED | F1-F4 closed; F5 observability superseded; F6 remains open documentation-only. |
+| CUDA/device repair | PASS | CUDA required, deterministic true-fp32 policy enforced before training work and re-asserted. |
+| Nominal-run independence repair | PASS scientifically, **OPEN operationally** | Fresh adapter per planned run and fixed init seeds are implemented, but AL-B1 prevents the stage path from constructing the objective. |
+| Resume repair | PASS for covered scientific equivalence, **OPEN operationally** | Checkpoint identity is strict; AL-B4 identifies the uncovered human resume case after the 20k continuation has begun. |
+| Performance repair | PASS | Persistent spawn preparation accepted; recurring pre-step estimate reduced to `1.9655800279996583` s/update. |
+| Production spawn acceptance | PASS | 8-worker spawn accepted on CUDA; workers do not own sampler, optimizer, CUDA or checkpoints. |
+| Integrated no-step acceptance | PASS | Real corpus/real PhoBERT no-step path accepted; scientific optimizer-step count remains zero. |
+| Machine-readable freeze | PASS | Freeze JSON is unchanged in this review. |
+| CUDA freeze/H0 gate | PASS by authoritative evidence | This local environment has no torch, so H0 was not recomputed here; the recorded CUDA gate recomputed all four hashes. |
+| Final forensic audit §AK | PASS | `FINAL PRE-TRAIN AUDIT PASS — EXPLICIT HUMAN APPROVAL REQUIRED BEFORE SCIENTIFIC TRAINING`. |
+| Audit-record correction | PASS | Current docs HEAD contains the corrected §AK working-tree wording and informational count. |
+| This launch-readiness review | **OPEN / BLOCKED** | Four operator-path blockers prevent launch authorisation. |
+
+No historical scientific blocker silently disappears. The only historical item
+still open outside §AL is **F6**, the stale compiled proposal PDF, which remains
+documentation-only and is not a run input.
+
+### AL.4 Campaign configuration re-derived from code and freeze
+
+| Axis | Locked value |
+|---|---|
+| Model | `vinai/phobert-base` |
+| Revision | `01daacda68afe13d83023d16ec647239e344a1e6` |
+| Encoder | frozen, recursively eval, fp32, hidden size 768 |
+| Adapter | 3,551,232 trainable parameters |
+| Corpus | `undertheseanlp/UVW-2026` @ `a0a79294e4568137e25828bb3f2a4cde8546e1fb` |
+| Train/dev chunks | 2,621,624 train; 11,443 dev |
+| Train/dev documents | 1,113,224 train; 5,000 dev |
+| Membership digest | `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6` |
+| `chunks.jsonl` / `manifest.json` | `5e4c5e0c77e7677e188501723651e0923d072a31a9048a7d04042ff7b290cad6` / `6f33c2aa51b63a4dc68e238594acbec581b2a1f6b0f7be42e002dfb10a02ef62` |
+| Inventory | SHA-256 `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| Sequence policy | `MAX_LENGTH=256`, no truncation offered, overflow `FAIL` |
+| Training | batch 128, accumulation 1, eval/checkpoint every 500 updates, initial 20k, one hard continuation to 40k |
+| Optimizer | AdamW, betas `(0.9, 0.999)`, epsilon `1e-8`, `amsgrad=False` |
+| LR / clipping / warmup | constant LR, no warmup, no gradient clipping |
+| Weight decay | 0.01 for ordinary weights; 0.0 for bias, LayerNorm and tone/letter embeddings |
+| Corruption | seed 35422, `PI_STRIP=0.25`, per-visit redraw |
+| Validation corruption | seed 19225; conditions `FULL`, `P50`, `P100`, `STRIP_ALL` |
+| Run plan | 3 LR candidates, 5 r candidates, 3 final-main runs, 11 nominal runs total |
+| LR grid | `1e-4`, `3e-4`, `1e-3` |
+| r grid | `0.25`, `0.5`, `1`, `2`, `4` |
+| Selection run seed | 21230 |
+| Final-main seeds | 36930, 7309, 5993 |
+| Adapter init seeds | 21230→3203, 36930→51800, 7309→45833, 5993→15758 |
+| H0 hashes | 21230→`4ef7ee1a2357d0b9819225aca6708d2ad04614ceda8191dc5a46176a47fa3d25`; 36930→`cf1a28cf640f6697075d086486cc5395e9a9ff0ef994ca0a06576325f7de68ad`; 7309→`d90186c0f77e434d73f173426a401a99aa93e6c0d90a5bb38efd732bba607516`; 5993→`660db230168dd5cf6fc9758aa9e868e70fc5f44a60a8cb0b6422160af1be2842` |
+
+The pure Python seed derivations were recomputed locally. Torch is unavailable
+locally, so H0 hashes were not recomputed in this review; the authoritative CUDA
+freeze evidence remains the source for those values.
+
+### AL.5 Operator launch trace
+
+These are the exact source-derived command shapes. They are **not authorised for
+execution while AL-B1 through AL-B4 are open**.
+
+Safest provenance choice: actual scientific training should execute a clean
+checkout of `479fac5bb5fb7be4518e8ed36162c137700851ed`, because that is the
+scientific implementation accepted by the CUDA freeze gate and §AK. Running at
+`855a1d3c...` would execute byte-identical scientific code, but the run artifact
+would carry a documentation HEAD rather than the audited scientific HEAD. That is
+less clean operationally, and AL-B3 means the current runner does not enforce the
+actual HEAD it records.
+
+```bash
+# LR pilot, first scientific stage. Do not run until §AL blockers are repaired.
+cd /content/unmark-draft
+CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+python -u scripts/stage1_runner.py lr-pilot \
+  --prepared-corpus /content/unmark-stage1-prepared-aa49785eadcb \
+  --completion-dir /content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb \
+  --output-dir /content/drive/MyDrive/UNMARK/stage1-runs/479fac5bb5fb/lr-pilot \
+  --cache-root /content/drive/MyDrive/UNMARK/stage1-cache/479fac5bb5fb \
+  --revision 01daacda68afe13d83023d16ec647239e344a1e6 \
+  --repository-head 479fac5bb5fb7be4518e8ed36162c137700851ed
+```
+
+```bash
+# r phase. Consumes the LR selected by the prior artifact.
+cd /content/unmark-draft
+CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+python -u scripts/stage1_runner.py r-phase1 \
+  --prepared-corpus /content/unmark-stage1-prepared-aa49785eadcb \
+  --completion-dir /content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb \
+  --output-dir /content/drive/MyDrive/UNMARK/stage1-runs/479fac5bb5fb/r-phase1 \
+  --cache-root /content/drive/MyDrive/UNMARK/stage1-cache/479fac5bb5fb \
+  --revision 01daacda68afe13d83023d16ec647239e344a1e6 \
+  --repository-head 479fac5bb5fb7be4518e8ed36162c137700851ed \
+  --lr-artifact /content/drive/MyDrive/UNMARK/stage1-runs/479fac5bb5fb/lr-pilot/lr_pilot.json
+```
+
+```bash
+# final-main. Consumes the selected LR and selected r artifacts.
+cd /content/unmark-draft
+CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+python -u scripts/stage1_runner.py final-main \
+  --prepared-corpus /content/unmark-stage1-prepared-aa49785eadcb \
+  --completion-dir /content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb \
+  --output-dir /content/drive/MyDrive/UNMARK/stage1-runs/479fac5bb5fb/final-main \
+  --cache-root /content/drive/MyDrive/UNMARK/stage1-cache/479fac5bb5fb \
+  --revision 01daacda68afe13d83023d16ec647239e344a1e6 \
+  --repository-head 479fac5bb5fb7be4518e8ed36162c137700851ed \
+  --lr-artifact /content/drive/MyDrive/UNMARK/stage1-runs/479fac5bb5fb/lr-pilot/lr_pilot.json \
+  --r-artifact /content/drive/MyDrive/UNMARK/stage1-runs/479fac5bb5fb/r-phase1/r_phase1.json
+```
+
+Resume pattern: rerun the same stage command with the same `--output-dir`, same
+artifacts, same prepared corpus, same completion marker, same cache root, same
+revision, same recorded repository head, and add `--resume`. `--resume` refuses
+when the stage output directory does not exist. Without `--resume`, an existing
+stage output directory is refused. Per-run checkpoint directories are:
+
+| Stage | Per-run checkpoint namespaces | Stage artifact |
+|---|---|---|
+| LR pilot | `run-lr0.0001/_checkpoint`, `run-lr0.0003/_checkpoint`, `run-lr0.001/_checkpoint` | `lr_pilot.json` |
+| r phase | `run-r0.25/_checkpoint`, `run-r0.5/_checkpoint`, `run-r1/_checkpoint`, `run-r2/_checkpoint`, `run-r4/_checkpoint` | `r_phase1.json` |
+| final-main | `run-seed36930/_checkpoint`, `run-seed7309/_checkpoint`, `run-seed5993/_checkpoint` | `final_main.json` |
+
+### AL.6 Stage dependency and selection handoff
+
+| Handoff | Mechanism | Safety |
+|---|---|---|
+| LR pilot → selected LR | `lr_pilot.json` contains `selected.learning_rate` chosen by `select_learning_rate`. | Artifact existence/stage/protocol checked; corpus/head/grid identity not checked (**AL-B2**). |
+| selected LR → r phase | `r-phase1` reads `--lr-artifact` and schedules all r candidates at that value. | Manually supplied artifact; old or foreign artifact can be accepted (**AL-B2**). |
+| r phase → selected r | `r_phase1.json` contains `selected.r` chosen by `select_r`. | Artifact existence/stage/protocol checked by final-main; selected r grid identity not checked (**AL-B2**). |
+| selected LR + selected r → final-main | `final-main` reads both artifacts and checks `r_phase1.selected.learning_rate == lr_pilot.selected.learning_rate`. | LR cross-check exists; corpus/head/grid/campaign identity still not checked (**AL-B2**). |
+
+Operator-error probes:
+
+| Scenario | Production behaviour |
+|---|---:|
+| Old LR artifact from another campaign with same protocol | **PERMITS** |
+| LR artifact from another repository commit | **PERMITS** |
+| LR artifact from another prepared-corpus digest | **PERMITS** |
+| Start r phase before LR artifact exists | **REFUSES** |
+| Wrong manually edited selected LR value in a syntactically valid artifact | **PERMITS** |
+| Start final-main before r artifact exists | **REFUSES** |
+| r artifact selected LR differs from LR artifact | **DETECTS** |
+| r artifact from another corpus/head but same selected LR | **PERMITS** |
+| Wrong manually edited selected r value in a syntactically valid artifact | **PERMITS** |
+| Resume one candidate from another candidate's checkpoint directory | **DETECTS** through `RunProvenance.require_match`, assuming the current provenance fields are themselves truthful. |
+
+The stage dependency chain is therefore **not launch-safe**.
+
+### AL.7 Fresh-Colab launch requirements
+
+A fresh runtime must satisfy these source-derived preconditions before any
+training command is attempted:
+
+1. A clean checkout of the exact training commit, safest as
+   `479fac5bb5fb7be4518e8ed36162c137700851ed`.
+2. `CUBLAS_WORKSPACE_CONFIG=:4096:8` set before any torch/CUDA import in the
+   process that runs `scripts/stage1_runner.py`.
+3. CUDA available; accepted evidence is torch `2.11.0+cu128`, CUDA `12.8`,
+   transformers `4.57.6`, cuDNN `91900`, RTX PRO 6000 Blackwell, compute
+   capability `12.0`.
+4. A repo-local Colab venv created with system site packages so Colab's CUDA
+   torch is reused, then `requirements/experiment.txt` installed.
+5. Pinned Vietnamese syllable inventory provisioned by
+   `scripts/fetch_vietnamese_syllable_inventory.py`; missing or wrong bytes fail
+   before model load.
+6. Prepared payload at `/content/unmark-stage1-prepared-aa49785eadcb` and durable
+   completion marker at `/content/drive/MyDrive/UNMARK/stage1-checkpoints/aa49785eadcb`,
+   with membership digest `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6`.
+7. Output, checkpoints and cache rooted on Drive, not only on ephemeral `/content`,
+   except for the local SSD prepared payload copy.
+8. Stage commands run as scripts/subprocesses, not by importing the runner into a
+   notebook process that may already have initialised CUDA before the cuBLAS gate
+   or may interfere with `spawn`.
+
+Fresh-Colab safety verdict: **BLOCKED** by AL-B1, AL-B2, AL-B3 and AL-B4. The
+environment requirements are concrete, but the current runner cannot yet be
+trusted as a human launch surface.
+
+### AL.8 Checkpoint, resume, output and Drive safety
+
+Checkpoint facts from source:
+
+| Question | Source-derived answer |
+|---|---|
+| No checkpoint | `load_training_checkpoint()` returns `None`. In a resumed existing stage, a planned run with no per-run checkpoint starts fresh. |
+| Resumable checkpoint | `training-checkpoint-last.pt` in the run's `_checkpoint` directory is the resume target; `training-checkpoint-best.pt` is retained by locked selection. |
+| Empty `--output-dir` with `--resume` | Refused if the stage output directory does not exist. |
+| Fresh command over previous output | Refused if `--output-dir` exists and `--resume` is absent. |
+| Wrong checkpoint in wrong run namespace | Detected by run seed, init seed, corruption seed, LR, r, corpus digest, backbone, protocol, precision, repository head and inventory checks. |
+| 20k→40k continuation | Automatic within the same process after a cap-selected 20k checkpoint. |
+| Crash resume during 40k continuation | **BLOCKED** by AL-B4; checkpoint `cap` is persisted but not restored into the first resumed `train_run()` call. |
+| Completion files | Per-run JSON plus stage JSON; final-main writes `final_main.json`. |
+| Atomicity | Checkpoints publish via temp file, fsync, replace and best-effort directory fsync. |
+| Size | Adapter-only checkpoints are about 14 MB, not a full ~540 MB encoder. Both best and latest are retained. |
+| Raw text leakage | Prepared `chunks.jsonl` contains training text by design; run/stage artifacts declare `raw_text_persisted: false` and store ids/digests/metrics/provenance, not raw corpus text. |
+
+Output/Drive verdict: normal fresh-output collision handling is loud, adapter-only
+checkpoint size is acceptable, and atomic writes are used. Launch is still
+**BLOCKED** because wrong campaign artifacts can be mixed (AL-B2), wrong HEAD can
+be recorded (AL-B3), and continuation crash resume is not operator-safe (AL-B4).
+
+### AL.9 Monitoring expectations
+
+NORMAL console evidence:
+
+| Signal | Expected source |
+|---|---|
+| Stage/run plan | Runner header: command, model, corpus, max length, batch, eval cadence, budget, corruption, validation and total run plan. |
+| Prepared corpus | `_verified_corpus`: `COMPLETE.json` path, artifact sizes/hashes and membership digest. |
+| Inventory | `verify_scientific_inputs`: eligibility policy, inventory revision and SHA prefix. |
+| CUDA fingerprint | `current_fingerprint`: backend, GPU, compute capability, torch/CUDA versions, deterministic flags, cuBLAS workspace and matmul precision. |
+| Frozen backbone | state-dict hash and hidden size after placement. |
+| Preparation backend | persistent `spawn` pool, worker count, order-preserving flag and prefetch. |
+| Fresh adapter | per planned run `init_seed` and H0 hash prefix. |
+| Final selection | stage JSON written at the end: `lr_pilot.json`, `r_phase1.json`, or `final_main.json`. |
+
+WARNING / STOP:
+
+| Signal | Meaning |
+|---|---|
+| `REFUSED:` from runner | A contract gate failed; do not work around it manually. |
+| Missing inventory or checksum mismatch | Stop before model load; provision the pinned inventory only. |
+| CUDA unavailable, wrong deterministic policy, or wrong revision | Stop; the run is not the frozen Stage-1 campaign. |
+| Existing output without `--resume` | Correct refusal; choose a new output dir or intentionally resume. |
+| `--resume` without an existing output dir | Correct refusal; no stage is resumable there. |
+| Long interval with no validation metrics | Expected under current CLI because `on_event` is not wired; do not infer progress from silence. |
+
+### AL.10 Final human preflight checklist
+
+Do not execute the first command until all §AL blockers are repaired or explicitly
+accepted with a new recorded decision. Immediately before launch:
+
+1. `git rev-parse HEAD` prints `479fac5bb5fb7be4518e8ed36162c137700851ed`.
+2. `git status --porcelain` prints nothing.
+3. The command records the same SHA in `--repository-head`, and the runner has a
+   repaired actual-HEAD check.
+4. `CUBLAS_WORKSPACE_CONFIG=:4096:8` is in the environment before torch/CUDA.
+5. `python -c "import torch, transformers; ..."` confirms CUDA available and
+   transformers `4.57.6`; any torch/CUDA drift is reviewed against the freeze.
+6. The pinned syllable inventory is present and verifies.
+7. `COMPLETE.json` verifies the prepared corpus membership digest
+   `250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6`.
+8. Official UIT-VSFC TEST is not mounted, named, screened, or passed to any command.
+9. Fresh stage output directory does not exist; resume uses the exact same command
+   plus `--resume`.
+10. r-phase and final-main artifacts come from this same campaign root, corpus
+    digest and repository head, with no manual edits.
+11. Output, checkpoints and cache are on Drive-backed paths with enough free space;
+    the prepared payload may be a local SSD copy.
+12. Run the stage as `python -u scripts/stage1_runner.py ...` in a fresh process.
+
+### AL.11 First-command red team
+
+The would-be first scientific command is the LR pilot in §AL.5. It is attacked
+as follows:
+
+| Attack | Result |
+|---|---:|
+| Run at wrong HEAD | **PERMITS** if `--repository-head` is omitted or lies (**AL-B3**). |
+| Use wrong corpus | **DETECTS** incomplete/tampered prepared corpus, but does not compare against handoff artifacts later. |
+| Use old cache/resource | Tokenizer/model revision is pinned; cache root can be reused operationally, but prepared-corpus and artifact identities are the load-bearing checks. |
+| Overwrite prior campaign | Fresh existing output dir is refused. |
+| Accidentally resume | Cannot resume unless `--resume` is supplied and output dir exists. |
+| Fail to persist checkpoints | Per-run checkpoint dir is inside output dir; command must place output on Drive. |
+| Notebook multiprocessing interference | Avoided only by running the script as a fresh process; not a code-level proof. |
+| Output only on ephemeral disk | **PERMITS** if operator chooses an ephemeral `--output-dir`; checklist forbids it. |
+| TEST becomes reachable | **REFUSES / NOT ROUTED**; no official TEST flag and contamination screen accepts only opened train/validation references. |
+| Downstream information selected | No downstream score path in Stage-1 runner. |
+| Silent CPU use | **REFUSES** through CUDA requirement. |
+| Numerical policy initialised too late | Production calls cuBLAS check and numerical policy gates before model work; fresh process required. |
+| First command can actually instantiate objective | **FAILS** because of AL-B1. |
+
+### AL.12 Tests
+
+No training command was executed. No ad-hoc optimizer step was executed. Existing
+committed test-only optimizer-step regressions may have run inside pytest; they
+are synthetic TEST-ONLY paths, not the scientific Stage-1 campaign.
+
+| Command | Result |
+|---|---|
+| Targeted Stage-1/freeze/CLI/corpus/checkpoint/resume/independence/selection/sealing/preparation suite, first sandbox attempt | 617 passed, 2 skipped, 7 failed; all 7 failures were `tests/test_stage1_parallel.py` forkserver `PermissionError: [Errno 1] Operation not permitted` under the sandbox. |
+| Same targeted suite outside the sandbox | **624 passed, 2 skipped, 0 failed** in 43.21 s. |
+| Full lightweight suite outside the sandbox | **3,622 passed, 103 skipped, 0 failed** in 127.77 s. |
+| Local H0 recomputation | not run: torch is not installed locally. |
+
+The 103 full-suite skips are visible and expected in this ML-free local
+environment; the authoritative CUDA/freeze evidence remains the recorded Colab
+evidence in §AJ/§AK. The passing suite does not remove AL-B1 through AL-B4.
+
+### AL.13 Verdict
+
+**Production code changed by this review:** no.
+**Tests changed by this review:** no.
+**Proposal changed by this review:** no.
+**`docs/spec/decisions.md` changed by this review:** no.
+**`docs/spec/stage1-final-freeze.json` changed by this review:** no.
+**Official UIT-VSFC TEST status:** SEALED / UNUSED.
+**Scientific `optimizer.step` status:** ZERO.
+
+**FINAL TRAINING-LAUNCH READINESS REVIEW BLOCKED — SCIENTIFIC TRAINING NOT AUTHORISED**
