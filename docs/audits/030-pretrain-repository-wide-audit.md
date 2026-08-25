@@ -29,15 +29,37 @@
 | **Revision 18 — parallel preparation** | 2026-08-24 — the first performance repair §AF called for: **deterministic 8-worker parallel preparation, and nothing else**. Real benchmark: serial 4.605 s/batch → 8-worker 0.666 s (**6.912×**), **all prepared output exactly equal**. Production uses **`spawn`**, never the benchmark's `fork`, because the parent holds CUDA. Tokenizer reuse **rejected** (~5.01 % of preparation); classifier cache **deferred** (1.059× real). 17 new tests executed locally. See **§AG** |
 | **Revision 20 — CUDA gate failed (harness)** | 2026-08-24 — the authoritative gate at `a84cf7e` returned **2 failed, 20 passed**. Both failures were the **persistent CUDA test**, which passed the logical alias `torch.device("cuda")` where production passes the **concrete** `module_device(objective)` = `cuda:0`. **Production was correct and failed closed**; §AF.3 had already recorded this, so the harness re-introduced a known mistake. Test-side repair only; the spawn benchmark was never reached. See **§AI** |
 | **Revision 21 — configuration freeze** | 2026-08-24 — at `649ad74` the persistent CUDA suite passed **32/32**, closing §AF.4's caveat, and production spawn was accepted: **4.715051 s → 0.612201 s per batch (7.701797×)** with outputs **exactly equal**. Recurring pre-step fell **5.975526 s → 1.965580 s (~3.04×)**; performance **closed for pre-train**. The configuration is frozen into `docs/spec/stage1-final-freeze.json` and mechanically verified. See **§AJ** |
+| **Revision 22 — FINAL pre-train audit** | 2026-08-24 — the last independent review, at `479fac5`, conducted hostilely. **0 blockers, 0 major, 2 minor (documentation), 1 informational.** Four-way proposal↔decisions↔freeze↔code comparison: **26 rows, 0 mismatches**. `optimizer.step` has exactly one call site and no bypass; every historical blocker closed with evidence; only **F6 (stale PDF)** remains. **3 622 passed, 103 skipped, 0 failed.** See **§AK** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**STAGE-1 CONFIGURATION FROZEN — FINAL PROPOSAL-AWARE REPOSITORY AUDIT AND HUMAN APPROVAL PENDING**
+**FINAL PRE-TRAIN AUDIT PASS — EXPLICIT HUMAN APPROVAL REQUIRED BEFORE SCIENTIFIC TRAINING**
 
-> **§AJ is the current verdict.** The CUDA/spawn acceptance is complete: the
+> **§AK is the current verdict.** The final independent, proposal-aware review was
+> conducted **hostilely** at `479fac5` — trying to disprove readiness rather than
+> confirm it — and found **0 blockers and 0 major findings**. The four-way
+> proposal ↔ decisions ↔ freeze ↔ code comparison returned **0 mismatches across
+> 26 rows**; `optimizer.step` has **exactly one call site** on the Stage-1 path
+> with **no bypass**; exactly **one seeded RNG** exists on that path; the frozen
+> encoder is proven `eval` by mechanism, not assertion; and selection and budget
+> survived adversarial probes.
+>
+> **Every historical Audit-030 blocker is closed with source, test or runtime
+> evidence.** The only item still open is **F6, the stale compiled PDF** —
+> documentation only, and not an input to any run. Two MINOR findings are
+> metadata/documentation and change nothing scientific.
+>
+> **Scientific `optimizer.step` count is ZERO and official UIT-VSFC TEST is
+> sealed.** §T–§AJ are preserved verbatim.
+>
+> **This audit does not authorise training. A human must.**
+
+~~**STAGE-1 CONFIGURATION FROZEN — FINAL PROPOSAL-AWARE REPOSITORY AUDIT AND HUMAN APPROVAL PENDING**~~ **— superseded by §AK**
+
+> **§AJ was the previous verdict.** The CUDA/spawn acceptance is complete: the
 > persistent suite passed **32/32**, closing §AF.4's resume-equivalence caveat,
 > and production spawn was accepted at **7.701797×** with prepared outputs
 > **exactly equal**. Recurring pre-step time fell from **5.975526 s to 1.965580 s
@@ -5283,3 +5305,368 @@ and the full lightweight suite.
 **WORKER COUNT REMAINS OPERATIONAL PROVENANCE, NOT RUN IDENTITY AND NOT RESUME-BLOCKING**
 **SCIENTIFIC `optimizer.step` COUNT IS ZERO; OFFICIAL UIT-VSFC TEST IS SEALED AND UNUSED**
 **THIS FREEZE DOES NOT AUTHORISE TRAINING**
+
+---
+
+## AK. FINAL PROPOSAL-AWARE PRE-TRAIN REPOSITORY AUDIT
+
+**Revision 22.** The last independent scientific review before a human may
+authorise the first Stage-1 `optimizer.step`. Conducted as a **hostile/forensic**
+review: the working assumption was that readiness could be **disproved**, and
+prior audits and the freeze were treated as claims to be re-derived, not facts.
+
+| | |
+|---|---|
+| **Start of final audit** | `HEAD = 479fac5bb5fb7be4518e8ed36162c137700851ed`; working tree **clean**; nothing staged |
+| **After appending §AK** | audited HEAD still `479fac5bb5fb7be4518e8ed36162c137700851ed`; only the existing Audit 030 is modified; nothing staged; `git diff --check` clean |
+| **Scope** | proposal, `decisions.md`, all of Audit 030, the freeze, the freeze test, every Stage-1 module, Stage-6 verification, contamination/sealing, modeling/adapter, checkpoint and artifact IO, every CLI entry point, and the full test suite |
+| **Production code changed by this audit** | **NONE** — only this audit file |
+
+### AK.1 Findings summary
+
+| Severity | Count |
+|---|---|
+| **BLOCKER** | **0** |
+| **MAJOR** | **0** |
+| MINOR | 2 |
+| INFORMATIONAL | 1 |
+
+**No finding affects scientific validity.** The two MINOR findings are
+documentation/metadata; the one informational item is an observation.
+
+### AK.2 Axis A — four-way consistency: proposal ↔ decisions ↔ freeze ↔ code
+
+A programmatic 26-row comparison of every value most likely to drift — backbone,
+revision, hidden size, precision, `MAX_LENGTH`/`FAIL`, adapter parameter count,
+all four seeds, split, batch, cadences, both budgets, AdamW betas/eps/amsgrad,
+both grids, the condition list, the run count and the seed lists — was run against
+**imported constants**, the **freeze JSON**, and the values the proposal's §5.1.1
+table states.
+
+> **Four-way mismatches: 0.** No unrecorded scientific deviation exists.
+
+Where implementation exceeds the proposal, an existing decision already records
+it: **D-S1B-015** (CUDA + numerical policy), **D-S1B-016** (init seed, CPU-first),
+**D-S1B-017** (nominal-run independence, adapter-only checkpoint v2),
+**D-S1B-003** (scope mixture), **D-S1B-006** (metric unit), **D-S1B-007** (fp32),
+**D-S1B-001** (no downstream score), **D-B3A-001**/**D-S1A-008** (inventory).
+
+**FINDING AK-M1 — MINOR, documentation only.** The freeze records
+`generated_for_head` and `repository.head` as `649ad741…`, but HEAD is
+`479fac5…`. Investigated rather than assumed: the **only** commit between them is
+`479fac5 "stage-1 configuration stage"`, and
+`git diff --name-only 649ad741 479fac5 -- unmark/ scripts/ configs/ docs/spec/decisions.md unmark-proposal.md`
+is **empty** — it added *only* the audit, the freeze JSON and the freeze test.
+So the freeze describes code that is **byte-identical** to the code at the current
+HEAD, and this is the unavoidable chicken-and-egg of a freeze that cannot contain
+the hash of the commit containing it. **Not a blocker** — the rule is "scientific
+configuration differs from frozen configuration", and it does not differ.
+*Suggested remedy for the human, not applied here: record both
+`describes_code_at_head` and `frozen_in_commit`.*
+
+### AK.3 Axis B — the exact command-to-`optimizer.step` trace
+
+`optimizer.step()` exists at **exactly one** place in the Stage-1 path:
+`trainer.py:677`. `train_run` is called only from `execute.py:325` and `:357`;
+`execute_stage` only from `scripts/stage1_runner.py:505`, reached only by
+`run_lr_pilot` / `run_r_phase1` / `run_final_main` → `_execute`.
+
+```
+stage1_runner {lr-pilot|r-phase1|final-main} → _verified_corpus  (F1: corpus re-hashed, before any model)
+ └─ execute_stage
+    201  verify_scientific_inputs            inventory + eligibility, BEFORE model
+    210  require_deterministic_cublas_workspace   refuses if CUDA already initialised
+    211  resolve_scientific_device           CUDA required, fail-closed, logical device
+    212  enforce_numerical_policy   213 verify_numerical_policy   214 current_fingerprint
+    224  load_prepared_chunks
+    229  build_backbone → 230 .to(device) → 231 module_state_hash   (E0)
+    242  prepare_condition_batch             held-out realisation, built ONCE
+    261  worker_config  264 CorruptionRatePolicy  274 PreparationPool   (stage-scoped)
+    ── per nominal run (loop 275) ──
+    280  RunProvenance   282 adapter_init_seed
+    295  fresh_adapter (CPU)  296 H0  297 .to(device)  298 NEW UnmarkEncoder  299 NEW objective
+    301  placed-hash check    308 expected_fresh_init_hash check
+    317  NEW CorruptionRatePolicy
+    325  train_run → 597 NEW optimizer → identity check → 604 NEW sampler(run_seed)
+         loop: 636 next_batch → 644 pool.prepare → 663 collate → 664 to_device
+               → 666 forward → 668 zero_grad → 669 backward → 670 gradient_report
+               → 677 optimizer.step → 678 global_update += 1
+               → 681 evaluate_fn → 682 objective.train(True) → 696 checkpoint
+    341/351 load_training_checkpoint → 357 train_run   (continuation ONLY)
+    374  require_frozen_backbone_unchanged
+```
+
+**Bypass search: none found.** The other four Stage-1 scripts with a `__main__`
+(`stage1_blocker_probe`, `stage1_prepare_benchmark`, `stage1_pretrain_measurements`,
+`stage1_tokenizer_probe`) contain **zero** occurrences of `build_optimizer`,
+`AdamW`, `.backward(` or `optimizer.step`. `evaluation/preg1_head.py:942` does
+call `optimizer.step()`, but it is the **pre-G1 diagnostic head** — a different,
+completed phase — and is **not imported** by any Stage-1 module or by the runner.
+
+### AK.4 Axis C — nominal-run independence, re-derived
+
+| Property | Evidence |
+|---|---|
+| New adapter object and storage per run | `fresh_adapter` at 295, **inside** the loop; §AG tests prove distinct `data_ptr()` and mutation isolation |
+| New wrapper / objective | `UnmarkEncoder` 298, `objective_cls` 299, both per-run |
+| New optimizer, state empty on a fresh run | `build_optimizer` 597 inside `train_run` |
+| New sampler from the run's own seed | 604, `seed=provenance.run_seed` |
+| New monitoring window | `MonitorWindow()` 629, inside `train_run` |
+| New result/points | `RunResult` 606 |
+| Checkpoints namespaced | `run-{label}/_checkpoint` at 278, inside the loop |
+| Only the frozen encoder is shared | 229–230 stage-scope; `require_frozen_backbone_unchanged` at 374 after **every** run |
+
+**Closure capture examined specifically, because late binding is the classic
+leak.** `def evaluate_fn(update, _obj=objective)` uses a **default argument**,
+which binds at definition time — per iteration. A plain closure over `objective`
+would have made every candidate's `evaluate_fn` see the *last* objective. It does
+not.
+
+**The one shared mutable-looking object was chased down.**
+`prepared_by_condition` is built once (242) and shared by all candidates — by
+design. `PreparedStage1Example` is `@dataclass(frozen=True)` but has a `dict`
+field (`metadata`), so it is only *shallowly* immutable. A repository-wide search
+for `.metadata[`, `.metadata.update`, `.metadata.pop`, `.metadata.setdefault`,
+`.metadata.clear` returns **nothing**, and `evaluate` only slices and reads. The
+sharing is therefore read-only and cannot carry state between candidates.
+
+### AK.5 Axis D — the frozen encoder, and *why* the CUDA gate saw what it saw
+
+`UnmarkEncoder.train()` is overridden: `super().train(mode)` — which recurses and
+would flip the encoder — then **`self.encoder.eval()`**, which recursively returns
+the whole encoder subtree to eval. That is the mechanism behind the external
+gate's `frozen_encoder.training false` / `train-mode descendants 0`.
+
+* No other reactivation path exists: the only occurrence of `.encoder.train(`
+  outside a definition is a **docstring** warning about it (`adapter.py:548`).
+* Optimizer groups are built from `named_parameters() if p.requires_grad`, so
+  frozen parameters are excluded, then
+  `require_optimizer_parameter_identity(optimizer, adapter)` proves the set is
+  **exactly** the adapter's, each parameter once.
+* `gradient_report` **raises** `TrainerContractViolation` if any encoder parameter
+  carries a gradient — and it runs **every batch**, between `backward` and `step`.
+* `require_frozen_backbone_unchanged` re-hashes the **full `state_dict`**
+  (parameters *and* buffers) after every nominal run.
+
+### AK.6 Axis E — randomness
+
+A repository-wide search of `unmark/stage1/`, `unmark/modeling/`,
+`unmark/corruption/`, `unmark/orthography/` and `unmark/linguistics/` for
+`random.`, `np.random`, `numpy.random`, `torch.rand`, `torch.randn`,
+`manual_seed`, `Generator(`, `.shuffle(` and `hash(` returns **exactly one**
+executable hit: `torch.default_generator.manual_seed(init_seed)` inside
+`fork_rng(devices=[])` in `initialisation.py`. Everything else is prose.
+
+| Stream | Control |
+|---|---|
+| Document split | seed 51733, fixed in the prepared corpus |
+| Adapter init | `adapter_init_seed(run_seed)`, CPU-only, RNG forked and restored |
+| Sampler order | keyed `blake2b` rank + `sorted()` — **no RNG at all** |
+| Corruption / validation corruption | stateless keyed digests, seeds 35422 / 19225 |
+| Python `hash()` | **not used**; `deterministic.py` explicitly forbids it (PYTHONHASHSEED) |
+| CUDA RNG | never seeded and **has no consumer** — encoder dropout is forced off, adapter has no stochastic layer |
+
+**No uncontrolled random source on the scientific path.**
+
+### AK.7 Axes F, G, I, J, M, O, Q — re-derived
+
+**F — preparation.** `spawn` only (no `"fork"` literal); persistent stage-scoped
+pool; `Executor.map` (input order); workers get only `(sample_id, visit, text)`
+already chosen by the main process; `worker_config` provably cannot carry the
+2.6M-entry corpus dict; workers call the authoritative `prepare_example`, load the
+pinned slow tokenizer and the **strict** `load_inventory()`, touch no CUDA and no
+model weights; failures raise `PreparationContractViolation`. Only three
+`prepare_example` call sites exist repository-wide: the pool worker, the
+tests-only serial reference, and `smoke_check` — **no hidden production path**.
+
+**G — data integrity.** The sampler is built from `tuple(sorted(train_chunks))`
+and every id resolves by dict lookup exactly once. `load_prepared_chunks` routes
+each row to `train` **or** `dev` by `row["partition"]`, so the partitions are
+disjoint by construction and both are required non-empty. Truncation is
+unreachable; overflow raises at training time.
+
+**I — objective.** `masked_mean_non_special` **raises `Stage1PoolingError`** when
+any example has zero content positions, citing D-B4A-006 — exactly the proposal's
+"is an **error**, not a case for falling back to `<s>`, to an unmasked mean, or to
+a zero vector". Shape mismatches raise.
+
+**J — the forward-before-`zero_grad` order, proven not assumed.** The loop is
+`objective(batch)` (666) → `zero_grad` (668) → `backward` (669). `.grad` is
+written **only** by `backward()`, and there is no `backward` between the forward
+and `zero_grad`. On a fresh run parameters have `.grad is None`; on resume the
+adapter is **freshly constructed** and neither `load_state_dict` nor the optimizer
+`state_dict` sets `.grad`. **No stale gradient can reach a `step` in either
+case.**
+
+**M — selection and budget, attacked adversarially.** Worst-case aggregation
+confirmed `== max(distances)`, not a mean. Tie on score → lower `d_clean` wins;
+tie on both → **earliest** update wins; a later better point still beats update 0;
+missing update 0 **refused**; duplicate updates **refused**. Budget: inside cap →
+stop; at 20 000 → continue to 40 000; **at 40 000 → `continue=False`,
+`budget_limited=True`**, so a second continuation is impossible; a non-locked cap
+and an overshoot are both refused.
+
+**O — precision.** Repository-wide search for `autocast`, `GradScaler`, `amp`,
+`bf16`, `fp16`, `.half()`, `torch.compile`, `set_default_dtype` across
+`unmark/stage1/` and `unmark/modeling/`: **no executable hit**, only two
+docstrings. `float32_matmul_precision="highest"`, both TF32 flags false,
+deterministic algorithms on, cuDNN benchmark off, cuBLAS `:4096:8` — all enforced
+**and separately re-asserted** before the model is built.
+
+**Q — failure semantics.** Every `try/except` on the Stage-1 path was inspected.
+The only two bare `pass` statements are `os.fsync` on a *directory* descriptor
+(the file itself is already fsynced) on filesystems that refuse it. The two
+`except Exception` handlers are `_resident_bytes` (measurement, returns `None`)
+and a tokenizer-capability probe that returns `None`, which makes composition
+**unprovable** and forces the authoritative path — fail-safe, not fail-open. A
+malformed `COMPLETE.json` returns `None` ("not complete"); a valid-JSON
+wrong-schema marker **raises**. **No silent scientific degradation found.**
+
+### AK.8 Axis H — TEST sealing
+
+`corpus.py` states, and the code enforces, that official UIT-VSFC TEST is
+unreachable. `manifest.py:221` **raises** unless the manifest records
+`official_test_used=false`, and `:270` **raises** unless
+`official_test_screened=false` — these are *gates*, not declarations.
+`selection.py` reads no downstream score, and `screen_contamination` raises
+`CorpusContractViolation` containing "SEALED" for any unlisted source (exercised
+live in this audit). No debug or test helper reachable in production bypasses it.
+
+### AK.9 Axes K, L, N, P, R, S
+
+**K — checkpoint/resume.** Adapter-only state (`adapter.state_dict()` at 700),
+`strict=True` restore, `map_location="cpu"`, optimizer state restored then
+**object-identity** re-checked against the current adapter, non-scalar optimizer
+state asserted on the concrete module device with the zero-dimensional Adam `step`
+deliberately exempt, sampler/`global_update`/points/provenance restored, execution
+fingerprint compatibility enforced when present, schema **v2** with v1 failing
+closed. The checkpoint is written **after** `global_update += 1` and after the
+validation point is appended, so a checkpoint at update *N* corresponds to state
+after exactly *N* completed steps with sampler and history mutually consistent.
+The 20k→40k continuation uses the **same** resume path as a crash resume.
+
+**L — validation.** 11 443 dev chunks; the realisation is built **once** (242) and
+reused; seed 19225; update 0 mandatory (`select_checkpoint` refuses without it);
+every 500 updates and at the cap; `objective.train(True)` restored immediately
+after each `evaluate_fn` (682); the frozen-encoder invariant survives because
+`eval()`/`train()` both route through the override.
+
+**N — the freeze and its test.** The freeze test imports **32** production
+symbols and compares against them; the run plan and **all four init seeds are
+recomputed** with production helpers; the `[8,1,1,1]` grouping is *derived*; loop
+order, sampler seed and the selection rule are read off the **AST**; update-0 and
+TEST sealing are proven by *calling* the real functions. Exactly **5** assertions
+compare a freeze value to a bare literal — `seeded_by`, `continuations_allowed`,
+`map_location`, `SEALED`, `optimizer_steps=0` — and four of the five are
+independently backed by a semantic test elsewhere in the same file.
+
+> **FINDING AK-M2 — MINOR, documentation only.** `scientific_optimizer_steps: 0`
+> is a **declaration** and is not derivable from code; it can only ever be
+> asserted, not proven, by a test. It is correctly classified `safety_gate`, and
+> the substantive guarantee comes from the runtime evidence, not from this field.
+
+**P — provenance.** `RunProvenance` carries run seed, **init seed**, corruption
+seed, LR, `r`, corpus digest, repository head, backbone checkpoint/revision,
+protocol version, precision and the seven-field inventory identity — and
+`require_match` compares all of them plus the derived λ consistency. The stage
+artifact adds the execution fingerprint, preparation provenance,
+`raw_text_persisted: false`, `official_test_used: false` and
+`downstream_score_used: false`.
+
+**R — executability.** Output directories are per-stage and refuse to overwrite
+(`REFUSED: … already exists`); checkpoints are namespaced per run; adapter-only
+checkpoints (~14 MB, not ~540 MB); no raw corpus is persisted in artifacts;
+resume is supported. No local-only path was found.
+
+**S — test quality.** Audited deliberately, because the logical-`cuda` vs
+`cuda:0` harness bug proved harness quality is itself a risk. The freeze test, the
+parallel-preparation tests and the CUDA resume test all drive **production**
+helpers rather than doubles; §AI added two torch-free AST guards so that harness
+mistake cannot recur.
+
+> **INFORMATIONAL AK-I1.** The `train_run` serial-preparation branch remains
+> reachable when `preparation_pool is None`. It is **not** a failure fallback (a
+> pool failure raises), `execute_stage` passes the pool at both call sites, and a
+> §AH test pins that structurally. Recorded, not a finding against readiness.
+
+### AK.10 Axis T — historical finding closure
+
+| Finding | Origin | Status | Evidence |
+|---|---|---|---|
+| **F1** consumer never verifies the corpus it loads | §A–§Q | **CLOSED** | `verify_prepared_corpus` live; `_verified_corpus` runs before any model |
+| **F2** `PI_STRIP` two independent literals | §A–§Q | **CLOSED** | one numeric definition; `contracts == protocol == 0.25` verified live |
+| **F3** checkpointing never invoked | §A–§Q | **CLOSED** | best+last wired; cadence `is` `EVAL_EVERY_UPDATES` |
+| **F4** loader materialises the corpus | §A–§Q | **CLOSED** | measured 3.78 GB RSS in the real smoke (§AB) |
+| **F5** Stage-6 counters blind under workers | §A–§Q | **SUPERSEDED** — observability only | §AB |
+| **F6** compiled PDF stale | §A–§Q | **STILL OPEN, documentation only** | PDF is not an input to any run |
+| §V provenance round-trip | §V | **CLOSED** | `DERIVED_KEYS` live; 6/6 foreign identities rejected |
+| §W inventory provisioning + D-S1A-008 | §W | **CLOSED** | 7-field `InventoryIdentity` in provenance; preflight before model |
+| §X truncation wiring | §X | **CLOSED** | `TRUNCATION` 256/FAIL on every path |
+| §Y device boundary | §Y | **CLOSED** | `batch_to_device`/`module_device` at all three assemblers |
+| §Z test-count consistency | §Z | **CLOSED** | prose corrected |
+| §AA runner CLI omission | §AA | **CLOSED** | `_prepared_corpus_inputs` shared; 19 CLI tests |
+| §AD cross-candidate leakage | §AD | **CLOSED** | fresh adapter per run; init seeds live; AK.4 |
+| §AF performance blocker | §AF | **CLOSED for pre-train** | 5.975526 → 1.965580 s/update |
+| §AF.4 no persistent CUDA resume test | §AF | **CLOSED** | `test_stage1_cuda_resume_equivalence.py`; 32/32 on CUDA |
+| §AI logical `cuda` vs `cuda:0` harness bug | §AI | **CLOSED** | device derived from the placed module; two AST guards |
+| D-S1B-015 / 016 / 017 | §AC/§AD | **CLOSED** | persisted and implemented; verified live |
+
+> **No earlier blocker disappeared from the summary without closure evidence.**
+> The single item that remains open — **F6, the stale compiled PDF** — is
+> documentation only and is not an input to any run.
+
+### AK.11 Tests run, and exactly what could not run
+
+| Command | Result |
+|---|---|
+| `pytest -q` (full lightweight suite) | **3 622 passed, 103 skipped, 0 failed** — 127.37 s |
+| 14 targeted Stage-1 suites (freeze, data, corruption, preparation, independence, checkpoint, resume, schedule, CLI, device, corpus verification, provenance, inventory) | **879 passed, 15 skipped, 0 failed** — 25.04 s |
+| `git diff --check` | clean |
+
+**Every one of the 103 skips is torch absence**, grouped exactly: 61 *"torch is
+not installed (ML-free local .venv); runs on Colab"*, 30 *"torch is not installed
+locally"*, 3 *"adapter imports torch"*, and 9 further torch/CUDA gates including
+the freeze test's **H0 recomputation**. **No skip hides a scientific contract**,
+and none is silent.
+
+**Local limitation, stated plainly:** this machine has **no torch, no transformers
+and no CUDA**. No GPU acceptance work was re-run and none was downgraded.
+
+### AK.12 Authoritative external evidence relied upon
+
+Bound to the committed histories and **not** re-executed here: the freeze test at
+this HEAD under torch — **27 passed, 0 skipped**, with **all four H0 values
+independently recomputed** by production helpers and matching
+(`4ef7ee1a…`, `cf1a28cf…`, `d90186c0…`, `660db230…`); the persistent
+CUDA/parallel/device suite **32 passed**; the real PhoBERT mode gate
+(`objective.training true`, `adapter.training true`,
+`frozen_encoder.training false`, **0** train-mode descendants); production spawn
+**4.715051 → 0.612201 s/batch (7.701797×)** with prepared outputs **exactly
+equal**; and the integrated no-step path at **1.9655800279996583 s/update** with
+adapter and encoder unchanged and optimizer state empty.
+
+### AK.13 Unresolved items
+
+1. **F6** — the compiled proposal PDF is stale. Documentation only; not an input.
+2. **AK-M1** — the freeze's recorded HEAD predates the commit containing it.
+   Metadata only; the described code is byte-identical.
+3. **AK-M2** — `scientific_optimizer_steps: 0` is a declaration, not a derivable
+   value.
+
+**None blocks training.**
+
+**STATUS: FINAL PRE-TRAIN AUDIT PASS — EXPLICIT HUMAN APPROVAL REQUIRED BEFORE SCIENTIFIC TRAINING**
+**START OF FINAL AUDIT: HEAD `479fac5bb5fb7be4518e8ed36162c137700851ed`, WORKING TREE CLEAN, NOTHING STAGED**
+**AFTER APPENDING §AK: AUDITED HEAD STILL `479fac5bb5fb7be4518e8ed36162c137700851ed`, ONLY EXISTING AUDIT 030 MODIFIED, NOTHING STAGED, `git diff --check` CLEAN**
+**0 BLOCKERS, 0 MAJOR, 2 MINOR (DOCUMENTATION), 1 INFORMATIONAL**
+**FOUR-WAY PROPOSAL ↔ DECISIONS ↔ FREEZE ↔ CODE COMPARISON: 26 ROWS, 0 MISMATCHES**
+**`optimizer.step` EXISTS AT EXACTLY ONE PLACE ON THE STAGE-1 PATH AND HAS NO BYPASS**
+**EVERY HISTORICAL AUDIT-030 BLOCKER IS CLOSED WITH SOURCE, TEST OR RUNTIME EVIDENCE**
+**ONLY F6 REMAINS OPEN — A STALE COMPILED PDF, DOCUMENTATION ONLY, NOT AN INPUT TO ANY RUN**
+**EXACTLY ONE SEEDED RNG ON THE SCIENTIFIC PATH; SAMPLER ORDER USES A KEYED DIGEST, NOT RNG**
+**FROZEN ENCODER PROVEN eval BY THE `train()` OVERRIDE; `gradient_report` RAISES ON ANY ENCODER GRAD**
+**NO STALE GRADIENT CAN REACH A STEP — PROVEN FROM LOOP BEHAVIOUR, FRESH AND RESUMED**
+**SELECTION AND BUDGET SURVIVED ADVERSARIAL PROBES; A SECOND CONTINUATION IS IMPOSSIBLE**
+**OFFICIAL UIT-VSFC TEST IS SEALED BY RAISING GATES, NOT BY DECLARATION**
+**SCIENTIFIC `optimizer.step` COUNT IS ZERO; NO TRAINING WAS RUN BY THIS AUDIT**
+**THIS AUDIT DOES NOT AUTHORISE TRAINING — A HUMAN MUST**
