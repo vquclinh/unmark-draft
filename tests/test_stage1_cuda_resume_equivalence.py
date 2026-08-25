@@ -29,8 +29,10 @@ from unmark.stage1.initialisation import (  # noqa: E402
     trainable_state,
     trainable_state_hash,
 )
+from unmark.stage1.data import module_device  # noqa: E402
 from unmark.stage1.optim import build_optimizer  # noqa: E402
 from unmark.stage1.trainer import (  # noqa: E402
+    TrainerContractViolation,
     checkpoint_payload,
     load_training_checkpoint,
     require_optimizer_parameter_identity,
@@ -61,12 +63,24 @@ def provenance():
     )
 
 
-def build(device):
-    """Deterministic CPU init, then placement — the production order."""
-    adapter = fresh_adapter(TINY, INIT_SEED).to(device)
+def build(requested_device):
+    """Deterministic CPU init, then placement — the production order.
+
+    Returns `(adapter, optimizer, actual_device)`.
+
+    **`requested_device` and `actual_device` are not the same thing.**
+    `torch.device("cuda")` is a *logical alias* with no index; once a module is
+    placed, its parameters live on a *concrete* device such as `cuda:0`, and
+    `torch.device("cuda") != torch.device("cuda:0")`. Production never confuses
+    the two: `train_run` passes `module_device(objective)` —
+    `next(module.parameters()).device` — so its postcondition is always the
+    concrete placed device. This helper derives the same thing the same way, so
+    the test asserts what production asserts.
+    """
+    adapter = fresh_adapter(TINY, INIT_SEED).to(requested_device)
     optimizer = build_optimizer(list(adapter.named_parameters()), 3e-4)
     require_optimizer_parameter_identity(optimizer, adapter)
-    return adapter, optimizer
+    return adapter, optimizer, module_device(adapter)
 
 
 def synthetic_step(adapter, optimizer, update: int, device) -> None:
@@ -104,10 +118,13 @@ def equal_state(a, b) -> bool:
 
 @needs_cuda
 def test_cuda_interrupted_then_resumed_equals_uninterrupted(tmp_path):
-    device = torch.device("cuda")
+    requested_device = torch.device("cuda")   # a logical alias, NOT a postcondition
 
     # --- uninterrupted reference -------------------------------------------
-    adapter, optimizer = build(device)
+    adapter, optimizer, device = build(requested_device)
+    assert device.type == "cuda" and device.index is not None, (
+        f"expected a concrete placed device, got {device}"
+    )
     sampler_state = {"cursor": 0, "visit": 0}
     for update in range(TOTAL):
         synthetic_step(adapter, optimizer, update, device)
@@ -117,7 +134,7 @@ def test_cuda_interrupted_then_resumed_equals_uninterrupted(tmp_path):
     uninterrupted_sampler = dict(sampler_state)
 
     # --- interrupted at update 8, checkpointed ------------------------------
-    adapter_a, optimizer_a = build(device)
+    adapter_a, optimizer_a, _ = build(requested_device)
     sampler_state = {"cursor": 0, "visit": 0}
     for update in range(INTERRUPT_AT):
         synthetic_step(adapter_a, optimizer_a, update, device)
@@ -135,11 +152,15 @@ def test_cuda_interrupted_then_resumed_equals_uninterrupted(tmp_path):
     # --- fresh reconstruction, then resume ----------------------------------
     payload = load_training_checkpoint(tmp_path)
     verify_checkpoint(payload, provenance())
-    adapter_b, optimizer_b = build(device)                 # CPU init -> placed
+    adapter_b, optimizer_b, resumed_device = build(requested_device)  # CPU init -> placed
     adapter_b.load_state_dict(payload["adapter_state"], strict=True)
     optimizer_b.load_state_dict(payload["optimizer_state"])
     require_optimizer_parameter_identity(optimizer_b, adapter_b)
-    require_optimizer_state_device(optimizer_b, device)    # authoritative postcondition
+    # The authoritative postcondition, against the device THIS adapter is on --
+    # derived from the freshly reconstructed module, exactly as production does.
+    assert resumed_device.type == "cuda" and resumed_device.index is not None
+    assert resumed_device == device, "single-GPU test: both placements agree"
+    require_optimizer_state_device(optimizer_b, resumed_device)
 
     resumed_sampler = dict(payload["sampler_state"])
     global_update = int(payload["global_update"])
@@ -163,8 +184,8 @@ def test_populated_adam_state_lands_on_cuda_with_scalar_step_left_on_cpu(tmp_pat
     `exp_avg` / `exp_avg_sq` must be on concrete CUDA; the zero-dimensional
     scalar `step` legitimately stays on CPU and **must not** be forced across.
     """
-    device = torch.device("cuda")
-    adapter, optimizer = build(device)
+    requested_device = torch.device("cuda")   # logical alias, not a postcondition
+    adapter, optimizer, device = build(requested_device)
     for update in range(3):
         synthetic_step(adapter, optimizer, update, device)
 
@@ -179,11 +200,18 @@ def test_populated_adam_state_lands_on_cuda_with_scalar_step_left_on_cpu(tmp_pat
                for s in payload["optimizer_state"]["state"].values()
                for v in s.values()), "map_location='cpu' must bring the payload back on CPU"
 
-    adapter_b, optimizer_b = build(device)
+    adapter_b, optimizer_b, resumed_device = build(requested_device)
     adapter_b.load_state_dict(payload["adapter_state"], strict=True)
     optimizer_b.load_state_dict(payload["optimizer_state"])
 
-    require_optimizer_state_device(optimizer_b, device)     # production postcondition
+    # Concrete placed device, derived from the reconstructed adapter itself.
+    assert resumed_device.type == "cuda" and resumed_device.index is not None
+    require_optimizer_state_device(optimizer_b, resumed_device)
+
+    # And the whole point of the strict postcondition: the LOGICAL alias is not
+    # the concrete device, and production is right to reject it.
+    with pytest.raises(TrainerContractViolation, match="not the training device"):
+        require_optimizer_state_device(optimizer_b, torch.device("cuda"))
 
     seen_moment = seen_step = False
     for state in optimizer_b.state_dict()["state"].values():
@@ -201,8 +229,7 @@ def test_populated_adam_state_lands_on_cuda_with_scalar_step_left_on_cpu(tmp_pat
 
 @needs_cuda
 def test_the_checkpoint_carries_no_frozen_encoder_key(tmp_path):
-    device = torch.device("cuda")
-    adapter, optimizer = build(device)
+    adapter, optimizer, device = build(torch.device("cuda"))
     synthetic_step(adapter, optimizer, 0, device)
     save_training_checkpoint(tmp_path, checkpoint_payload(
         provenance=provenance(), adapter_state=adapter.state_dict(),

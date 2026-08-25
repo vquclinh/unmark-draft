@@ -27,15 +27,31 @@
 | **Revision 16 — fresh-CUDA runtime verification** | 2026-08-24 — the torch/CUDA contracts §AE could only *implement* are now **executed** on a fresh Colab runtime (torch 2.11.0+cu128, CUDA 12.8, transformers 4.57.6, RTX PRO 6000 Blackwell, cc 12.0, cuDNN 91900), bound to implementation commit `3c3489b9`. **Stage-1 1 344 passed / 1 skipped; full 3 754 passed / 1 skipped; 0 failed, 0 errors.** Four H0 hashes and the `[8,1,1,1]` grouping recorded in full. **Two claims reserved** — CUDA resume byte-identity and optimizer-state placement *on CUDA*. See **§AE.11** |
 | **Revision 17 — real acceptance + performance blocker** | 2026-08-24 — at `ac20cfb7`, **every real zero-update acceptance gate PASSED** on the real corpus and real PhoBERT: Probe 1, Probe 2, CUDA interrupted-vs-uninterrupted exact equivalence, populated optimizer-state CUDA placement, and the full four-condition validation. `optimizer.step` count still **ZERO**. Those runs produced the first real training-path timing and revealed a **material performance blocker**: the path is **preparation-bound** (79.05 % prepare, 12.60 % GPU), projecting **≈403 h / 16.8 days** for the 11 nominal runs. See **§AF** |
 | **Revision 18 — parallel preparation** | 2026-08-24 — the first performance repair §AF called for: **deterministic 8-worker parallel preparation, and nothing else**. Real benchmark: serial 4.605 s/batch → 8-worker 0.666 s (**6.912×**), **all prepared output exactly equal**. Production uses **`spawn`**, never the benchmark's `fork`, because the parent holds CUDA. Tokenizer reuse **rejected** (~5.01 % of preparation); classifier cache **deferred** (1.059× real). 17 new tests executed locally. See **§AG** |
+| **Revision 20 — CUDA gate failed (harness)** | 2026-08-24 — the authoritative gate at `a84cf7e` returned **2 failed, 20 passed**. Both failures were the **persistent CUDA test**, which passed the logical alias `torch.device("cuda")` where production passes the **concrete** `module_device(objective)` = `cuda:0`. **Production was correct and failed closed**; §AF.3 had already recorded this, so the harness re-introduced a known mistake. Test-side repair only; the spawn benchmark was never reached. See **§AI** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**IMPLEMENTED — POST-IMPLEMENTATION CUDA/SPAWN PERFORMANCE VERIFICATION PENDING**
+**CUDA REGRESSION TEST HARNESS REPAIRED — AUTHORITATIVE CUDA/SPAWN VERIFICATION PENDING**
 
-> **§AG is the current verdict.** §AF's performance blocker has its first repair:
+> **§AI is the current verdict.** The authoritative CUDA gate at `a84cf7e`
+> **failed 2 of 22** — and the failures were **the test, not production**. The
+> persistent CUDA regression test asserted against the logical alias
+> `torch.device("cuda")` where production asserts against the **concrete** placed
+> device `module_device(objective)` = `cuda:0`. `require_optimizer_state_device`
+> failed closed exactly as designed and **was not weakened**; **no production file
+> changed**. §AF.3 had already recorded this, so the persistent test re-introduced
+> a **known** harness mistake — now closed by two torch-free AST guards and a
+> negative assertion that proves the alias is rejected.
+>
+> **The production spawn benchmark was never reached**, so §AG's pending item
+> stands unchanged. §T–§AH are preserved verbatim. **Training is not authorised.**
+
+~~**IMPLEMENTED — POST-IMPLEMENTATION CUDA/SPAWN PERFORMANCE VERIFICATION PENDING**~~ **— superseded by §AI**
+
+> **§AG was the previous verdict.** §AF's performance blocker has its first repair:
 > **deterministic 8-worker parallel preparation, and deliberately nothing else.**
 > The real benchmark measured serial **4.605 s/batch → 8-worker 0.666 s
 > (6.912×)** with **every prepared output exactly equal**, and two candidates were
@@ -4889,3 +4905,141 @@ untouched by this task.
 **REAL-TOKENIZER SPAWN EQUIVALENCE IS EXPLICITLY MARKED PENDING, NOT ASSUMED**
 **NO NEW OPTIMISATION; NO PRODUCTION SEMANTIC CHANGE; decisions.md AND PROPOSAL UNTOUCHED**
 **TRAINING IS NOT AUTHORISED**
+
+---
+
+## AI. AUTHORITATIVE CUDA GATE FAILED — TEST-HARNESS DEFECT, NOT PRODUCTION
+
+**Revision 20.** The authoritative Colab gate at committed HEAD
+`a84cf7e47945a5b9156a9e7f210c92e3c0eb668a` **failed**. The failure was in the
+persistent regression test this repository added in §AG, not in production —
+and it re-introduced a mistake §AF.3 had **already recorded**.
+
+**No production semantics changed. Training is not authorised.**
+
+### AI.1 What the gate reported
+
+| | |
+|---|---|
+| HEAD | `a84cf7e47945a5b9156a9e7f210c92e3c0eb668a` |
+| Runtime | Python 3.13.15, torch 2.11.0+cu128, CUDA build 12.8, transformers 4.57.6, CUDA available **True** |
+| Inventory and prepared-corpus byte identities | **PASS** |
+| Parallel-preparation tests | reached the CUDA gate |
+| **Persistent CUDA suite** | **2 failed, 20 passed** |
+
+Both failures in `tests/test_stage1_cuda_resume_equivalence.py`:
+`test_cuda_interrupted_then_resumed_equals_uninterrupted` and
+`test_populated_adam_state_lands_on_cuda_with_scalar_step_left_on_cpu`, both at
+`require_optimizer_state_device(optimizer_b, device)`:
+
+```
+TrainerContractViolation: optimizer state state[0].exp_avg is on cuda:0,
+not the training device cuda.
+```
+
+> **The production spawn benchmark was NOT executed** — the gate stopped here
+> first. It remains outstanding.
+
+### AI.2 Classification: **TEST-HARNESS DEFECT, NOT A PRODUCTION DEFECT**
+
+Verified from source, not inferred:
+
+* **Production passes the concrete device.** `trainer.py:618` calls
+  `require_optimizer_state_device(optimizer, module_device(objective))`, and
+  `module_device` is `next(module.parameters()).device` — the device the module
+  is *actually placed on*, i.e. `cuda:0`. Production never passes a bare logical
+  alias.
+* **The test passed the logical alias.** It built with `torch.device("cuda")` and
+  then handed that same value to the production postcondition.
+  `torch.device("cuda")` carries **no index**; `torch.device("cuda:0")` does, and
+  the two compare **unequal**.
+* **The helper behaved correctly and failed closed.** Its strict `!=` comparison
+  is the point: the module's actual device is authoritative, so an assertion
+  against anything else is not an assertion about the training device.
+
+`require_optimizer_state_device` was **not weakened**, production was **not**
+taught to treat `cuda` as equivalent to `cuda:0`, and nothing was special-cased
+to satisfy a test.
+
+### AI.3 ★ This was an already-known mistake, re-introduced
+
+**§AF.3 already recorded it**, in as many words: *"`exp_avg` and `exp_avg_sq` are
+on **`cuda:0`** after restore — correct, and asserted"*. The successful one-off
+acceptance fixture of §AF.4 had been repaired by deriving the expected device from
+the placed model. When §AG turned that fixture into a persistent regression test,
+**that repair was not carried across**, and the harness reverted to the logical
+alias.
+
+This is not new PyTorch behaviour and is not presented as a discovery. It is the
+same acceptance-harness error, made twice — which is exactly why the structural
+guard in AI.4 exists rather than a note asking the next author to remember.
+
+### AI.4 The repair — test-side only
+
+`build(requested_device)` now returns `(adapter, optimizer, actual_device)` where
+`actual_device = module_device(adapter)` — **the same helper, read the same way,
+as production**. Every positive postcondition now asserts against the concrete
+device of the module it belongs to, including the *freshly reconstructed* resumed
+adapter, whose device is derived from that adapter rather than reused from the
+reference run.
+
+Added deliberately, as a positive statement of the contract:
+
+```python
+with pytest.raises(TrainerContractViolation, match="not the training device"):
+    require_optimizer_state_device(optimizer_b, torch.device("cuda"))
+```
+
+so the logical/concrete distinction is now *proven* by the suite rather than left
+as a trap. `cuda:0` is never hard-coded; the index is always derived.
+
+**Real Adam semantics are unchanged** (§AF.3): `exp_avg` / `exp_avg_sq` on the
+concrete adapter device, zero-dimensional scalar `step` left on CPU and **not**
+forced across, with `require_optimizer_state_device` as the authoritative check.
+
+**Structural regression, torch-free so it runs on every machine.** Two new tests
+in `tests/test_stage1_device_contract.py` assert on the **AST** — not by string
+search — that every positive `require_optimizer_state_device` call in the CUDA
+file passes a *name* derived from the placed module rather than an inline
+`torch.device(...)` (calls inside `pytest.raises` are exempt, since one of them
+proves the rejection), and that `build` returns `module_device(adapter)`.
+
+### AI.5 The equivalence contract is unchanged
+
+The CUDA test still proves 16 uninterrupted updates **exactly equal** 8 updates →
+production checkpoint → fresh adapter/optimizer reconstruction → production
+verification and restore → resume → 16, with exact equality of adapter tensors,
+complete optimizer state, sampler state, global update and validation-point
+history. Synthetic optimizer steps remain **TEST-ONLY**; **no scientific Stage-1
+optimizer step occurred.**
+
+### AI.6 Local results
+
+| Command | Result |
+|---|---|
+| `pytest -q tests/test_stage1_cuda_resume_equivalence.py` | **1 skipped** — `needs torch`. **Not claimed as passing** |
+| `pytest -q tests/test_stage1_parallel_preparation.py` | **19 passed** |
+| `pytest -q` device-contract + run-independence + checkpoint + resume | **103 passed, 2 skipped** |
+| `git diff --name-only -- unmark/` | **empty — no production file changed** |
+
+### AI.7 What the authoritative rerun must establish
+
+1. `tests/test_stage1_cuda_resume_equivalence.py` — **all 3 tests passing on the
+   GPU**, replacing the `2 failed, 20 passed` above;
+2. the full persistent CUDA suite green at the committed HEAD;
+3. the **production spawn benchmark**, which this gate never reached;
+4. the pool driving the **real pinned PhoBERT tokenizer** — still the
+   `POST-IMPLEMENTATION AUTHORITATIVE VERIFICATION PENDING` item from §AG.6.
+
+**STATUS: CUDA REGRESSION TEST HARNESS REPAIRED — AUTHORITATIVE CUDA/SPAWN VERIFICATION PENDING**
+**THE `a84cf7e` GATE FAILED 2 OF 22; BOTH FAILURES WERE THE TEST, NOT PRODUCTION**
+**PRODUCTION PASSES `module_device(objective)` — THE CONCRETE PLACED DEVICE — AND WAS CORRECT**
+**`require_optimizer_state_device` FAILED CLOSED AS DESIGNED AND WAS NOT WEAKENED**
+**`torch.device("cuda")` IS A LOGICAL ALIAS AND IS NOT EQUAL TO `cuda:0`**
+**§AF.3 HAD ALREADY RECORDED THIS; THE PERSISTENT TEST RE-INTRODUCED A KNOWN HARNESS MISTAKE**
+**REPAIRED BY DERIVING THE DEVICE FROM THE PLACED ADAPTER, NEVER BY HARD-CODING `cuda:0`**
+**A NEGATIVE ASSERTION NOW PROVES THE LOGICAL ALIAS IS REJECTED**
+**TWO TORCH-FREE AST GUARDS STOP THE HARNESS MISTAKE RETURNING A THIRD TIME**
+**NO PRODUCTION FILE CHANGED; ADAM SCALAR `step` STILL LEGITIMATELY ON CPU**
+**THE PRODUCTION SPAWN BENCHMARK WAS NEVER REACHED AND REMAINS OUTSTANDING**
+**NO SCIENTIFIC OPTIMIZER STEP OCCURRED — TRAINING IS NOT AUTHORISED**

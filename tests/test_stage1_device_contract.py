@@ -97,6 +97,55 @@ def test_only_the_device_resolver_names_cuda():
     assert named == ["device.py"], named
 
 
+def test_cuda_tests_assert_against_the_concrete_placed_device_not_a_logical_alias():
+    """`torch.device("cuda")` is an alias; `cuda:0` is where parameters actually live.
+
+    Production's postcondition is `require_optimizer_state_device(optimizer,
+    module_device(objective))` — always the **concrete** placed device. A test
+    that passes the bare logical alias instead asserts something production never
+    asserts, and fails for a harness reason. That is exactly what the authoritative
+    Colab gate caught at `a84cf7e` (Audit 030 §AI), re-introducing a mistake §AF.3
+    had already recorded.
+
+    Checked on the AST, not by string search: every positive call must pass a
+    *name* derived from the placed module, never an inline `torch.device(...)`.
+    A call inside `pytest.raises` is exempt — that one proves the rejection.
+    """
+    path = REPO / "tests/test_stage1_cuda_resume_equivalence.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    negative = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.With) and "raises" in ast.unparse(node.items[0].context_expr):
+            negative.update(id(n) for n in ast.walk(node))
+
+    checked = 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "require_optimizer_state_device"):
+            continue
+        if id(node) in negative:
+            continue
+        assert len(node.args) == 2, ast.unparse(node)
+        device_argument = node.args[1]
+        assert isinstance(device_argument, ast.Name), (
+            f"{ast.unparse(node)} passes an inline device expression; it must pass a "
+            "concrete device derived from the placed adapter"
+        )
+        checked += 1
+    assert checked >= 2, f"expected the CUDA resume tests to assert the postcondition, saw {checked}"
+
+
+def test_the_cuda_resume_helper_derives_its_device_from_the_placed_module():
+    """`build(...)` must return the device it read back off the adapter."""
+    path = REPO / "tests/test_stage1_cuda_resume_equivalence.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    build = next(n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "build")
+    returned = next(n for n in ast.walk(build) if isinstance(n, ast.Return))
+    assert "module_device(adapter)" in ast.unparse(returned.value), ast.unparse(returned.value)
+
+
 def test_the_scientific_cli_offers_no_device_or_determinism_override():
     """No `--cpu`, `--device`, `--allow-tf32`, `--init-seed`, ... (D-S1B-015/016)."""
     source = (REPO / "scripts/stage1_runner.py").read_text(encoding="utf-8")
