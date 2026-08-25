@@ -28,15 +28,37 @@
 | **Revision 17 — real acceptance + performance blocker** | 2026-08-24 — at `ac20cfb7`, **every real zero-update acceptance gate PASSED** on the real corpus and real PhoBERT: Probe 1, Probe 2, CUDA interrupted-vs-uninterrupted exact equivalence, populated optimizer-state CUDA placement, and the full four-condition validation. `optimizer.step` count still **ZERO**. Those runs produced the first real training-path timing and revealed a **material performance blocker**: the path is **preparation-bound** (79.05 % prepare, 12.60 % GPU), projecting **≈403 h / 16.8 days** for the 11 nominal runs. See **§AF** |
 | **Revision 18 — parallel preparation** | 2026-08-24 — the first performance repair §AF called for: **deterministic 8-worker parallel preparation, and nothing else**. Real benchmark: serial 4.605 s/batch → 8-worker 0.666 s (**6.912×**), **all prepared output exactly equal**. Production uses **`spawn`**, never the benchmark's `fork`, because the parent holds CUDA. Tokenizer reuse **rejected** (~5.01 % of preparation); classifier cache **deferred** (1.059× real). 17 new tests executed locally. See **§AG** |
 | **Revision 20 — CUDA gate failed (harness)** | 2026-08-24 — the authoritative gate at `a84cf7e` returned **2 failed, 20 passed**. Both failures were the **persistent CUDA test**, which passed the logical alias `torch.device("cuda")` where production passes the **concrete** `module_device(objective)` = `cuda:0`. **Production was correct and failed closed**; §AF.3 had already recorded this, so the harness re-introduced a known mistake. Test-side repair only; the spawn benchmark was never reached. See **§AI** |
+| **Revision 21 — configuration freeze** | 2026-08-24 — at `649ad74` the persistent CUDA suite passed **32/32**, closing §AF.4's caveat, and production spawn was accepted: **4.715051 s → 0.612201 s per batch (7.701797×)** with outputs **exactly equal**. Recurring pre-step fell **5.975526 s → 1.965580 s (~3.04×)**; performance **closed for pre-train**. The configuration is frozen into `docs/spec/stage1-final-freeze.json` and mechanically verified. See **§AJ** |
 | **Decides** | Whether the *next* step — a bounded real **no-update model smoke** — may proceed. **It does not authorise training** |
 
 ---
 
 ## A. VERDICT
 
-**CUDA REGRESSION TEST HARNESS REPAIRED — AUTHORITATIVE CUDA/SPAWN VERIFICATION PENDING**
+**STAGE-1 CONFIGURATION FROZEN — FINAL PROPOSAL-AWARE REPOSITORY AUDIT AND HUMAN APPROVAL PENDING**
 
-> **§AI is the current verdict.** The authoritative CUDA gate at `a84cf7e`
+> **§AJ is the current verdict.** The CUDA/spawn acceptance is complete: the
+> persistent suite passed **32/32**, closing §AF.4's resume-equivalence caveat,
+> and production spawn was accepted at **7.701797×** with prepared outputs
+> **exactly equal**. Recurring pre-step time fell from **5.975526 s to 1.965580 s
+> (~3.04×)**, so the performance investigation is **closed for pre-train
+> purposes** — with tokenizer reuse still rejected and four optimisations
+> deliberately deferred.
+>
+> The configuration is frozen into **`docs/spec/stage1-final-freeze.json`**
+> (schema 1, `FROZEN_PENDING_FINAL_AUDIT_AND_HUMAN_APPROVAL`), every value
+> extracted from the repository and **mechanically compared against imported
+> constants** — 26 passed, 1 skipped, the skip being the H0 recomputation that
+> needs torch. Proposal, decisions and code agree three ways with **no unrecorded
+> deviation**; neither `decisions.md` nor the proposal was modified.
+>
+> **`optimizer.step` count is ZERO and official TEST is sealed.** One final
+> proposal-aware repository-wide audit and **explicit human approval** remain.
+> **This does not authorise training.** §T–§AI are preserved verbatim.
+
+~~**CUDA REGRESSION TEST HARNESS REPAIRED — AUTHORITATIVE CUDA/SPAWN VERIFICATION PENDING**~~ **— superseded by §AJ**
+
+> **§AI was the previous verdict.** The authoritative CUDA gate at `a84cf7e`
 > **failed 2 of 22** — and the failures were **the test, not production**. The
 > persistent CUDA regression test asserted against the logical alias
 > `torch.device("cuda")` where production asserts against the **concrete** placed
@@ -5043,3 +5065,221 @@ optimizer step occurred.**
 **NO PRODUCTION FILE CHANGED; ADAM SCALAR `step` STILL LEGITIMATELY ON CPU**
 **THE PRODUCTION SPAWN BENCHMARK WAS NEVER REACHED AND REMAINS OUTSTANDING**
 **NO SCIENTIFIC OPTIMIZER STEP OCCURRED — TRAINING IS NOT AUTHORISED**
+
+---
+
+## AJ. FINAL STAGE-1 CONFIGURATION FREEZE
+
+**Revision 21.** Phase-boundary control at committed HEAD
+`649ad741b8e737e7a108e71a47b818bf8ea991b2`. The performance investigation is
+**closed for pre-train purposes**, the CUDA/spawn acceptance history is complete,
+and the configuration is frozen into a machine-readable artifact that is
+mechanically compared against the code.
+
+**Scientific `optimizer.step` count remains ZERO. Official UIT-VSFC TEST remains
+SEALED and unused. Training is NOT authorised.**
+
+### AJ.1 CUDA/spawn acceptance — the complete history, failures kept
+
+**Attempt 1, at earlier HEAD `a84cf7e`** (recorded in §AI, preserved):
+environment and corpus **PASS**; the persistent suite reached CUDA and returned
+**20 passed, 2 failed**; the failure was the **test harness** passing logical
+`cuda` where production requires the concrete `cuda:0`; the production helper
+**correctly failed closed**; the production spawn benchmark was **never reached**.
+The test was then repaired.
+
+**At current HEAD `649ad741`:** persistent CUDA / parallel / device suite —
+**32 passed in 16.78 s. PASS.** This **closes the persistent CUDA
+resume-equivalence caveat** first raised in §AF.4 and carried through §AG.11.
+
+**Two further out-of-tree harness defects, recorded as such.** The first
+production-spawn attempts at this HEAD also stopped before the pool because the
+acceptance harness (a) assumed `resolve_scientific_device()` initialises CUDA, and
+(b) after a tiny acceptance-only CUDA sentinel corrected that, refused to guess the
+`PreparationPool(config, workers)` signature. **Both are acceptance-harness
+defects, not repository defects** — the production API was then read directly and
+used verbatim:
+
+```python
+preparation = worker_config(...)
+with PreparationPool(preparation, PREPARATION_WORKERS) as pool:
+    ...
+```
+
+**Final authoritative production-spawn acceptance:**
+
+| | |
+|---|---|
+| backend / workers / start method | `multiprocessing_spawn` / **8** / **spawn** |
+| prefetch / order preserving | **false** / **true** |
+| parent CUDA live before pool | **true** — concrete parent device **`cuda:0`** |
+| real pinned slow tokenizer | **true** |
+| spawn workers offline | **true** |
+| **prepared exact equality** | **true** |
+| sampler state unchanged / repository clean | **true** / **true** |
+| serial real-tokenizer mean | **4.715050720399995 s/batch** |
+| **production spawn mean** | **0.612201350399937 s/batch** |
+| **speedup** | **7.701797320962722×** |
+
+No model weights, optimizer, backward or scientific update occurred in that
+spawn-equivalence benchmark.
+
+### AJ.2 Integrated real production path, stopped before `optimizer.step`
+
+Real prepared corpus, production persistent spawn/8 pool, real pinned PhoBERT,
+real adapter and objective, real optimizer **construction**, batch 128, exact
+collate, H2D, forward, production-order `zero_grad`, backward, `gradient_report`
+and `MonitorWindow` accounting — halted **immediately before** `optimizer.step`.
+One warm-up plus five measured recurring batches:
+
+| Stage | Seconds |
+|---|---|
+| sampler_and_task | 0.0001492439999310591 |
+| **prepare** | **0.6134335920000012** |
+| prepared_monitor | 0.0005548077999264934 |
+| **collate** | **0.599885580999944** |
+| h2d | 0.0009135695999248128 |
+| **forward** | **0.44369974960000036** |
+| zero_grad | 0.00009059599997272017 |
+| **backward** | **0.3057157223998729** |
+| gradient_report | 0.0011291496000922052 |
+| gradient_monitor | 0.00000801599999249447 |
+| **recurring_pre_step** | **1.9655800279996583** |
+
+Peak CUDA allocated **27 566 880 768 B**, reserved **28 022 145 024 B**.
+
+**Safety:** adapter unchanged **true**, encoder unchanged **true**, optimizer state
+**empty**, scientific `optimizer.step` **ZERO**, official TEST used **false**,
+repository clean **true**.
+
+**Projections — LOWER BOUND ONLY, not predicted wall-clock.** They exclude at
+least `optimizer.step`, checkpoint I/O, startup and incidental overhead.
+
+| Quantity | Lower bound |
+|---|---|
+| 20k pre-step | 10.9198890444 h |
+| 20k recurring validation | 3.4682127778 h |
+| **one nominal 20k run** | **14.3881018222 h** |
+| **11 nominal runs** | **158.2691200444 h ≈ 6.5945466685 days** |
+| one additional 20k continuation | 14.3881018222 h |
+| four-condition setup per stage command | 0.4402194444 h |
+
+### AJ.3 Performance investigation — CLOSED FOR PRE-TRAIN PURPOSES
+
+| | |
+|---|---|
+| Old recurring pre-step (§AF) | ~5.975526 s/update |
+| Final recurring pre-step through `gradient_report` | **~1.965580 s/update** |
+| **Reduction** | **~3.04×** |
+| Preparation speedup alone | **7.70×** serial → spawn |
+| Prepared outputs | **exactly equal** |
+| Scientific semantics | **unchanged** |
+| GPU memory | comfortable (~25.7 GiB of ~97.9 GiB) |
+
+**Deliberately still deferred:** classifier memoisation, `canon` de-duplication,
+prefetch, collate optimisation. **Tokenizer reuse remains REJECTED** — it would
+weaken the independently *computed* base-invariance check for a small measured
+benefit (§AG.1). **No further optimisation was implemented in this task.**
+
+### AJ.4 The machine-readable freeze
+
+**`docs/spec/stage1-final-freeze.json`** — schema version **1**, status
+**`FROZEN_PENDING_FINAL_AUDIT_AND_HUMAN_APPROVAL`** (deliberately **not**
+`TRAINING_READY`), deterministic JSON with sorted keys.
+
+Twenty top-level sections, including all those required: `repository`,
+`software`, `hardware_acceptance`, `model`, `adapter`, `data`, `corruption`,
+`sampler`, `training`, `optimizer`, `validation`, `selection`, `run_plan`,
+`checkpoint_resume`, `preparation_execution`, `test_sealing`,
+`runtime_acceptance`.
+
+**Every field carries a classification** — `scientific_identity`,
+`scientific_protocol`, `scientific_input`, `operational_acceptance`,
+`operational_provenance` or `safety_gate` — and the boundary is enforced by test:
+**worker count is `operational_provenance` and is absent from
+`RESUME_BLOCKING`**, while every seed and both selection rules are
+`scientific_identity`/`scientific_protocol`. Nothing was promoted or demoted.
+
+**Every value was extracted from the repository**, not transcribed from the brief.
+All expected cross-checks matched exactly, including the optimizer values that had
+to come from source: `adamw`, betas `(0.9, 0.999)`, eps `1e-08`, amsgrad `False`,
+schedule `CONSTANT`, warmup `None`, accumulation `1`, clipping `None`, weight
+decay `0.01` / `0.0`.
+
+### AJ.5 Mechanical freeze verification
+
+**`tests/test_stage1_final_freeze.py` — 26 passed, 1 skipped.** It loads the JSON
+and compares it against **real imported constants and helpers**, never against
+literals re-typed in the test:
+
+* model, adapter, corruption, split, training, optimizer, validation, checkpoint,
+  preparation and numerical-policy values compared to the imported constants;
+* the run plan **recomputed** from `lr_pilot_schedule` / `r_phase1_schedule` /
+  `final_main_schedule`;
+* **every init seed recomputed** with the production `adapter_init_seed`;
+* the `[8, 1, 1, 1]` grouping **derived** from those seeds rather than asserted;
+* the loop order and the sampler seed read off the **AST** of `train_run`;
+* the selection rule read off the AST of `select_checkpoint`;
+* `update 0` proven a hard gate by calling `select_checkpoint` and expecting
+  `SelectionViolation`;
+* TEST sealing proven by calling `screen_contamination`;
+* the freeze file's own byte-stability (indent 2, sorted keys) asserted.
+
+**The one skip is honest:** recomputing the four **H0** hashes requires torch,
+which this machine does not have. The hashes are recorded from the committed CUDA
+evidence (§AE.11.4) and the test **recomputes them wherever torch exists**, so the
+next Colab run verifies them mechanically. The init *seeds* — pure Python — were
+recomputed here and match: **21230→3203, 36930→51800, 7309→45833, 5993→15758**.
+
+### AJ.6 Three-way consistency: proposal ↔ decisions ↔ code
+
+Every locked scientific field in proposal §5.1.1 and the §5.1.1 run-plan table was
+compared against `docs/spec/decisions.md` and against the implementation.
+**All agree. No unrecorded scientific deviation was found.**
+
+Where the implementation goes **beyond** the proposal, an existing decision
+already records it — cited in the freeze metadata rather than invented here:
+
+| Area | Proposal | Decision |
+|---|---|---|
+| Adapter init seed and CPU-first initialisation | §7/§11 assume per-seed reproducibility; the stream is unnamed | **D-S1B-016** |
+| CUDA requirement and deterministic numerical policy | §8.4 "One GPU"; mechanism unstated | **D-S1B-015** |
+| Nominal-run independence; adapter-only checkpoint v2 | §5.1.1's 11-run plan and §7's seed variance presuppose it | **D-S1B-017** |
+| Corruption scope mixture, π_strip | §5.1.1 | **D-S1B-003** |
+| fp32 | §5.1.1 optimizer row | **D-S1B-007** |
+| Metric unit = prepared chunk | §6.3 unstated | **D-S1B-006** |
+| No downstream score selects a Stage-1 value | §5.1.1 Selection | **D-S1B-001** |
+| Syllable inventory identity in provenance | §4.3 | **D-B3A-001**, **D-S1A-008** |
+
+**`docs/spec/decisions.md` was NOT modified**, and the proposal was **NOT**
+modified. Preparation parallelism required no decision entry (§AG.10).
+
+### AJ.7 Local execution limits, stated plainly
+
+This machine has **no torch, no transformers and no CUDA**. The authoritative
+runtime acceptance in AJ.1–AJ.2 is **committed external evidence** and was **not**
+re-run here, nor downgraded. Locally executed: the freeze test, the Stage-1
+protocol/preparation/run-independence/checkpoint/resume/selection/sealing suites,
+and the full lightweight suite.
+
+### AJ.8 Remaining before training
+
+1. **ONE final proposal-aware repository-wide audit**;
+2. execution of the freeze test's H0 recomputation under torch/CUDA;
+3. **explicit human approval**;
+4. only then may the first scientific `optimizer.step` occur.
+
+**STATUS: STAGE-1 CONFIGURATION FROZEN — FINAL PROPOSAL-AWARE REPOSITORY AUDIT AND HUMAN APPROVAL PENDING**
+**FREEZE ARTIFACT: `docs/spec/stage1-final-freeze.json`, SCHEMA 1, `FROZEN_PENDING_FINAL_AUDIT_AND_HUMAN_APPROVAL`**
+**EVERY FROZEN VALUE EXTRACTED FROM THE REPOSITORY; ALL EXPECTED CROSS-CHECKS MATCHED**
+**MECHANICAL FREEZE TEST: 26 PASSED, 1 SKIPPED — THE SKIP IS H0, WHICH NEEDS TORCH**
+**INIT SEEDS RECOMPUTED: 21230→3203, 36930→51800, 7309→45833, 5993→15758**
+**PROPOSAL ↔ DECISIONS ↔ CODE AGREE; NO UNRECORDED SCIENTIFIC DEVIATION**
+**decisions.md AND THE PROPOSAL WERE NOT MODIFIED**
+**PERSISTENT CUDA SUITE 32/32 PASS — THE §AF.4 RESUME-EQUIVALENCE CAVEAT IS CLOSED**
+**PRODUCTION SPAWN: 4.715051 s → 0.612201 s PER BATCH (7.701797x), OUTPUTS EXACTLY EQUAL**
+**RECURRING PRE-STEP 5.975526 s → 1.965580 s (~3.04x); PERFORMANCE CLOSED FOR PRE-TRAIN**
+**PROJECTIONS ARE LOWER BOUNDS ONLY — THEY EXCLUDE optimizer.step, CHECKPOINT I/O AND STARTUP**
+**WORKER COUNT REMAINS OPERATIONAL PROVENANCE, NOT RUN IDENTITY AND NOT RESUME-BLOCKING**
+**SCIENTIFIC `optimizer.step` COUNT IS ZERO; OFFICIAL UIT-VSFC TEST IS SEALED AND UNUSED**
+**THIS FREEZE DOES NOT AUTHORISE TRAINING**

@@ -1,0 +1,821 @@
+{
+  "adapter": {
+    "fresh_per_nominal_run": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-017",
+      "value": true
+    },
+    "init_seed_depends_on": {
+      "classification": "scientific_identity",
+      "decision": "D-S1B-016",
+      "note": "LR, r, candidate label, execution order, device and GPU are excluded",
+      "value": [
+        "run_seed"
+      ]
+    },
+    "init_seed_tag": {
+      "classification": "scientific_identity",
+      "decision": "D-S1B-016",
+      "value": "UNMARK-STAGE1-v1|adapter-init"
+    },
+    "initialisation": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-016",
+      "value": "deterministic CPU init inside fork_rng, then placement"
+    },
+    "state_shared_across_nominal_runs": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-017",
+      "note": "only the frozen immutable encoder may be shared stage-wide",
+      "value": false
+    },
+    "trainable_parameters": {
+      "classification": "scientific_identity",
+      "value": 3551232
+    }
+  },
+  "checkpoint_resume": {
+    "checkpoints": {
+      "classification": "scientific_protocol",
+      "value": {
+        "best": "training-checkpoint-best.pt",
+        "last": "training-checkpoint-last.pt"
+      }
+    },
+    "continuation_mechanism": {
+      "classification": "scientific_protocol",
+      "value": "same checkpoint/resume path as a crash resume"
+    },
+    "execution_fingerprint_enforced": {
+      "classification": "safety_gate",
+      "note": "when present in the payload",
+      "value": true
+    },
+    "global_update_restored": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "map_location": {
+      "classification": "safety_gate",
+      "value": "cpu"
+    },
+    "model_state": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-017",
+      "note": "no frozen-encoder keys",
+      "value": "adapter-only"
+    },
+    "optimizer_parameter_identity_rechecked": {
+      "classification": "safety_gate",
+      "note": "by Python object identity",
+      "value": true
+    },
+    "optimizer_state_device": {
+      "classification": "safety_gate",
+      "note": "zero-dimensional Adam scalar `step` may remain on CPU",
+      "value": "concrete module device"
+    },
+    "optimizer_state_restored": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "restore_strict": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "sampler_state_restored": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "schema_version": {
+      "classification": "safety_gate",
+      "note": "v1 fails closed; no scientific v1 checkpoint exists",
+      "value": "stage1-checkpoint-v2"
+    },
+    "state_inheritance_between_nominal_runs": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-017",
+      "value": false
+    },
+    "validation_history_restored": {
+      "classification": "safety_gate",
+      "value": true
+    }
+  },
+  "corruption": {
+    "corruption_seed": {
+      "classification": "scientific_identity",
+      "value": 35422
+    },
+    "pi_strip": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-003",
+      "value": 0.25
+    },
+    "pi_strip_governing": {
+      "classification": "scientific_protocol",
+      "note": "contracts.PI_STRIP must equal protocol.PI_STRIP",
+      "value": 0.25
+    },
+    "rate_distribution": {
+      "classification": "scientific_protocol",
+      "value": "p ~ U(0,1) per example, continuous"
+    },
+    "redraw": {
+      "classification": "scientific_protocol",
+      "value": "per visit"
+    },
+    "scope_domain_separated_from_rate": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-003",
+      "value": true
+    },
+    "validation_corruption_seed": {
+      "classification": "scientific_identity",
+      "value": 19225
+    }
+  },
+  "data": {
+    "chunk_membership_digest": {
+      "classification": "scientific_identity",
+      "value": "250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6"
+    },
+    "chunks_jsonl_sha256": {
+      "classification": "scientific_identity",
+      "value": "5e4c5e0c77e7677e188501723651e0923d072a31a9048a7d04042ff7b290cad6"
+    },
+    "corpus_dataset": {
+      "classification": "scientific_input",
+      "value": "undertheseanlp/UVW-2026"
+    },
+    "corpus_revision": {
+      "classification": "scientific_input",
+      "value": "a0a79294e4568137e25828bb3f2a4cde8546e1fb"
+    },
+    "dev_chunks": {
+      "classification": "scientific_input",
+      "value": 11443
+    },
+    "dev_documents": {
+      "classification": "scientific_input",
+      "value": 5000
+    },
+    "inventory_persisted_in_provenance": {
+      "classification": "safety_gate",
+      "decision": "D-S1A-008",
+      "value": true
+    },
+    "manifest_json_sha256": {
+      "classification": "scientific_identity",
+      "value": "6f33c2aa51b63a4dc68e238594acbec581b2a1f6b0f7be42e002dfb10a02ef62"
+    },
+    "split_seed": {
+      "classification": "scientific_identity",
+      "value": 51733
+    },
+    "syllable_inventory_sha256": {
+      "classification": "scientific_input",
+      "decision": "D-B3A-001",
+      "value": "78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2"
+    },
+    "total_chunks": {
+      "classification": "scientific_input",
+      "value": 2633067
+    },
+    "train_chunks": {
+      "classification": "scientific_input",
+      "value": 2621624
+    },
+    "train_documents": {
+      "classification": "scientific_input",
+      "note": "1 118 224 parents minus 5 000 dev documents",
+      "value": 1113224
+    }
+  },
+  "freeze_status": "FROZEN_PENDING_FINAL_AUDIT_AND_HUMAN_APPROVAL",
+  "generated_for_head": "649ad741b8e737e7a108e71a47b818bf8ea991b2",
+  "hardware_acceptance": {
+    "compute_capability": {
+      "classification": "operational_acceptance",
+      "value": "12.0"
+    },
+    "cublas_workspace_config": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "value": ":4096:8"
+    },
+    "cuda_matmul_allow_tf32": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "value": false
+    },
+    "cudnn_allow_tf32": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "value": false
+    },
+    "cudnn_benchmark": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "value": false
+    },
+    "cudnn_deterministic": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "value": true
+    },
+    "deterministic_algorithms": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "value": true
+    },
+    "float32_matmul_precision": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-015",
+      "note": "true fp32; TF32 off",
+      "value": "highest"
+    },
+    "gpu": {
+      "classification": "operational_acceptance",
+      "value": "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+    },
+    "resume_blocking_fields": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-015",
+      "note": "gpu_name blocks conservatively; logical device index and physical UUID do not",
+      "value": [
+        "backend",
+        "gpu_name",
+        "compute_capability",
+        "torch_version",
+        "cuda_version",
+        "cudnn_version",
+        "deterministic_algorithms",
+        "cudnn_deterministic",
+        "cudnn_benchmark",
+        "cublas_workspace_config",
+        "float32_matmul_precision",
+        "cuda_matmul_allow_tf32",
+        "cudnn_allow_tf32"
+      ]
+    }
+  },
+  "model": {
+    "checkpoint": {
+      "classification": "scientific_identity",
+      "value": "vinai/phobert-base"
+    },
+    "encoder_frozen": {
+      "classification": "scientific_protocol",
+      "value": true
+    },
+    "encoder_mode": {
+      "classification": "scientific_protocol",
+      "note": "UnmarkEncoder.train() forces encoder.eval() in both modes",
+      "value": "eval"
+    },
+    "hidden_size": {
+      "classification": "scientific_identity",
+      "value": 768
+    },
+    "max_length": {
+      "classification": "scientific_protocol",
+      "value": 256
+    },
+    "on_overflow": {
+      "classification": "safety_gate",
+      "value": "FAIL"
+    },
+    "precision": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-007",
+      "value": "fp32"
+    },
+    "revision": {
+      "classification": "scientific_identity",
+      "value": "01daacda68afe13d83023d16ec647239e344a1e6"
+    },
+    "truncation_offered": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "truncation_policy": {
+      "classification": "scientific_protocol",
+      "value": {
+        "max_length": 256,
+        "on_overflow": "FAIL"
+      }
+    }
+  },
+  "notes": [
+    "Every value is extracted from the repository, not transcribed from prose.",
+    "classification marks each field: scientific_identity | scientific_protocol | scientific_input | operational_acceptance | operational_provenance | safety_gate.",
+    "This freeze does NOT authorise training."
+  ],
+  "optimizer": {
+    "amsgrad": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "betas": {
+      "classification": "scientific_protocol",
+      "value": [
+        0.9,
+        0.999
+      ]
+    },
+    "eps": {
+      "classification": "scientific_protocol",
+      "value": 1e-08
+    },
+    "gradient_clipping": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "lambda_scale_sum": {
+      "classification": "scientific_protocol",
+      "note": "lambda_align + lambda_clean",
+      "value": 2.0
+    },
+    "lr_grid": {
+      "classification": "scientific_protocol",
+      "value": [
+        0.0001,
+        0.0003,
+        0.001
+      ]
+    },
+    "name": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-004",
+      "value": "adamw"
+    },
+    "r_grid": {
+      "classification": "scientific_protocol",
+      "value": [
+        0.25,
+        0.5,
+        1.0,
+        2.0,
+        4.0
+      ]
+    },
+    "schedule": {
+      "classification": "scientific_protocol",
+      "value": "CONSTANT"
+    },
+    "warmup": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "weight_decay_exempt": {
+      "classification": "scientific_protocol",
+      "note": "biases, LayerNorm and both embedding tables",
+      "value": 0.0
+    },
+    "weight_decay_weights": {
+      "classification": "scientific_protocol",
+      "value": 0.01
+    }
+  },
+  "preparation_execution": {
+    "backend": {
+      "classification": "operational_provenance",
+      "value": "multiprocessing_spawn"
+    },
+    "order_preserving": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "prefetch": {
+      "classification": "safety_gate",
+      "note": "no look-ahead; one sampler batch per update",
+      "value": false
+    },
+    "start_method": {
+      "classification": "operational_acceptance",
+      "note": "never fork: the parent holds CUDA",
+      "value": "spawn"
+    },
+    "worker_constraints": {
+      "classification": "safety_gate",
+      "value": [
+        "no sampler ownership",
+        "no CUDA",
+        "no model weights",
+        "strict inventory",
+        "pinned slow tokenizer",
+        "authoritative prepare_example",
+        "ordered map",
+        "fail loudly",
+        "no silent serial fallback"
+      ]
+    },
+    "workers": {
+      "classification": "operational_provenance",
+      "note": "NOT scientific identity; NOT resume-blocking",
+      "value": 8
+    }
+  },
+  "repository": {
+    "audit": {
+      "classification": "operational_provenance",
+      "value": "docs/audits/030-pretrain-repository-wide-audit.md"
+    },
+    "head": {
+      "classification": "scientific_identity",
+      "value": "649ad741b8e737e7a108e71a47b818bf8ea991b2"
+    },
+    "protocol_version": {
+      "classification": "scientific_identity",
+      "value": "stage1-protocol-v1"
+    }
+  },
+  "run_plan": {
+    "composition": {
+      "classification": "scientific_protocol",
+      "value": {
+        "final-main": 3,
+        "lr-pilot": 3,
+        "r-phase1": 5
+      }
+    },
+    "expected_fresh_init_hashes": {
+      "classification": "scientific_identity",
+      "note": "H0 at hidden_size=768; externally established on CUDA, re-verified by the freeze test wherever torch exists",
+      "value": {
+        "21230": "4ef7ee1a2357d0b9819225aca6708d2ad04614ceda8191dc5a46176a47fa3d25",
+        "36930": "cf1a28cf640f6697075d086486cc5395e9a9ff0ef994ca0a06576325f7de68ad",
+        "5993": "660db230168dd5cf6fc9758aa9e868e70fc5f44a60a8cb0b6422160af1be2842",
+        "7309": "d90186c0f77e434d73f173426a401a99aa93e6c0d90a5bb38efd732bba607516"
+      }
+    },
+    "init_hash_groups": {
+      "classification": "scientific_identity",
+      "value": {
+        "distinct": 4,
+        "multiplicities": [
+          8,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    "init_seeds": {
+      "classification": "scientific_identity",
+      "decision": "D-S1B-016",
+      "value": {
+        "21230": 3203,
+        "36930": 51800,
+        "5993": 15758,
+        "7309": 45833
+      }
+    },
+    "runs": {
+      "classification": "scientific_identity",
+      "value": [
+        {
+          "init_seed": 3203,
+          "label": "lr=0.0001",
+          "learning_rate": 0.0001,
+          "r": 1.0,
+          "run_seed": 21230,
+          "stage": "lr-pilot"
+        },
+        {
+          "init_seed": 3203,
+          "label": "lr=0.0003",
+          "learning_rate": 0.0003,
+          "r": 1.0,
+          "run_seed": 21230,
+          "stage": "lr-pilot"
+        },
+        {
+          "init_seed": 3203,
+          "label": "lr=0.001",
+          "learning_rate": 0.001,
+          "r": 1.0,
+          "run_seed": 21230,
+          "stage": "lr-pilot"
+        },
+        {
+          "init_seed": 3203,
+          "label": "r=0.25",
+          "learning_rate": null,
+          "note": "learning_rate is the frozen LR-pilot winner, decided at runtime",
+          "r": 0.25,
+          "run_seed": 21230,
+          "stage": "r-phase1"
+        },
+        {
+          "init_seed": 3203,
+          "label": "r=0.5",
+          "learning_rate": null,
+          "note": "learning_rate is the frozen LR-pilot winner, decided at runtime",
+          "r": 0.5,
+          "run_seed": 21230,
+          "stage": "r-phase1"
+        },
+        {
+          "init_seed": 3203,
+          "label": "r=1",
+          "learning_rate": null,
+          "note": "learning_rate is the frozen LR-pilot winner, decided at runtime",
+          "r": 1.0,
+          "run_seed": 21230,
+          "stage": "r-phase1"
+        },
+        {
+          "init_seed": 3203,
+          "label": "r=2",
+          "learning_rate": null,
+          "note": "learning_rate is the frozen LR-pilot winner, decided at runtime",
+          "r": 2.0,
+          "run_seed": 21230,
+          "stage": "r-phase1"
+        },
+        {
+          "init_seed": 3203,
+          "label": "r=4",
+          "learning_rate": null,
+          "note": "learning_rate is the frozen LR-pilot winner, decided at runtime",
+          "r": 4.0,
+          "run_seed": 21230,
+          "stage": "r-phase1"
+        },
+        {
+          "init_seed": 51800,
+          "label": "seed=36930",
+          "learning_rate": null,
+          "note": "learning_rate and r are the selected winners, decided at runtime",
+          "r": null,
+          "run_seed": 36930,
+          "stage": "final-main"
+        },
+        {
+          "init_seed": 45833,
+          "label": "seed=7309",
+          "learning_rate": null,
+          "note": "learning_rate and r are the selected winners, decided at runtime",
+          "r": null,
+          "run_seed": 7309,
+          "stage": "final-main"
+        },
+        {
+          "init_seed": 15758,
+          "label": "seed=5993",
+          "learning_rate": null,
+          "note": "learning_rate and r are the selected winners, decided at runtime",
+          "r": null,
+          "run_seed": 5993,
+          "stage": "final-main"
+        }
+      ]
+    },
+    "selection_seed": {
+      "classification": "scientific_identity",
+      "note": "shared by all 8 selection candidates -> paired comparison",
+      "value": 21230
+    },
+    "total_nominal_runs": {
+      "classification": "scientific_protocol",
+      "value": 11
+    },
+    "train_seeds": {
+      "classification": "scientific_identity",
+      "value": [
+        36930,
+        7309,
+        5993
+      ]
+    }
+  },
+  "runtime_acceptance": {
+    "lower_bound_projection_hours": {
+      "classification": "operational_acceptance",
+      "note": "LOWER BOUND ONLY; not predicted wall-clock",
+      "value": {
+        "eleven_nominal_runs": 158.2691200444,
+        "eleven_nominal_runs_days": 6.5945466685,
+        "four_condition_setup_per_stage_command": 0.4402194444,
+        "one_additional_20k_continuation": 14.3881018222,
+        "one_nominal_20k_run": 14.3881018222,
+        "pre_step_20k": 10.9198890444,
+        "recurring_validation_20k": 3.4682127778
+      }
+    },
+    "peak_cuda_allocated_bytes": {
+      "classification": "operational_acceptance",
+      "value": 27566880768
+    },
+    "peak_cuda_reserved_bytes": {
+      "classification": "operational_acceptance",
+      "value": 28022145024
+    },
+    "persistent_cuda_suite": {
+      "classification": "operational_acceptance",
+      "value": "32 passed in 16.78 s"
+    },
+    "preparation_speedup": {
+      "classification": "operational_acceptance",
+      "value": 7.701797320962722
+    },
+    "prepared_exact_equality": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "recurring_pre_step_seconds": {
+      "classification": "operational_acceptance",
+      "note": "through gradient_report; EXCLUDES optimizer.step, checkpoint I/O and startup",
+      "value": 1.9655800279996583
+    },
+    "scientific_optimizer_steps": {
+      "classification": "safety_gate",
+      "value": 0
+    },
+    "serial_preparation_seconds_per_batch": {
+      "classification": "operational_acceptance",
+      "value": 4.715050720399995
+    },
+    "spawn_preparation_seconds_per_batch": {
+      "classification": "operational_acceptance",
+      "value": 0.612201350399937
+    }
+  },
+  "sampler": {
+    "seeded_by": {
+      "classification": "scientific_identity",
+      "note": "unchanged by D-S1B-016; init uses a separate stream",
+      "value": "run_seed"
+    },
+    "state_persisted": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "unit": {
+      "classification": "scientific_protocol",
+      "value": "(chunk_id, visit)"
+    }
+  },
+  "schema_version": 1,
+  "selection": {
+    "best_used_for": {
+      "classification": "scientific_protocol",
+      "value": "reporting/selection"
+    },
+    "downstream_score_may_influence": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-001",
+      "value": false
+    },
+    "resume_uses": {
+      "classification": "scientific_protocol",
+      "value": "last"
+    },
+    "score": {
+      "classification": "scientific_protocol",
+      "value": "max over VALIDATION_CONDITIONS of the per-condition distance (worst case)"
+    },
+    "tie_break": {
+      "classification": "scientific_protocol",
+      "value": [
+        "score",
+        "d_clean",
+        "earliest update"
+      ]
+    }
+  },
+  "software": {
+    "cuda_build": {
+      "classification": "operational_acceptance",
+      "value": "12.8"
+    },
+    "cudnn": {
+      "classification": "operational_acceptance",
+      "value": 91900
+    },
+    "python": {
+      "classification": "operational_acceptance",
+      "value": "3.13.15"
+    },
+    "torch": {
+      "classification": "operational_acceptance",
+      "value": "2.11.0+cu128"
+    },
+    "transformers": {
+      "classification": "scientific_identity",
+      "note": "pinned; the tokenizer is part of the experiment",
+      "value": "4.57.6"
+    }
+  },
+  "test_sealing": {
+    "downstream_score_used_for_stage1_selection": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "official_test_used": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "official_uit_vsfc_test": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-001",
+      "value": "SEALED"
+    }
+  },
+  "training": {
+    "batch_size": {
+      "classification": "scientific_protocol",
+      "value": 128
+    },
+    "checkpoint_every_updates": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-004",
+      "note": "is EVAL_EVERY_UPDATES",
+      "value": 500
+    },
+    "continuations_allowed": {
+      "classification": "scientific_protocol",
+      "note": "same nominal run; preserves adapter/optimizer/sampler state",
+      "value": 1
+    },
+    "eval_every_updates": {
+      "classification": "scientific_protocol",
+      "value": 500
+    },
+    "extended_max_updates": {
+      "classification": "scientific_protocol",
+      "value": 40000
+    },
+    "gradient_accumulation_steps": {
+      "classification": "scientific_protocol",
+      "value": 1
+    },
+    "initial_max_updates": {
+      "classification": "scientific_protocol",
+      "value": 20000
+    },
+    "loop_order": {
+      "classification": "scientific_protocol",
+      "value": [
+        "next_batch",
+        "prepare",
+        "collate",
+        "to_device",
+        "forward",
+        "zero_grad",
+        "backward",
+        "gradient_report",
+        "step",
+        "global_update+=1"
+      ]
+    },
+    "precision": {
+      "classification": "scientific_protocol",
+      "value": "fp32"
+    }
+  },
+  "validation": {
+    "batch_size": {
+      "classification": "scientific_protocol",
+      "value": 128
+    },
+    "conditions": {
+      "classification": "scientific_protocol",
+      "value": [
+        "FULL",
+        "P50",
+        "P100",
+        "STRIP_ALL"
+      ]
+    },
+    "corruption_seed": {
+      "classification": "scientific_identity",
+      "value": 19225
+    },
+    "dev_chunks": {
+      "classification": "scientific_input",
+      "value": 11443
+    },
+    "fixed_held_out_realisation": {
+      "classification": "scientific_protocol",
+      "note": "built once per stage command",
+      "value": true
+    },
+    "metric_unit": {
+      "classification": "scientific_protocol",
+      "decision": "D-S1B-006",
+      "value": "prepared_chunk"
+    },
+    "same_realisation_across_candidates": {
+      "classification": "scientific_protocol",
+      "value": true
+    },
+    "update_0_evaluated": {
+      "classification": "safety_gate",
+      "note": "select_checkpoint refuses points lacking update 0",
+      "value": true
+    }
+  }
+}
