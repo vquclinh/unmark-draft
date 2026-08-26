@@ -67,6 +67,7 @@ from unmark.stage1.parallel import (  # noqa: E402
 from unmark.stage1.checkpoint import (  # noqa: E402
     COMPLETE_NAME,
     Stage6Timings,
+    resolve_asserted_repository_head,
     resolve_repository_head,
     CheckpointIdentity,
     PrepareCheckpoint,
@@ -446,8 +447,11 @@ def run_lr_pilot(args) -> int:
 def run_r_phase1(args) -> int:
     verified = _verified_corpus(args)
     manifest = verified.manifest
-    pilot = _load_selection(Path(args.lr_artifact), "lr_pilot")
-    frozen = pilot["selected"]["learning_rate"]
+    identity = _campaign_identity(args, verified)
+    pilot_winner = _load_selection(
+        Path(args.lr_artifact), "lr_pilot", identity=identity
+    )
+    frozen = pilot_winner.learning_rate
     schedule = r_phase1_schedule(SELECTION_SEED, frozen)
     print(f"r Phase 1: {len(schedule)} runs, grid {list(R_PHASE1_GRID)}, frozen LR {frozen:g}, "
           f"seed {SELECTION_SEED}")
@@ -457,13 +461,22 @@ def run_r_phase1(args) -> int:
 def run_final_main(args) -> int:
     verified = _verified_corpus(args)
     manifest = verified.manifest
-    pilot = _load_selection(Path(args.lr_artifact), "lr_pilot")
-    phase1 = _load_selection(Path(args.r_artifact), "r_phase1")
-    lr = pilot["selected"]["learning_rate"]
-    r = phase1["selected"]["r"]
-    if phase1["selected"]["learning_rate"] != lr:
+    # BOTH artifacts are validated against the SAME current campaign identity,
+    # so `final-main` cannot be driven by an LR artifact from one campaign and
+    # an r artifact from another: mixing corpus, HEAD, backbone, precision,
+    # inventory or protocol is refused before either value is read.
+    identity = _campaign_identity(args, verified)
+    pilot_winner = _load_selection(
+        Path(args.lr_artifact), "lr_pilot", identity=identity
+    )
+    phase1_winner = _load_selection(
+        Path(args.r_artifact), "r_phase1", identity=identity
+    )
+    lr = pilot_winner.learning_rate
+    r = phase1_winner.r
+    if phase1_winner.learning_rate != lr:
         raise Stage1ContractViolation(
-            f"the r artifact was produced at LR {phase1['selected']['learning_rate']}, "
+            f"the r artifact was produced at LR {phase1_winner.learning_rate}, "
             f"but the LR artifact selected {lr}"
         )
     schedule = final_main_schedule(lr, r)
@@ -472,19 +485,39 @@ def run_final_main(args) -> int:
     return _execute(args, schedule, "final_main", verified)
 
 
-def _load_selection(path: Path, expected_stage: str) -> dict:
+def _campaign_identity(args, verified):
+    """The identity of the stage that is ABOUT TO RUN, from current inputs only.
+
+    Every value here is derived or verified now: the HEAD from Git, the corpus
+    digest from the re-hashed prepared corpus, the inventory from the preflight
+    that fails closed. Nothing is read out of the artifact being validated --
+    that is the whole point (Audit 031 B4 / Audit 032 MAJ1).
+    """
+    from unmark.stage1.artifact import CampaignIdentity
+    from unmark.stage1.preflight import verify_scientific_inputs
+
+    return CampaignIdentity.from_inputs(
+        repository_head=resolve_asserted_repository_head(args.repository_head),
+        corpus_manifest_digest=verified.chunk_membership_digest,
+        encoder_revision=args.revision,
+        inventory=verify_scientific_inputs().inventory,
+    )
+
+
+def _load_selection(path: Path, expected_stage: str, *, identity):
+    """Load, fully validate, and RESELECT from a stage artifact.
+
+    Returns the recomputed winning `Candidate` rather than the raw JSON, so a
+    caller cannot go back to reading `artifact["selected"][...]` on trust.
+    """
+    from unmark.stage1.artifact import validate_selection_artifact
+
     if not path.is_file():
         raise Stage1ContractViolation(f"selection artifact not found: {path}")
     artifact = json.loads(path.read_text(encoding="utf-8"))
-    if artifact.get("stage") != expected_stage:
-        raise Stage1ContractViolation(
-            f"{path} is a {artifact.get('stage')!r} artifact; {expected_stage!r} is required"
-        )
-    if artifact.get("protocol_version") != STAGE1_PROTOCOL_VERSION:
-        raise Stage1ContractViolation(
-            f"{path} was produced under protocol {artifact.get('protocol_version')!r}"
-        )
-    return artifact
+    return validate_selection_artifact(
+        artifact, expected_stage=expected_stage, identity=identity, what=str(path)
+    )
 
 
 def _execute(args, schedule, stage: str, verified) -> int:
@@ -510,7 +543,10 @@ def _execute(args, schedule, stage: str, verified) -> int:
         output_dir=output,
         cache_root=Path(args.cache_root),
         revision=args.revision,
-        repository_head=args.repository_head,
+        # DERIVED, never supplied. `--repository-head` is an assertion that must
+        # agree with the executing tree, and the tree's tracked execution code
+        # must match HEAD, so the SHA an artifact records is the SHA that ran.
+        repository_head=resolve_asserted_repository_head(args.repository_head),
         resume=resuming,
     )
 
@@ -528,7 +564,12 @@ def run_smoke(args) -> int:
         prepared_corpus=Path(args.prepared_corpus),
         completion_dir=Path(args.completion_dir) if args.completion_dir else None,
         revision=args.revision,
-        repository_head=args.repository_head,
+        # Same authority, but the clean-tree requirement is deliberately relaxed:
+        # smoke is a no-update diagnostic run *while* code is being changed, and
+        # it produces no scientific artifact. It still cannot claim a false HEAD.
+        repository_head=resolve_asserted_repository_head(
+            args.repository_head, require_clean=False
+        ),
     )
 
 
@@ -577,7 +618,11 @@ def _corpus_consumer(parser: argparse.ArgumentParser) -> None:
                         help="encoder revision; defaults to the pinned revision and is "
                              "validated against it")
     parser.add_argument("--repository-head", default=None,
-                        help="commit sha recorded as provenance")
+                        help="OPTIONAL assertion: the commit sha you believe you are "
+                             "running. It is checked against the executing tree and "
+                             "never recorded in its place -- provenance is always the "
+                             "actual Git HEAD, which is also required to be clean "
+                             "across unmark/, scripts/, configs/ and requirements/")
 
 
 def build_parser() -> argparse.ArgumentParser:

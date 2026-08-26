@@ -183,10 +183,39 @@ def test_the_continuation_preserves_optimizer_and_sampler_state():
     """
     import unmark.stage1.execute as execute_module
 
-    source = inspect.getsource(execute_module)
-    continuation = source.split("if result.continued:")[1].split("candidates.append")[0]
-    assert "resume=carried" in continuation, continuation
-    assert "load_training_checkpoint" in continuation
+    tree = ast.parse(inspect.getsource(execute_module))
+    stage = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "execute_stage"
+    )
+    # AST, not a source split. The old body split the source on the literal
+    # `"if result.continued:"`, so rewording the guard broke the test without
+    # any behaviour changing -- and a source split cannot see whether `resume`
+    # is actually passed or merely mentioned nearby.
+    train_calls = [
+        n for n in ast.walk(stage)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "train_run"
+    ]
+    assert len(train_calls) == 2, (
+        f"expected the initial leg and exactly one continuation, found {len(train_calls)}"
+    )
+    for call in train_calls:
+        keywords = {k.arg: k.value for k in call.keywords}
+        assert "resume" in keywords, "every leg must be resume-capable"
+        value = keywords["resume"]
+        assert not (isinstance(value, ast.Constant) and value.value is None), (
+            "a continuation that passes resume=None rebuilds the optimizer and "
+            "restarts the sampler: a continuation in name only"
+        )
+        assert "cap" in keywords, "every leg must state the budget it runs under"
+    called = {
+        getattr(n.func, "id", None) or getattr(n.func, "attr", None)
+        for n in ast.walk(stage) if isinstance(n, ast.Call)
+    }
+    assert "load_training_checkpoint" in called
+    assert "resume_cap" in called, (
+        "the resumed leg's cap must come from the checkpoint, not from a default"
+    )
 
 
 # ---------------------------------------------------------------------------

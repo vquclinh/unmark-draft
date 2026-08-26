@@ -205,7 +205,11 @@ def test_a_fresh_adapter_is_constructed_inside_the_loop():
     node = function(EXECUTE, "execute_stage")
     loop = next(n for n in ast.walk(node) if isinstance(n, ast.For))
     inside = calls(loop)
-    for required in ("fresh_adapter", "UnmarkEncoder", "objective_cls",
+    # `objective_cls` until the consolidated repair -- a name this function
+    # never bound. Requiring it here is what kept the `NameError` alive through
+    # every green suite (Audit 031 B1). The real constructor is `Stage1Objective`,
+    # and `test_stage1_name_resolution.py` proves the name actually resolves.
+    for required in ("fresh_adapter", "UnmarkEncoder", "Stage1Objective",
                      "expected_fresh_init_hash", "trainable_state_hash"):
         assert required in inside, f"{required} must be called per nominal run"
 

@@ -10,6 +10,7 @@ Stage-1 held-out UNLABELED distances (D-S1B-001).
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
@@ -76,6 +77,71 @@ class ValidationPoint:
             "d_clean": self.d_clean,
             "score": self.score,
         }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ValidationPoint":
+        """The **canonical** inverse of `to_dict`. The only production reader.
+
+        `to_dict` emits four keys; the constructor takes three, because `score`
+        is *derived* (`max` over the locked condition grid). Reconstructing with
+        `ValidationPoint(**raw)` therefore raised `TypeError: unexpected keyword
+        argument 'score'` on every real resume, and the 20k->40k continuation
+        could not start (Audit 031 B2 / Audit 032 B1).
+
+        Deleting the key at the call site would have worked and been wrong: it
+        would leave the schema undefined and the next reader free to disagree
+        again. So this is the schema, in one place:
+
+        - `update`, `distances`, `d_clean` are **state** and are required;
+        - `score` is **derived** and is never restored as independent state --
+          it is recomputed from `distances` by the property;
+        - a persisted `score` is not silently trusted. The writer always emits
+          it, so a payload that carries one which *contradicts* the recomputed
+          value describes a point that cannot exist, and is refused rather than
+          quietly overridden;
+        - unknown keys are refused: an unrecognised field means the payload was
+          written by a schema this reader does not implement.
+        """
+        if not isinstance(raw, Mapping):
+            raise SelectionViolation(
+                f"a validation point must be a mapping, got {type(raw).__name__}"
+            )
+        missing = [k for k in ("update", "distances", "d_clean") if k not in raw]
+        if missing:
+            raise SelectionViolation(
+                f"validation point is missing required field(s) {missing}; "
+                f"got keys {sorted(raw)}"
+            )
+        unknown = sorted(set(raw) - {"update", "distances", "d_clean", "score"})
+        if unknown:
+            raise SelectionViolation(
+                f"validation point carries unknown field(s) {unknown}; the persisted "
+                "schema is locked and an unrecognised field means this reader cannot "
+                "faithfully restore the payload"
+            )
+        distances = raw["distances"]
+        if not isinstance(distances, Mapping):
+            raise SelectionViolation(
+                f"validation point distances must be a mapping, got "
+                f"{type(distances).__name__}"
+            )
+        # The constructor validates the condition grid, update sign and the
+        # absence of extra conditions -- reuse it rather than restating it.
+        point = cls(
+            update=int(raw["update"]),
+            distances={str(k): float(v) for k, v in distances.items()},
+            d_clean=float(raw["d_clean"]),
+        )
+        if "score" in raw:
+            persisted = float(raw["score"])
+            if not math.isclose(persisted, point.score, rel_tol=1e-9, abs_tol=1e-12):
+                raise SelectionViolation(
+                    f"validation point at update {point.update} persists score "
+                    f"{persisted!r} but its distances recompute to {point.score!r}; "
+                    "the score is derived from the locked condition grid, so a "
+                    "payload that disagrees with its own distances is corrupt"
+                )
+        return point
 
 
 def select_checkpoint(points: Sequence[ValidationPoint]) -> ValidationPoint:
@@ -175,6 +241,38 @@ class Candidate:
             "budget_limited": self.budget_limited,
             "selected": self.selected.to_dict(),
         }
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "Candidate":
+        """Rebuild a persisted candidate so the REAL selection rule can rerun.
+
+        A downstream stage used to read `artifact["selected"]["learning_rate"]`
+        and trust it. Reconstructing the candidates instead lets the consumer
+        recompute the selection with `select_learning_rate` / `select_r` --
+        the same functions that produced it -- so an edited scalar and edited
+        evidence are both caught (Audit 031 B4 / Audit 032 MAJ1).
+        """
+        if not isinstance(raw, Mapping):
+            raise SelectionViolation(
+                f"a candidate must be a mapping, got {type(raw).__name__}"
+            )
+        missing = [k for k in ("label", "learning_rate", "r", "selected") if k not in raw]
+        if missing:
+            raise SelectionViolation(
+                f"candidate is missing required field(s) {missing}; got keys {sorted(raw)}"
+            )
+        unknown = sorted(set(raw) - {"label", "learning_rate", "r", "budget_limited", "selected"})
+        if unknown:
+            raise SelectionViolation(
+                f"candidate carries unknown field(s) {unknown}; the persisted schema is locked"
+            )
+        return cls(
+            label=str(raw["label"]),
+            learning_rate=float(raw["learning_rate"]),
+            r=float(raw["r"]),
+            selected=ValidationPoint.from_dict(raw["selected"]),
+            budget_limited=bool(raw.get("budget_limited", False)),
+        )
 
 
 def select_learning_rate(candidates: Sequence[Candidate]) -> Candidate:

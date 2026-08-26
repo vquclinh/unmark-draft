@@ -27,7 +27,9 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from unmark.stage1.protocol import VALIDATION_CONDITIONS
 from unmark.stage1.sampler import DeterministicSampler
+from unmark.stage1.selection import ValidationPoint
 from unmark.stage1.trainer import (
     CHECKPOINT_EVERY_UPDATES,
     REQUIRED_CHECKPOINT_KEYS,
@@ -57,6 +59,22 @@ def chunk_ids(n: int = 7) -> tuple[str, ...]:
     return tuple(f"doc-{i:04d}#0" for i in range(n))
 
 
+def point_at(update: int, state: float) -> ValidationPoint:
+    """A REAL `ValidationPoint` carrying the miniature's state.
+
+    These used to be bare `{"update": ..., "score": ...}` dicts, which took the
+    writer's `dict(p)` fallback and never touched the production reader -- so
+    this file stayed green across the entire life of the `ValidationPoint(**p)`
+    defect (Audit 031 B2/M5, Audit 032 B1/M1). Using the real type means the
+    payload below is exactly what production writes.
+    """
+    return ValidationPoint(
+        update=update,
+        distances={c: round(state + i / 1000.0, 12) for i, c in enumerate(VALIDATION_CONDITIONS)},
+        d_clean=round(state / 2.0, 12),
+    )
+
+
 def accumulate(state: float, pairs) -> float:
     """Order- and content-sensitive. Replaying or skipping a batch changes it."""
     for index, (chunk_id, visit) in enumerate(pairs):
@@ -76,7 +94,7 @@ def run(sampler, *, start_update: int, cap: int, state: float, points=None,
         state = accumulate(state, pairs)
         update += 1
         if update % EVERY == 0 or update == cap:
-            points.append({"update": update, "score": round(state, 12)})
+            points.append(point_at(update, round(state, 12)))
             if stop_at is not None and update >= stop_at:
                 break
     return state, update, points, seen
@@ -123,18 +141,26 @@ def test_resume_equals_uninterrupted(stop_at):
         sampler_state=sampler_a.state_dict(), cap=CAP, budget_limited=False,
         points=points_a,
     )
+    points_a_snapshot = list(points_a)
     # Survives serialisation -- a real checkpoint is written and read back.
     payload = json.loads(json.dumps(payload))
     del sampler_a, state_a, update_a, points_a
 
     verify_checkpoint(payload, provenance())
     sampler_b = DeterministicSampler.from_state(ids, payload["sampler_state"])
+    # THE production reader, on production writer output that has been through
+    # JSON. If `from_dict` and `to_dict` ever disagree again, every parametrised
+    # case in this test fails here rather than passing on fabricated dicts.
+    restored_points = [ValidationPoint.from_dict(p) for p in payload["points"]]
+    assert restored_points == points_a_snapshot, (
+        "the writer/reader round-trip did not reproduce the validation history"
+    )
     state_b, update_b, points_b, seen_b = run(
         sampler_b,
         start_update=int(payload["global_update"]),
         cap=CAP,
         state=payload["adapter_state"]["state"],
-        points=payload["points"],
+        points=restored_points,
         seen=seen_a,
     )
     assert_equivalent(whole, snapshot(sampler_b, state_b, update_b, points_b, seen_b))
@@ -163,14 +189,45 @@ def test_a_resume_that_forgets_the_cursor_is_caught_by_this_test():
 # The checkpoint contract itself
 # ---------------------------------------------------------------------------
 def test_points_are_persisted_now():
-    """They were read on resume but never written before this hardening."""
+    """They were read on resume but never written before this hardening.
+
+    Rewritten by the consolidated repair. The old body passed two bare dicts
+    (`[{"update": 0}, {"update": 500}]`) and asserted they came back unchanged.
+    That exercised the writer's `dict(p)` fallback, never the reader, and never
+    the derived `score` -- so it stayed green while every real resume raised
+    `TypeError`. It now persists real points and reads them back through the
+    production reader.
+    """
     assert "points" in REQUIRED_CHECKPOINT_KEYS
+    original = [point_at(0, 1.0), point_at(500, 1.5)]
     payload = checkpoint_payload(
         provenance=provenance(), adapter_state={}, optimizer_state={},
         global_update=500, sampler_state={}, cap=20_000, budget_limited=False,
-        points=[{"update": 0}, {"update": 500}],
+        points=original,
     )
-    assert payload["points"] == [{"update": 0}, {"update": 500}]
+    payload = json.loads(json.dumps(payload))
+    assert [p["update"] for p in payload["points"]] == [0, 500]
+    assert all("score" in p for p in payload["points"]), (
+        "the writer emits the derived score; that is what the reader must tolerate"
+    )
+    assert [ValidationPoint.from_dict(p) for p in payload["points"]] == original
+
+
+def test_the_writer_refuses_a_point_it_could_not_read_back():
+    """The writer and the reader are the same schema, in both directions.
+
+    The escape hatch that hid the original defect was the writer accepting
+    anything dict-like. A payload the reader cannot restore must not be
+    writable in the first place.
+    """
+    from unmark.stage1.selection import SelectionViolation
+
+    with pytest.raises(SelectionViolation):
+        checkpoint_payload(
+            provenance=provenance(), adapter_state={}, optimizer_state={},
+            global_update=500, sampler_state={}, cap=20_000, budget_limited=False,
+            points=[{"update": 0}],
+        )
 
 
 @pytest.mark.parametrize("missing", sorted(REQUIRED_CHECKPOINT_KEYS))

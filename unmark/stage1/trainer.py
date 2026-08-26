@@ -21,7 +21,7 @@ import os
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Sequence
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Mapping, Sequence
 
 if TYPE_CHECKING:  # imported lazily: `trainer` must stay importable without PyYAML
     from unmark.stage1.preflight import InventoryIdentity
@@ -292,6 +292,110 @@ def gradient_report(unmark_encoder: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Checkpointing
 # ---------------------------------------------------------------------------
+LEGAL_CAPS = (INITIAL_MAX_UPDATES, EXTENDED_MAX_UPDATES)
+"""The only two budgets a checkpoint may claim. The scientific rule is
+unchanged (`selection.budget_decision` still owns it); this is the set of caps
+a *persisted* payload is allowed to describe, so a corrupt or hand-edited cap
+cannot silently redefine the budget."""
+
+
+def _canonical_point(point: Any) -> ValidationPoint:
+    """A `ValidationPoint`, whatever legitimate form it arrived in."""
+    if isinstance(point, ValidationPoint):
+        return point
+    return ValidationPoint.from_dict(point)
+
+
+def resume_cap(payload: Mapping[str, Any]) -> int:
+    """The cap a resumed run must continue under, **from validated state**.
+
+    The checkpoint has always persisted `cap`, and nothing ever read it back:
+    `execute_stage` passed `cap=INITIAL_MAX_UPDATES` on every call, resume
+    included. A checkpoint written during the 40k continuation therefore came
+    back under a 20k cap, and `while global_update < cap` was already false --
+    so the resumed continuation ran zero updates and either raised
+    `SelectionViolation: selected update ... exceeds the cap 20000` or recorded
+    40k work as a complete 20k run (Audit 031 B3 / Audit 032 B2).
+
+    The persisted cap is not trusted blindly. It must be one of the two locked
+    budgets and it must be consistent with the progress recorded beside it.
+    """
+    if "cap" not in payload or "global_update" not in payload:
+        raise TrainerContractViolation(
+            "checkpoint carries no cap/global_update; its budget leg cannot be "
+            "reconstructed and a resume would have to guess"
+        )
+    cap = payload["cap"]
+    if isinstance(cap, bool) or not isinstance(cap, int):
+        raise TrainerContractViolation(f"checkpoint cap {cap!r} is not an integer")
+    if cap not in LEGAL_CAPS:
+        raise TrainerContractViolation(
+            f"checkpoint cap {cap} is not one of the locked budgets {list(LEGAL_CAPS)}"
+        )
+    global_update = payload["global_update"]
+    if isinstance(global_update, bool) or not isinstance(global_update, int):
+        raise TrainerContractViolation(
+            f"checkpoint global_update {global_update!r} is not an integer"
+        )
+    if global_update < 0:
+        raise TrainerContractViolation(
+            f"checkpoint global_update {global_update} is negative"
+        )
+    if global_update > cap:
+        raise TrainerContractViolation(
+            f"checkpoint records {global_update} updates under a cap of {cap}; a run "
+            "cannot have progressed past its own budget, so this payload describes an "
+            "impossible state"
+        )
+    if cap == EXTENDED_MAX_UPDATES and global_update <= INITIAL_MAX_UPDATES:
+        # The continuation leg only exists once the first leg has completed, and
+        # the first leg is written at cap=20000. A payload claiming the 40k
+        # budget at or below 20k updates did not come from this state machine.
+        raise TrainerContractViolation(
+            f"checkpoint claims the {EXTENDED_MAX_UPDATES} budget at {global_update} "
+            f"updates; the continuation leg begins only after the "
+            f"{INITIAL_MAX_UPDATES} leg completes"
+        )
+    return cap
+
+
+def require_resumable_leg(payload: Mapping[str, Any], cap: int) -> None:
+    """The caller's cap must be the checkpoint's leg, or its legal successor.
+
+    Two transitions are legitimate and no others:
+
+    - **same leg** -- a crash resume continues under exactly the cap the
+      checkpoint was written with;
+    - **promotion** -- the in-process 20k->40k continuation, which may raise the
+      cap only from a checkpoint that completed the initial leg at exactly
+      `INITIAL_MAX_UPDATES`.
+
+    Lowering a cap is always refused: that is the defect this closes.
+    """
+    if cap not in LEGAL_CAPS:
+        raise TrainerContractViolation(
+            f"cap {cap} is not one of the locked budgets {list(LEGAL_CAPS)}"
+        )
+    persisted = resume_cap(payload)
+    if cap == persisted:
+        return
+    if cap < persisted:
+        raise TrainerContractViolation(
+            f"refusing to resume a checkpoint written under cap {persisted} with the "
+            f"smaller cap {cap}: the run has already been budgeted to {persisted}, and "
+            "continuing under a lower cap would either perform no updates or record "
+            "the larger run under the smaller budget"
+        )
+    global_update = int(payload["global_update"])
+    if not (persisted == INITIAL_MAX_UPDATES and cap == EXTENDED_MAX_UPDATES
+            and global_update == INITIAL_MAX_UPDATES):
+        raise TrainerContractViolation(
+            f"cap {cap} is not a legal successor of checkpoint cap {persisted} at "
+            f"{global_update} updates; the only promotion is {INITIAL_MAX_UPDATES} -> "
+            f"{EXTENDED_MAX_UPDATES} from a completed initial leg"
+        )
+
+
 def checkpoint_payload(
     *,
     provenance: RunProvenance,
@@ -321,7 +425,12 @@ def checkpoint_payload(
         "sampler_state": sampler_state,
         "cap": cap,
         "budget_limited": budget_limited,
-        "points": [p.to_dict() if hasattr(p, "to_dict") else dict(p) for p in points],
+        # Canonical serialisation: every point goes out through the SAME schema
+        # the reader implements. The old form fell back to `dict(p)` for
+        # anything without `to_dict`, which is how a test could persist bare
+        # dicts, never exercise the real reader, and stay green while production
+        # resume was broken (Audit 031 B2/M5, Audit 032 B1/M1).
+        "points": [_canonical_point(p).to_dict() for p in points],
         "execution": dict(execution) if execution is not None else None,
     }
 
@@ -607,6 +716,10 @@ def train_run(
 
     if resume is not None:
         verify_checkpoint(resume, provenance)
+        # The budget leg is part of what a resume must reproduce. Without this
+        # the caller's cap silently won, and a 40k continuation checkpoint came
+        # back under the 20k default (Audit 031 B3 / Audit 032 B2).
+        require_resumable_leg(resume, cap)
         if execution is not None and resume.get("execution") is not None:
             execution.require_compatible(resume["execution"])
         # STRICT, into the adapter that the forward pass actually uses. v1 loaded
@@ -618,7 +731,10 @@ def train_run(
         require_optimizer_state_device(optimizer, module_device(objective))
         sampler = DeterministicSampler.from_state(tuple(sorted(train_chunks)), resume["sampler_state"])
         global_update = int(resume["global_update"])
-        result.points = [ValidationPoint(**p) for p in resume.get("points", [])]
+        # `ValidationPoint(**p)` raised `TypeError` on every writer-emitted point,
+        # because `to_dict` also carries the derived `score`. `from_dict` is the
+        # canonical inverse and the ONLY production reader.
+        result.points = [ValidationPoint.from_dict(p) for p in resume.get("points", [])]
         result.continued = cap > INITIAL_MAX_UPDATES
 
     # Update 0 BEFORE any optimizer step, so the initial clean-path distance and

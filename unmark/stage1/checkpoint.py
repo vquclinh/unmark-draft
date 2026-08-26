@@ -332,14 +332,20 @@ class CheckpointIdentity:
 _SHA1_HEX = re.compile(r"\A[0-9a-f]{40}\Z")
 
 
+def _repository_root(root: Path | None = None) -> Path:
+    return Path(root) if root is not None else Path(__file__).resolve().parents[2]
+
+
 def resolve_repository_head(root: Path | None = None) -> str:
     """The **actual** Git HEAD of the executing source tree. Fails closed.
 
     Checkpoint identity must record the commit that produced the shards, so
     this is derived from the repository rather than accepted from the caller.
-    There is deliberately **no CLI flag and no environment override**: a
-    caller-claimed HEAD would let a checkpoint written by commit A resume under
-    commit B while asserting it did not.
+    There is deliberately **no override**: a caller-claimed HEAD would let a
+    checkpoint written by commit A resume under commit B while asserting it did
+    not. Stage-1 training accepted exactly such a flag until the consolidated
+    repair (Audit 031 B5 / Audit 032 MAJ2); `resolve_asserted_repository_head`
+    now reduces that flag to an *assertion* which must agree with this value.
 
     Returns the full 40-character SHA. Raises `CheckpointViolation` when the
     repository cannot answer, when `git` is unavailable, or when the result is
@@ -347,7 +353,7 @@ def resolve_repository_head(root: Path | None = None) -> str:
     """
     import subprocess
 
-    root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+    root = _repository_root(root)
     try:
         completed = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
@@ -371,6 +377,108 @@ def resolve_repository_head(root: Path | None = None) -> str:
             f"repository HEAD {head!r} is not a full 40-character commit sha. A "
             "branch name or abbreviated revision is not an identity."
         )
+    return head
+
+
+EXECUTION_RELEVANT_PATHS: tuple[str, ...] = ("unmark", "scripts", "configs", "requirements")
+"""Tracked paths whose modification changes what a scientific run *does*.
+
+Deliberately narrow. `docs/`, `tests/` and `results/` are excluded because a
+modified audit note or a new test does not change the training computation, and
+a guard that fires on them would be turned off within a day. Untracked and
+ignored files are excluded for the same reason: `.venv/`, caches, prepared
+corpora and run outputs are *expected* to exist beside a clean checkout.
+"""
+
+
+def repository_execution_modifications(root: Path | None = None) -> tuple[str, ...]:
+    """Tracked, execution-relevant modifications in the working tree.
+
+    Returns porcelain lines (`" M unmark/stage1/trainer.py"`), empty when the
+    executing code matches the commit that HEAD names.
+    """
+    import subprocess
+
+    root = _repository_root(root)
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--",
+             *EXECUTION_RELEVANT_PATHS],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CheckpointViolation(
+            f"cannot inspect the working tree under {root}: {error}. A scientific "
+            "run records the commit it executed, so it cannot start without being "
+            "able to confirm that claim."
+        ) from error
+    if completed.returncode != 0:
+        raise CheckpointViolation(
+            f"cannot inspect the working tree under {root}: git exited "
+            f"{completed.returncode} ({completed.stderr.strip()[:200]})"
+        )
+    modifications = []
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        # `??` untracked and `!!` ignored are not modifications of the committed
+        # execution code -- they are the normal debris of a working checkout.
+        if line[:2] in ("??", "!!"):
+            continue
+        modifications.append(line)
+    return tuple(modifications)
+
+
+def require_clean_execution_tree(root: Path | None = None) -> None:
+    """Fail closed when tracked execution code differs from HEAD.
+
+    Recording a commit SHA in an artifact asserts "this commit produced this
+    result". With uncommitted edits to `unmark/` or `scripts/` that assertion is
+    false and undetectable afterwards, which is precisely the failure the
+    derived HEAD exists to prevent.
+    """
+    modifications = repository_execution_modifications(root)
+    if modifications:
+        listed = "\n  ".join(modifications[:20])
+        more = "" if len(modifications) <= 20 else f"\n  ... and {len(modifications) - 20} more"
+        raise CheckpointViolation(
+            "REFUSED: tracked execution code is modified relative to HEAD, so the "
+            "commit this run would record does not describe the code it would run:\n"
+            f"  {listed}{more}\n"
+            "Commit or revert these before a scientific run. Untracked outputs, "
+            "caches, prepared corpora and .venv are ignored by this check."
+        )
+
+
+def resolve_asserted_repository_head(
+    asserted: str | None = None,
+    *,
+    root: Path | None = None,
+    require_clean: bool = True,
+) -> str:
+    """The authoritative HEAD for a Stage-1 run. `asserted` may only agree.
+
+    Stage-6 always derived its HEAD; Stage-1 training took `--repository-head`,
+    defaulted it to `None`, and recorded whatever arrived. So a run could record
+    no repository identity at all -- and `RunProvenance.require_match` then
+    compared `None` against `None` and passed, making the resume-blocking HEAD
+    gate vacuous -- or record a commit it was not running (Audit 032 MAJ2).
+
+    The flag survives as an **assertion**: an operator who states which commit
+    they believe they are running gets that belief checked. It can no longer
+    *supply* the recorded value, so it cannot make the run claim anything.
+    """
+    head = resolve_repository_head(root)
+    if asserted is not None:
+        claimed = str(asserted).strip()
+        if claimed.lower() != head.lower():
+            raise CheckpointViolation(
+                f"--repository-head asserts {claimed!r} but the executing tree is at "
+                f"{head!r}. The flag is an assertion, not an override: a run records "
+                "the commit it actually executes."
+            )
+    if require_clean:
+        require_clean_execution_tree(root)
     return head
 
 

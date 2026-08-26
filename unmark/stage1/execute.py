@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -23,19 +24,21 @@ from unmark.stage1.contracts import (
     TruncationPolicy,
 )
 from unmark.stage1.checkpoint import VerifiedCorpus
-from unmark.stage1.trainer import load_training_checkpoint
+from unmark.stage1.trainer import load_training_checkpoint, resume_cap
 from unmark.stage1.manifest import CHUNKS_NAME
 from unmark.stage1.protocol import (
     BATCH_SIZE,
     CORRUPTION_SEED,
     ENCODER_CHECKPOINT,
     ENCODER_REVISION,
+    EXTENDED_MAX_UPDATES,
     HIDDEN_SIZE,
     INITIAL_MAX_UPDATES,
     MAX_LENGTH,
     STAGE1_PROTOCOL_VERSION,
     lambdas_for_r,
 )
+from unmark.stage1.artifact import CampaignIdentity
 from unmark.stage1.selection import (
     Candidate,
     PlannedRun,
@@ -43,6 +46,9 @@ from unmark.stage1.selection import (
     select_r,
 )
 from unmark.stage1.trainer import RunProvenance, train_run, verify_model_contract
+
+_FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+"""A commit identity is the full sha. A branch name or abbreviation is not one."""
 
 TRUNCATION = TruncationPolicy(max_length=MAX_LENGTH, on_overflow=OverflowBehaviour.FAIL)
 """`FAIL` is a guard: after correct pre-chunking nothing can overflow."""
@@ -158,7 +164,7 @@ def execute_stage(
     output_dir: Path,
     cache_root: Path,
     revision: str,
-    repository_head: str | None,
+    repository_head: str,
     resume: bool = False,
 ) -> int:
     """Run every planned run of one stage and persist the selection artifact.
@@ -167,6 +173,17 @@ def execute_stage(
     checkpoint if one exists, and starts fresh if it does not -- so a stage
     interrupted after two of five runs redoes neither of the two.
     """
+    # A scientific run must be able to name the commit that produced it. The
+    # runner derives this from Git and refuses a disagreeing assertion; this is
+    # the structural backstop, so a future caller cannot reintroduce a `None` or
+    # a free-text head by passing one in (Audit 031 B5 / Audit 032 MAJ2).
+    if not isinstance(repository_head, str) or not _FULL_SHA.match(repository_head):
+        raise Stage1ContractViolation(
+            f"repository_head {repository_head!r} is not a full 40-character commit "
+            "sha; a Stage-1 artifact that cannot name the code that produced it is "
+            "not reproducible. It is derived from Git, never supplied."
+        )
+
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.modeling.adapter import UnmarkEncoder
     from unmark.stage1.device import (
@@ -296,7 +313,7 @@ def execute_stage(
           fresh_hash = trainable_state_hash(trainable_state(adapter))
           adapter.to(device)
           unmark_encoder = UnmarkEncoder(encoder=frozen_encoder, adapter=adapter)
-          objective = objective_cls(unmark_encoder, provenance.weights)
+          objective = Stage1Objective(unmark_encoder, provenance.weights)
 
           placed_hash = trainable_state_hash(trainable_state(adapter))
           if placed_hash != fresh_hash:
@@ -322,6 +339,13 @@ def execute_stage(
                   update,
               )
 
+          # A checkpoint is used only when the operator asked to resume, and
+          # `train_run` verifies its identity before touching it. The leg's cap
+          # comes from that verified checkpoint: passing INITIAL_MAX_UPDATES
+          # unconditionally meant a 40k continuation checkpoint resumed under a
+          # 20k budget (Audit 031 B3 / Audit 032 B2).
+          carried = load_training_checkpoint(run_checkpoints) if resume else None
+          leg_cap = resume_cap(carried) if carried is not None else INITIAL_MAX_UPDATES
           result = train_run(
               objective=objective,
               provenance=provenance,
@@ -332,15 +356,19 @@ def execute_stage(
               evaluate_fn=evaluate_fn,
               pad_token_id=pad_token_id,
               classifier=classifier,
-              cap=INITIAL_MAX_UPDATES,
+              cap=leg_cap,
               checkpoint_dir=run_checkpoints,
               execution=execution,
               preparation_pool=preparation_pool,
-              # Explicit: a checkpoint is used only when the operator asked to
-              # resume. `train_run` verifies its identity before touching it.
-              resume=load_training_checkpoint(run_checkpoints) if resume else None,
+              resume=carried,
           )
-          if result.continued:
+          # ONE continuation, and only out of a completed INITIAL leg. Gating on
+          # `result.continued` was wrong once a resumed run could already be on
+          # the 40k leg: `continued` records "this trajectory passed 20k", which
+          # a continuation resume also sets, so it would re-enter here. The leg
+          # that just ran is the authority -- after the extended leg there is no
+          # successor, which is how "no 60k/80k extension" stays structural.
+          if leg_cap == INITIAL_MAX_UPDATES and result.cap == EXTENDED_MAX_UPDATES:
               # SAME run, continued -- not a new candidate. The locked budget rule
               # requires preserving adapter, optimizer, visit, cursor and streams
               # across the 20k boundary. This passed `resume=None` until the Audit
@@ -386,9 +414,20 @@ def execute_stage(
               json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
 
+    # The identity every downstream consumer validates against its OWN current
+    # inputs. Recorded as one block so a consumer cannot check three fields and
+    # forget the fourth (Audit 031 B4 / Audit 032 MAJ1). The two legacy
+    # top-level keys are kept so existing readers and artifacts stay readable.
+    campaign = CampaignIdentity.from_inputs(
+        repository_head=repository_head,
+        corpus_manifest_digest=manifest_digest,
+        encoder_revision=revision,
+        inventory=inputs.inventory,
+    )
     artifact = {
         "stage": stage,
         "protocol_version": STAGE1_PROTOCOL_VERSION,
+        "identity": campaign.to_dict(),
         "repository_head": repository_head,
         "corpus_manifest_digest": manifest_digest,
         "candidates": [c.to_dict() for c in candidates],
