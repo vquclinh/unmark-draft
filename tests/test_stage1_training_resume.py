@@ -24,7 +24,9 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from unmark.stage1.protocol import VALIDATION_CONDITIONS  # noqa: E402
 from unmark.stage1.sampler import DeterministicSampler  # noqa: E402
+from unmark.stage1.selection import ValidationPoint  # noqa: E402
 from unmark.stage1.trainer import (  # noqa: E402
     CHECKPOINT_EVERY_UPDATES,
     REQUIRED_CHECKPOINT_KEYS,
@@ -81,6 +83,16 @@ def batch_for(pairs, dim: int = 8):
     return torch.tensor(rows, dtype=torch.float64)
 
 
+def point_at(update: int, score: float) -> ValidationPoint:
+    """A real validation point carrying the miniature's deterministic signal."""
+    score = float(score)
+    return ValidationPoint(
+        update=update,
+        distances={c: score for c in VALIDATION_CONDITIONS},
+        d_clean=score / 2.0,
+    )
+
+
 def build(seed: int = 0):
     torch.manual_seed(seed)
     model = TinyAdapter().double()
@@ -92,7 +104,10 @@ def train(model, optimizer, sampler, start_update: int, cap: int,
           checkpoint_dir=None, points=None, batch: int = 4):
     """A faithful miniature of `train_run`'s loop shape: step, then checkpoint
     at the validation boundary."""
-    points = list(points or [])
+    points = [
+        p if isinstance(p, ValidationPoint) else ValidationPoint.from_dict(p)
+        for p in (points or [])
+    ]
     update = start_update
     while update < cap:
         pairs = sampler.next_batch(batch)
@@ -102,7 +117,7 @@ def train(model, optimizer, sampler, start_update: int, cap: int,
         optimizer.step()
         update += 1
         if update % EVERY == 0 or update == cap:
-            points.append({"update": update, "score": float(loss.detach())})
+            points.append(point_at(update, abs(float(loss.detach()))))
             if checkpoint_dir is not None:
                 save_training_checkpoint(
                     checkpoint_dir,
@@ -197,12 +212,18 @@ def test_interrupted_then_resumed_equals_uninterrupted(tmp_path, kill_at):
 def test_resume_restores_the_validation_history():
     """`points` used to be read on resume but never written (F3 hardening)."""
     assert "points" in REQUIRED_CHECKPOINT_KEYS
+    original = [point_at(0, 1.0), point_at(500, 2.0)]
     payload = checkpoint_payload(
         provenance=provenance(), adapter_state={}, optimizer_state={},
         global_update=500, sampler_state={}, cap=20_000, budget_limited=False,
-        points=[{"update": 0, "score": 1.0}, {"update": 500, "score": 2.0}],
+        points=original,
     )
-    assert payload["points"] == [{"update": 0, "score": 1.0}, {"update": 500, "score": 2.0}]
+    assert payload["points"] == [p.to_dict() for p in original]
+    assert all(
+        set(p) == {"update", "distances", "d_clean", "score"}
+        for p in payload["points"]
+    )
+    assert [ValidationPoint.from_dict(p) for p in payload["points"]] == original
 
 
 def test_a_payload_without_points_is_refused():
