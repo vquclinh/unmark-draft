@@ -4818,3 +4818,82 @@ tokenizer artifacts. Code saving is disabled.
 | **Affected code** | `unmark/stage1/telemetry.py` (new), `scripts/stage1_wandb_monitor.py` (new), `requirements/monitoring.txt` (new), `unmark/stage1/execute.py`, `unmark/stage1/trainer.py`, `scripts/stage1_runner.py` |
 | **Affected experiments** | none. No scientific value changes; the 11 nominal runs are unaffected |
 | **Proposal updated** | **NO** — the proposal specifies the experiment, not the engineering dashboard. Nothing in it requires revision to describe monitoring. PDF stale: **YES** (unchanged) |
+
+---
+
+## Stage-1 PhoBERT run-grid repair
+
+**Timing, stated first because it is what makes the change legitimate.** At the
+moment of this repair, **zero completed Stage-1 nominal runs exist**. The only
+real attempt aborted fail-closed after 250 telemetry-confirmed optimizer updates
+with no checkpoint. No scientific result depends on the previous behaviour.
+
+### D-S1B-019 — Stage-1 alignment uses PhoBERT's own `\S+\n?` run unit
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | Stage-1B |
+| **Scientific configuration effect** | **NONE** |
+| **Realised input representation effect** | **YES**, for newline-bearing chunks |
+
+**Original assumption.** `unmark/alignment/manual.py` documented
+`_CHUNK_PATTERN = r"\S+"` as *"the units PhoBERT's BPE actually operates on"*.
+
+**That assumption was false.** `PhobertTokenizer._tokenize` decomposes with
+`re.findall(r"\S+\n?", text)`, so a run **owns its trailing newline**, and `bpe`
+places the `</w>` end-of-word marker on the run's last character — the newline —
+rather than on the final letter. `bpe("gamma\n")` is therefore a different piece
+sequence, and a different length, from `bpe("gamma")`.
+
+`unmark/stage1/lengths.py` had already established this for Stage-6, with
+measurement behind it (*"it failed 1708 of 1920 real slice cases"*) and the
+explicit rule **"This regex is the contract; `\S+` must never be used for it."**
+Stage-6 obeyed it; Stage-1 did not.
+
+**Observed consequence (Audit 043).** The two halves built different token grids
+on newline-bearing chunks: they disagreed on 92 566 of a measured 100 000-row
+window, and the exact full-TRAIN scan found **9** chunks of 2 621 624 that
+Stage-6 admitted at exactly 256 but Stage-1 realised above `MAX_LENGTH` — eight
+at 257 and one at 259, every one newline-bearing. The first authorised
+`lr-pilot` aborted on the first of them.
+
+**Implemented repair (Audit 044).** `_CHUNK_PATTERN` is now `\S+\n?`, identical
+to `PHOBERT_RUN`. One production file changed.
+
+**Why the unit change needs no other repair.** `bpe` builds `tuple(token)` over
+every character including the newline, appends `</w>` to the last, merges
+adjacent pairs, joins with `"@@ "` and strips the trailing `</w>`. The pieces
+are therefore a pure character partition of the run, and surface reconstruction
+is exact — so the existing surface-exact alignment, range tiling, continuation
+guard and channel projection all work unchanged. A newline falls in a
+non-syllable gap region and carries no orthographic metadata, which is correct.
+
+**Reason.** Stage-1 must build its base token grid over the decomposition the
+pinned model actually uses, and over the same grid Stage-6 measured and admitted
+the corpus against. This restores an existing contract; it does not introduce a
+new one.
+
+**Scientific configuration unchanged.** `MAX_LENGTH = 256`, truncation OFF,
+overflow FAIL, backbone and revision, precision, batch, cadence, budgets, grids,
+seeds, corruption protocol, validation conditions, selection rule and the
+official TEST seal are all untouched. Nothing was truncated, skipped, filtered
+or regenerated, and the prepared corpus was not modified.
+
+**Realised representation.** For newline-bearing chunks the base grid changes —
+that is the repair. It is acceptable only because no Stage-1 nominal run has
+ever completed, and it is recorded here rather than absorbed silently.
+
+| | |
+|---|---|
+| **Original assumption** | Stage-1 alignment used plain `\S+` run units, documented in `manual.py` as *"the units PhoBERT's BPE actually operates on"* |
+| **Authoritative existing contract** | PhoBERT and Stage-6 use `\S+\n?` (`PhobertTokenizer._tokenize`; `lengths.py::PHOBERT_RUN`) |
+| **Implemented decision** | Stage-1 alignment now uses `\S+\n?` |
+| **Reason** | Audit 043 proved the old unit builds a different PhoBERT BPE grid on newline-bearing chunks and caused **9 real TRAIN overflows** (eight at 257, one at 259) that Stage-6 had admitted at exactly 256 |
+| **Affected code** | `unmark/alignment/manual.py` |
+| **Prepared corpus** | **unchanged; no regeneration.** `chunks.jsonl`, corpus membership and the membership digest all stand |
+| **Scientific protocol** | **unchanged** — `MAX_LENGTH` 256, truncation OFF, overflow FAIL, backbone and revision, precision, batch, cadence, budgets, grids, seeds, corruption, validation conditions, selection rule |
+| **Affected experiments** | none completed. The aborted `lr-pilot` (250 telemetry-confirmed updates, no checkpoint) remains **historical and NOT RESUMABLE** and is not a candidate. **All future Stage-1 runs use the repaired grid** |
+| **Audit** | [`docs/audits/044-stage1-phobert-run-grid-repair.md`](../audits/044-stage1-phobert-run-grid-repair.md) |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** — not opened, inspected, mounted, searched, tokenized, scanned or evaluated |
+| **Proposal updated** | **NO** — this is conformance to an already-existing tokenizer contract, not a new scientific decision. `lengths.py` already stated *"This regex is the contract; `\S+` must never be used for it"*; Stage-1 was violating it. Nothing in the proposal is factually inconsistent with the repair. PDF stale: **YES** (unchanged) |

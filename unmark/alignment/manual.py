@@ -60,7 +60,37 @@ from unmark.orthography import Eligibility
 CONTINUATION_MARKER = "@@"
 """fastBPE continuation suffix: a piece carrying it continues into the next."""
 
-_CHUNK_PATTERN = re.compile(r"\S+")
+_CHUNK_PATTERN = re.compile(r"\S+\n?")
+r"""**PhoBERT's own decomposition unit** -- `\S+\n?`, not plain `\S+`.
+
+`PhobertTokenizer._tokenize` is literally::
+
+    words = re.findall(r"\S+\n?", text)
+    for token in words:
+        split_tokens.extend(list(self.bpe(token).split(" ")))
+
+so a run **owns its trailing newline**, and `bpe` puts the end-of-word marker on
+that newline rather than on the last letter. `bpe("gamma\n")` is therefore not
+`bpe("gamma")`, and the two do not even have the same number of pieces.
+
+This pattern was plain `\S+` until Audit 044. Stage-1 consequently built its
+base token grid over a different decomposition than the one Stage-6 measured and
+the model actually uses. On the real corpus that made the two grids disagree on
+92.6 % of a measured 100 000-row window and pushed **9** TRAIN chunks past
+`MAX_LENGTH` (eight at 257, one at 259) that Stage-6 had admitted at exactly
+256 -- which aborted the first real `lr-pilot` fail-closed.
+
+`unmark/stage1/lengths.py` already carried the same regex as `PHOBERT_RUN`, with
+the note *"This regex is the contract; ``\S+`` must never be used for it."* That
+contract now holds on both sides.
+
+**Alignment is unaffected in kind.** `bpe` builds `tuple(token)`, appends
+`</w>` to the final character, merges adjacent pairs, joins with `"@@ "` and
+strips the trailing `</w>` -- so the pieces are a pure character partition of
+the run and `reconstruct_surface` recovers it exactly, newline included. The
+surface-exact machinery below needs no special case for newlines; it simply now
+sees runs that end with one.
+"""
 
 
 class AlignmentStatusB(Enum):
@@ -136,11 +166,16 @@ class Chunk:
 
 
 def whitespace_chunks(text: str) -> tuple[Chunk, ...]:
-    """Split into maximal `\\S+` chunks, preserving exact global ranges.
+    """Split into PhoBERT's own `\\S+\\n?` runs, preserving exact global ranges.
 
-    These are the units PhoBERT's BPE actually operates on, so they are the
-    units the alignment must reconstruct. Whitespace itself produces no tokens
-    and belongs to no chunk.
+    These are the units PhoBERT's BPE actually operates on -- see
+    `_CHUNK_PATTERN` -- so they are the units the alignment must reconstruct.
+
+    A run **includes its trailing newline**, because the tokenizer's own
+    `re.findall(r"\\S+\\n?", text)` puts it there and `bpe` then places the
+    end-of-word marker on it. Every other whitespace character -- spaces, tabs,
+    carriage returns, and any newline beyond the first after a run -- still
+    produces no tokens and belongs to no chunk.
     """
     return tuple(
         Chunk(index=i, text=match.group(), start=match.start(), end=match.end())

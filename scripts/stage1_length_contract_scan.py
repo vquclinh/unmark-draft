@@ -26,12 +26,12 @@ The two quantities it compares, per chunk:
 
       len(_with_special_tokens(tokenizer, project_text(text, ...)[1])[0])
 
-  `project_text` tokenizes per `whitespace_chunks`, whose `_CHUNK_PATTERN` is
-  plain ``\\S+``. The tokenizer's own unit is ``\\S+\\n?`` (`PHOBERT_RUN`), and
-  `lengths.py` states of the plain form: *"This regex is the contract; ``\\S+``
-  must never be used for it."* Where a chunk contains a newline the two
-  decompositions differ, BPE's end-of-word marker lands on a different final
-  character, and the token counts can disagree.
+  `project_text` tokenizes per `whitespace_chunks`. That unit was plain
+  ``\\S+`` until the Audit 044 repair, while the tokenizer's own unit is
+  ``\\S+\\n?`` (`PHOBERT_RUN`) -- so on newline-bearing chunks the two grids
+  disagreed. **Both now use** ``\\S+\\n?``, so this scanner is the post-repair
+  acceptance gate: it should now report `over_max_length = 0` and
+  `realised == authoritative` on every spot check.
 
 Usage (Colab, against the real prepared corpus):
 
@@ -204,8 +204,9 @@ class RealisedLengthCounter:
     * it counts `align_chunk(...).pieces`, **not** `len(tokens)`. `align_chunk`
       returns `pieces=()` on failure, so a token count would over-count exactly
       the rows where alignment fails;
-    * it uses `whitespace_chunks` -- Stage-1's own `\S+` unit -- so it reproduces
-      the very run semantics under investigation rather than correcting them;
+    * it uses `whitespace_chunks` -- Stage-1's own run unit, whatever that
+      currently is -- so it measures the shipped behaviour rather than a
+      corrected model of it. Post-Audit-044 that unit is `\S+\n?`;
     * `transforms.base(text)` is `decompose(canon(text)).base_text` with no
       eligibility classifier. `project_text` passes one, but the classifier only
       labels spans and provably does not change `base_text` (Audit 043 §8a), and

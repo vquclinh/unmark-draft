@@ -142,34 +142,100 @@ def test_the_scanner_loads_no_model_and_steps_no_optimizer():
 # ---------------------------------------------------------------------------
 # 2-4. The scanner measures Stage-6's object, through Stage-6's function
 # ---------------------------------------------------------------------------
-class RunUnitTokenizer:
-    """A minimal tokenizer that decomposes exactly as PhoBERT documents.
+def _get_pairs(word):
+    return {(word[i], word[i + 1]) for i in range(len(word) - 1)}
 
-    `RunLengthComposer` needs `tokenize`, `convert_tokens_to_ids` and
-    `build_inputs_with_special_tokens`. This stub supplies the real *shape* of
-    the contract so the delegation can be tested without `transformers`; the
-    real-tokenizer numbers are a Colab matter (see the module docstring of the
-    scanner and Audit 043 §12).
+
+class RunUnitTokenizer:
+    """A FAITHFUL PhoBERT-shaped tokenizer: real `_tokenize`, real `bpe`.
+
+    Transcribed from `transformers/models/phobert/tokenization_phobert.py`:
+
+    * `_tokenize` does `re.findall(r"\\S+\\n?", text)` and calls `bpe` per run;
+    * `bpe` builds `tuple(token)` -- every character, **newline included** --
+      appends `</w>` to the LAST character, merges adjacent pairs by rank, joins
+      with `"@@ "`, and strips the trailing `</w>`.
+
+    Two consequences this fixture must reproduce, and an earlier stub did not:
+
+    * the pieces are a pure character partition of the run, so their surfaces
+      concatenate back to it exactly -- **including the trailing newline**,
+      which is what lets `align_chunk` succeed on `\\S+\\n?` runs;
+    * the end-of-word marker lands on the newline, so `bpe("gamma\\n")` really is
+      a different piece sequence from `bpe("gamma")`.
+
+    The merge table is synthetic; the algorithm is not.
     """
 
     unk_token_id = 3
+    RANKS = {("a", "b"): 0, ("ab", "c"): 1, ("abc", "d"): 2, ("e", "f"): 3,
+             ("g", "h"): 4, ("c", "h"): 5, ("x", "i"): 6, ("m", "o"): 7}
+
+    def bpe(self, token):
+        word = tuple(token)
+        word = tuple(list(word[:-1]) + [word[-1] + "</w>"])
+        pairs = _get_pairs(word)
+        if not pairs:
+            return token
+        while True:
+            bigram = min(pairs, key=lambda pair: self.RANKS.get(pair, float("inf")))
+            if bigram not in self.RANKS:
+                break
+            first, second = bigram
+            new_word, index = [], 0
+            while index < len(word):
+                try:
+                    found = word.index(first, index)
+                except ValueError:
+                    new_word.extend(word[index:])
+                    break
+                else:
+                    new_word.extend(word[index:found])
+                    index = found
+                if (word[index] == first and index < len(word) - 1
+                        and word[index + 1] == second):
+                    new_word.append(first + second)
+                    index += 2
+                else:
+                    new_word.append(word[index])
+                    index += 1
+            word = tuple(new_word)
+            if len(word) == 1:
+                break
+            pairs = _get_pairs(word)
+        joined = "@@ ".join(word)
+        return joined[:-4]
 
     def tokenize(self, text):
-        pieces = []
-        for match in PHOBERT_RUN.finditer(text):
-            run = match.group(0)
-            core = run.rstrip("\n")
-            parts = [core[i:i + 2] for i in range(0, len(core), 2)] or [core]
-            if run.endswith("\n") and len(parts) >= 2:
-                parts = parts[:-2] + ["".join(parts[-2:])]
-            pieces.extend(parts)
-        return pieces
+        out = []
+        for run in PHOBERT_RUN.findall(text):
+            out.extend(self.bpe(run).split(" "))
+        return out
 
     def convert_tokens_to_ids(self, tokens):
         return [abs(hash(t)) % 1000 + 10 for t in tokens]
 
     def build_inputs_with_special_tokens(self, ids):
         return [0, *ids, 2]
+
+    def get_special_tokens_mask(self, ids, already_has_special_tokens=False):
+        """Same shape the real tokenizer returns for `<s> ... </s>`."""
+        return [1, *([0] * len(ids)), 1]
+
+
+def test_the_fixture_tokenizer_reconstructs_every_run_exactly():
+    """The property the repair depends on, on the faithful fixture."""
+    from unmark.alignment.manual import piece_surface
+
+    tokenizer = RunUnitTokenizer()
+    for run in ("gamma\n", "gamma", "a", "a\n", "abcd\n", "xin\n", "mot\n"):
+        pieces = tokenizer.bpe(run).split(" ")
+        assert "".join(piece_surface(p) for p in pieces) == run, (run, pieces)
+
+
+def test_the_end_of_word_marker_moves_with_the_newline():
+    tokenizer = RunUnitTokenizer()
+    assert tokenizer.bpe("abcd\n") != tokenizer.bpe("abcd")
 
 
 SYNTHETIC = [
@@ -447,43 +513,54 @@ def test_an_optional_extra_field_cannot_change_scientific_counts(tmp_path,
         )
 
 
-def plus_one_offender():
-    """A text where Stage-6 <= 256 < Stage-1 -- the real 256->257 shape.
+def test_the_plus_one_divergence_mechanism_is_gone():
+    """The Audit 044 repair, stated as an impossibility.
 
-    Under the stub tokenizer a newline-terminated run merges its final pair, so
-    one newline makes the Stage-6 whole-string count exactly one shorter than
-    the Stage-1 per-`\\S+` count. Words are added until Stage-1 realised hits
-    257 with Stage-6 at 256, which is the Audit 043 §7 offender's shape and
-    respects the Stage-6 admission guarantee.
+    Before the repair a text with one newline made the Stage-1 per-`\\S+` count
+    exactly one larger than the Stage-6 whole-string count -- the 256 -> 257
+    mechanism. Both sides now decompose with PhoBERT's own `\\S+\\n?`, so no such
+    text exists: this search used to succeed and must now fail.
     """
     tokenizer = CorpusTokenizer()
     counter = scanner.RealisedLengthCounter(tokenizer, tokenizer.unk_token_id)
     _r, base_length, _t = build_length_functions(tokenizer)
-    # "abcd" -> 2 pieces, "ab" -> 1 piece, so mixing both reaches every parity.
     for words in range(100, 400):
         for tail in ("", " ab"):
             text = " ".join(["abcd"] * words) + tail
             text = text.replace(" ", "\n", 1)
-            if (counter.length(text) == LOCKED_MAX + 1
-                    and base_length(text) == LOCKED_MAX):
-                return text
-    return None
+            assert counter.length(text) == base_length(text), (
+                f"Stage-1 {counter.length(text)} != Stage-6 {base_length(text)} "
+                f"on {words} words -- the run-grid divergence is back"
+            )
 
 
-def test_offenders_carry_recomputed_stage6_and_full_project_text(tmp_path,
-                                                                 stub_tokenizer, capsys):
-    text = plus_one_offender()
-    assert text is not None, "the fixture must be able to construct a 256->257 case"
-    prepared = write_corpus(tmp_path / "corpus", [text])
+@pytest.fixture
+def forced_stage6_under_bound(monkeypatch):
+    """Report a Stage-6 length of 256 regardless of the text.
+
+    Post-repair the two grids agree, so a genuine "Stage-6 256, Stage-1 257"
+    corpus can no longer be constructed. The scanner must still be *able* to
+    report such a divergence if one ever reappeared, so this stubs the ONE
+    function that supplies the Stage-6 number in order to exercise the
+    offender-reporting and exit-code paths. It does not weaken the repair: the
+    fast-vs-full Stage-1 check is untouched.
+    """
+    monkeypatch.setattr(scanner, "authoritative_base_length",
+                        lambda base_length, text: LOCKED_MAX)
+
+
+def test_offenders_carry_recomputed_stage6_and_full_project_text(
+        tmp_path, stub_tokenizer, forced_stage6_under_bound, capsys):
+    prepared = write_corpus(tmp_path / "corpus", [" ".join(["abcdefgh"] * 400)])
     code = scanner.scan(scan_args(prepared, verify_every=0, workers=1, max_offenders=5))
     report = json.loads(capsys.readouterr().out)
     assert code == scanner.EXIT_VIOLATION_FOUND
     assert report["over_max_length"] == 1
     offender = report["offenders"][0]
     assert offender["stage6_authoritative_base_length"] == LOCKED_MAX
-    assert offender["stage1_fast_base_length"] == LOCKED_MAX + 1
     assert offender["stage1_full_project_text_length"] == offender["stage1_fast_base_length"]
-    assert offender["delta"] == 1
+    assert offender["stage1_fast_base_length"] > LOCKED_MAX
+    assert offender["delta"] == offender["stage1_fast_base_length"] - LOCKED_MAX
 
 
 def test_a_stage6_guarantee_violation_fails_closed(tmp_path, stub_tokenizer, capsys):
@@ -652,11 +729,9 @@ def test_the_three_exit_codes_are_distinct_and_named():
     assert scanner.STATUS_BY_EXIT[2] == "SUCCESS_VIOLATION_FOUND"
 
 
-def test_a_violation_does_not_share_an_exit_code_with_a_failure(tmp_path,
-                                                                stub_tokenizer, capsys):
-    text = plus_one_offender()
-    assert text is not None, "the fixture must be able to construct a 256->257 case"
-    prepared = write_corpus(tmp_path / "corpus", [text])
+def test_a_violation_does_not_share_an_exit_code_with_a_failure(
+        tmp_path, stub_tokenizer, forced_stage6_under_bound, capsys):
+    prepared = write_corpus(tmp_path / "corpus", [" ".join(["abcdefgh"] * 400)])
     code = scanner.scan(scan_args(prepared, workers=1, verify_every=0))
     report = json.loads(capsys.readouterr().out)
     assert code == scanner.EXIT_VIOLATION_FOUND != scanner.EXIT_DIAGNOSTIC_FAILURE

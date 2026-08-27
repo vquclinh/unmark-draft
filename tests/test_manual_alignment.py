@@ -65,9 +65,32 @@ def test_multiple_spaces_do_not_shift_ranges():
         assert text[chunk.start : chunk.end] == chunk.text
 
 
-def test_tabs_and_newlines_are_whitespace():
+def test_a_run_owns_its_trailing_newline_but_no_other_whitespace():
+    """PhoBERT's unit is `\\S+\\n?` (Audit 044), not plain `\\S+`.
+
+    `PhobertTokenizer._tokenize` does `re.findall(r"\\S+\\n?", text)`, so a run
+    carries the ONE newline that follows it and `bpe` puts the end-of-word
+    marker there. Tabs, spaces and carriage returns still belong to no chunk,
+    and so does any newline beyond the first.
+    """
     chunks = whitespace_chunks("a\tb\nc\r\nd")
-    assert [c.text for c in chunks] == ["a", "b", "c", "d"]
+    # "c" is followed by "\r", not "\n", so no newline attaches to it -- the
+    # pattern takes at most ONE newline and only immediately after the run.
+    assert [c.text for c in chunks] == ["a", "b\n", "c", "d"]
+
+
+def test_only_the_first_following_newline_joins_the_run():
+    assert [c.text for c in whitespace_chunks("a\n\nb")] == ["a\n", "b"]
+    assert [c.text for c in whitespace_chunks("a\n b")] == ["a\n", "b"]
+    assert [c.text for c in whitespace_chunks("a b")] == ["a", "b"]
+
+
+def test_the_run_unit_matches_stage6_exactly():
+    """The two halves of the repository must not disagree about the unit again."""
+    from unmark.alignment.manual import _CHUNK_PATTERN
+    from unmark.stage1.lengths import PHOBERT_RUN
+
+    assert _CHUNK_PATTERN.pattern == PHOBERT_RUN.pattern == r"\S+\n?"
 
 
 def test_leading_and_trailing_whitespace():
