@@ -47,6 +47,7 @@ from unmark.stage1.protocol import (
     lambdas_for_r,
 )
 from unmark.stage1.sampler import DeterministicSampler
+from unmark.stage1.telemetry import NullSink, TelemetrySink
 from unmark.stage1.selection import ValidationPoint, budget_decision, select_checkpoint
 
 CHECKPOINT_SCHEMA_VERSION = "stage1-checkpoint-v2"
@@ -672,6 +673,8 @@ def train_run(
     on_event: Callable[[dict[str, Any]], None] | None = None,
     execution: Any = None,
     preparation_pool: Any = None,
+    telemetry: TelemetrySink | None = None,
+    telemetry_identity: dict[str, Any] | None = None,
 ) -> RunResult:
     """One Stage-1 run, to `cap` updates. **Imports torch lazily.**
 
@@ -692,6 +695,12 @@ def train_run(
     )
     from unmark.stage1.optim import build_optimizer
     from unmark.stage1.preparation import prepare_serially
+
+    # OPERATIONAL ONLY. Defaults to a no-op sink, so a caller that does not opt
+    # in gets exactly the pre-telemetry code path (Audit 040).
+    sink = telemetry if telemetry is not None else NullSink()
+    identity = dict(telemetry_identity or {})
+    progress_every = sink.progress_every() if sink.enabled else 0
 
     if not train_chunks:
         raise TrainerContractViolation("no training chunks supplied")
@@ -793,9 +802,34 @@ def train_run(
         optimizer.step()
         global_update += 1
 
+        # OPERATIONAL progress. Cadence is `telemetry.PROGRESS_EVERY_UPDATES`,
+        # deliberately NOT a protocol constant: it cannot move the locked
+        # evaluation or checkpoint cadence, both of which are decided below.
+        # The `float(...)` conversions are the ONE cost this adds -- a host
+        # sync on an already-computed loss tensor, once per `progress_every`
+        # updates, and only when telemetry is enabled. No forward, no backward,
+        # no optimizer step, no sampling, no RNG (Audit 040).
+        if progress_every and global_update % progress_every == 0:
+            sink.emit(
+                "train_progress",
+                global_update=global_update,
+                cap=cap,
+                batch_size=BATCH_SIZE,
+                visit=sampler.visit,
+                position=sampler.position,
+                loss=float(loss_result.loss.detach()),
+                loss_align=float(loss_result.loss_align.detach()),
+                loss_clean=float(loss_result.loss_clean.detach()),
+                **identity,
+            )
+
         if global_update % EVAL_EVERY_UPDATES == 0 or global_update == cap:
             point = evaluate_fn(global_update)
             result.points.append(point)
+            # The CANONICAL serialisation. `point.to_dict()` already carries the
+            # derived `score`, so telemetry never re-implements the selection
+            # score -- there is exactly one definition of it in the repository.
+            sink.emit("validation", cap=cap, **point.to_dict(), **identity)
             objective.train(True)
             # Checkpoint at the validation boundary (the cadence D-S1B-004 locks):
             # point where sampler, update count and validation history are all
@@ -809,7 +843,7 @@ def train_run(
                 from unmark.stage1.selection import select_checkpoint
 
                 is_best = select_checkpoint(result.points).update == global_update
-                save_training_checkpoint(
+                published = save_training_checkpoint(
                     checkpoint_dir,
                     checkpoint_payload(
                         provenance=provenance,
@@ -823,6 +857,20 @@ def train_run(
                         execution=execution.to_dict() if execution is not None else None,
                     ),
                     is_best=is_best,
+                )
+                # AFTER the write returns, never before: a checkpoint event is a
+                # statement that state is durable on disk. `save_training_checkpoint`
+                # publishes atomically (temp -> fsync -> replace), so reaching
+                # this line means the payload is committed.
+                sink.emit(
+                    "checkpoint",
+                    update=global_update,
+                    cap=cap,
+                    is_best=is_best,
+                    continued=result.continued,
+                    checkpoint_name=Path(published).name,
+                    checkpoint_dir=str(checkpoint_dir),
+                    **identity,
                 )
             if on_event is not None:
                 on_event({
@@ -839,4 +887,20 @@ def train_run(
                 })
             window = MonitorWindow()
 
-    return resolve_budget(result)
+    resolved = resolve_budget(result)
+    if sink.enabled:
+        selected = resolved.selected
+        sink.emit(
+            "run_end",
+            global_update=global_update,
+            cap=resolved.cap,
+            continued_past_initial_budget=resolved.continued,
+            budget_limited=resolved.budget_limited,
+            evaluations=len(resolved.points),
+            selected_update=selected.update,
+            selected_score=selected.score,
+            selected_d_clean=selected.d_clean,
+            selected_distances=dict(selected.distances),
+            **identity,
+        )
+    return resolved

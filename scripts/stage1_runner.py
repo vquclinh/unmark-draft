@@ -426,7 +426,11 @@ def _verified_corpus(args):
 
     prepared = Path(args.prepared_corpus)
     completion = Path(args.completion_dir) if args.completion_dir else prepared / "_checkpoint"
-    verified = verify_prepared_corpus(prepared, completion)
+    from unmark.stage1.telemetry import phase, sink_from_environment
+
+    sink = sink_from_environment()
+    with phase(sink, "corpus_verify", prepared_corpus=str(prepared)):
+        verified = verify_prepared_corpus(prepared, completion)
     print(f"  prepared corpus VERIFIED against {verified.completion_path}")
     for name, (size, digest) in sorted(verified.artifacts.items()):
         print(f"    {name}: {size} bytes, sha256 {digest[:12]}...")
@@ -523,6 +527,7 @@ def _load_selection(path: Path, expected_stage: str, *, identity):
 def _execute(args, schedule, stage: str, verified) -> int:
     """Run a stage's schedule and persist its selection artifact."""
     from unmark.stage1.execute import execute_stage
+    from unmark.stage1.telemetry import sink_from_environment
 
     output = Path(args.output_dir)
     resuming = bool(getattr(args, "resume", False))
@@ -548,6 +553,10 @@ def _execute(args, schedule, stage: str, verified) -> int:
         # must match HEAD, so the SHA an artifact records is the SHA that ran.
         repository_head=resolve_asserted_repository_head(args.repository_head),
         resume=resuming,
+        # OPERATIONAL ONLY (Audit 040): a NullSink unless UNMARK_TELEMETRY=1.
+        # The scientific process never imports wandb; the external monitor reads
+        # these stdout lines instead.
+        telemetry=sink_from_environment(),
     )
 
 

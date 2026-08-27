@@ -1,0 +1,21 @@
+# EXTERNAL OPERATIONAL MONITORING ONLY -- deliberately separate from the
+# scientific environment (Audit 040).
+#
+# Install these into a SEPARATE venv. They must NEVER be added to
+# requirements/experiment.txt: the scientific Stage-1 process does not import
+# wandb, psutil or anything here, and must remain runnable when none of it is
+# installed. The monitor observes the scientific process from outside, over its
+# stdout telemetry stream.
+#
+#   monitoring venv
+#     -> scripts/stage1_wandb_monitor.py
+#        -> accepted scientific Python executable
+#           -> scripts/stage1_runner.py
+#
+# No torch here: the monitor never loads a model.
+
+wandb>=0.17
+
+# Process CPU/RSS/threads/IO for the operational heartbeat. Optional at runtime:
+# the monitor degrades to "not available" rather than failing if it is absent.
+psutil>=5.9

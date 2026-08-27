@@ -4731,3 +4731,90 @@ campaign has ever run**.
 | **Affected code** | `unmark/stage1/execute.py`, `trainer.py`, `initialisation.py` (new), `unmark/modeling/adapter.py`, `unmark/stage1/objective.py` |
 | **Affected experiments** | all 11 nominal Stage-1 runs. **None has occurred, so no result is contaminated** |
 | **Proposal updated** | **NO** — §5.1.1's 11-run schedule and §7's seed-variance requirement already presuppose independent runs; the implementation did not provide it. PDF stale: **YES** (unchanged) |
+
+---
+
+## Stage-1 operational observability
+
+**Timing, stated first because it is what makes the change legitimate.** At the
+moment of this decision, **zero scientific Stage-1 optimizer steps had been
+taken**. The first authorised `lr-pilot` attempt was stopped before any update,
+and no nominal run had produced a result. This is an engineering/observability
+change made *before* any scientific number exists, not a reaction to one.
+
+### D-S1B-018 — structured telemetry in-process, W&B monitoring out-of-process
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** |
+| **Owner** | Stage-1B |
+| **Scientific effect** | **NONE** |
+
+**Observed problem.** The first authorised `lr-pilot` attempt printed
+`frozen backbone VERIFIED on cuda: ...` and then produced no scientific output
+for several minutes while the process stayed CPU-active. External monitoring
+could observe CPU, RAM and GPU state but could not determine the internal phase,
+the candidate, the update count, the loss, or the validation state. The long
+silent stretch is genuine work — reading a 2.2 GB prepared corpus, building the
+held-out condition batches for four locked conditions, and spawning eight
+`spawn` preparation workers that each reload the pinned tokenizer and re-verify
+the inventory — but it was indistinguishable from a hang.
+
+That is an **operational** defect. Nothing scientific was wrong.
+
+**Decision.** Two strictly separated layers.
+
+* **In-process (scientific).** `unmark/stage1/telemetry.py` emits versioned,
+  machine-readable events (`stage1-telemetry-v1`) as `UNMARK_TELEMETRY `-prefixed
+  JSON lines on stdout. It imports **nothing** outside the standard library — no
+  wandb, no psutil, no network. It is **opt-in** (`UNMARK_TELEMETRY=1`) and
+  defaults to a `NullSink`, so a caller that does not enable it executes exactly
+  the pre-telemetry code path.
+* **Out-of-process (operational).** `scripts/stage1_wandb_monitor.py` launches
+  the scientific runner as a subprocess, parses its telemetry, renders a live
+  console and mirrors scalars to Weights & Biases. Its dependencies live in
+  `requirements/monitoring.txt` and are **deliberately absent** from
+  `requirements/experiment.txt`.
+
+**Reason.** Exact monitoring of phase, progress, convergence and runtime, without
+allowing a dashboard, a network outage or a monitoring package to influence — or
+be able to break — a scientific run. The scientific process must remain runnable
+with no monitoring stack installed at all.
+
+**Scientific non-regression, enforced by tests.** Telemetry performs no extra
+forward, backward, optimizer step, sampling or corruption draw; consumes **zero**
+RNG; and leaves adapter parameters, optimizer state, sampler state,
+`global_update`, the `ValidationPoint` history, the checkpoint payload and the
+production `RunResult` bit-identical between telemetry OFF and ON. Emission can
+never raise into the scientific path: a closed pipe degrades to silence.
+
+**The one measurable cost**, recorded rather than hidden: the `train_progress`
+event converts the already-computed loss tensors to host floats, which is a GPU
+synchronisation that did not previously occur at that point. It happens once per
+`PROGRESS_EVERY_UPDATES = 50` updates and **only when telemetry is enabled**.
+That constant lives in `telemetry.py`, **not** in `protocol.py`, because it is
+operational: it cannot move the locked `EVAL_EVERY_UPDATES = 500` evaluation
+cadence or the identical checkpoint cadence.
+
+**Terminology.** Stage-1 is **update-based, not epoch-based**. The monitor never
+prints "epoch". It derives and explicitly labels
+`sample_visits_total = global_update * BATCH_SIZE` and
+`corpus_pass_equivalent = sample_visits_total / train_chunks` as **sample-visit /
+corpus-pass equivalents over train chunks** — never as "unique sentences seen",
+because the sampler revisits chunks. The scientific axis remains `global_update`.
+
+**Diagnostics are observational only.** `diagnostics/train_trend`,
+`validation_trend` and `divergence_watch` are neutral names, chosen because the
+protocol defines no authoritative overfitting criterion. Nothing may stop a run,
+shorten a budget, choose a candidate, alter checkpointing or feed back into
+training. **No automatic early stopping exists.**
+
+**Privacy.** Only scalars, config and safe provenance reach W&B. Never raw corpus
+text, chunks, prepared data, official TEST, checkpoints, model weights or
+tokenizer artifacts. Code saving is disabled.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/stage1/telemetry.py` (new), `scripts/stage1_wandb_monitor.py` (new), `requirements/monitoring.txt` (new), `unmark/stage1/execute.py`, `unmark/stage1/trainer.py`, `scripts/stage1_runner.py` |
+| **Affected experiments** | none. No scientific value changes; the 11 nominal runs are unaffected |
+| **Proposal updated** | **NO** — the proposal specifies the experiment, not the engineering dashboard. Nothing in it requires revision to describe monitoring. PDF stale: **YES** (unchanged) |

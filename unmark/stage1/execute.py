@@ -39,6 +39,7 @@ from unmark.stage1.protocol import (
     lambdas_for_r,
 )
 from unmark.stage1.artifact import CampaignIdentity
+from unmark.stage1.telemetry import NullSink, TelemetrySink, phase
 from unmark.stage1.selection import (
     Candidate,
     PlannedRun,
@@ -166,6 +167,7 @@ def execute_stage(
     revision: str,
     repository_head: str,
     resume: bool = False,
+    telemetry: TelemetrySink | None = None,
 ) -> int:
     """Run every planned run of one stage and persist the selection artifact.
 
@@ -183,6 +185,15 @@ def execute_stage(
             "sha; a Stage-1 artifact that cannot name the code that produced it is "
             "not reproducible. It is derived from Git, never supplied."
         )
+
+    # OPERATIONAL ONLY (Audit 040). Defaults to a no-op sink, so a caller that
+    # does not opt in gets exactly the pre-telemetry code path.
+    sink = telemetry if telemetry is not None else NullSink()
+    sink.emit(
+        "stage_start", stage=stage, candidate_count=len(schedule),
+        repository_head=repository_head, protocol_version=STAGE1_PROTOCOL_VERSION,
+        resume=bool(resume),
+    )
 
     from unmark.linguistics import make_classifier, try_load_inventory
     from unmark.modeling.adapter import UnmarkEncoder
@@ -215,7 +226,8 @@ def execute_stage(
     # Every mandatory external scientific input, BEFORE the encoder is fetched
     # or loaded. The second real smoke (Audit 030 §W) discovered the missing
     # pinned syllable inventory only after the model was already resident.
-    inputs = verify_scientific_inputs()
+    with phase(sink, "inventory_preflight"):
+        inputs = verify_scientific_inputs()
     print(f"scientific inputs VERIFIED: eligibility {inputs.report['eligibility_policy']}")
     print(f"  inventory {inputs.inventory.source_name} @ {inputs.inventory.source_revision[:12]} "
           f"sha256 {inputs.inventory.sha256[:12]} ({inputs.report['inventory_shape']['unique_stripped_form_count']} stripped forms)")
@@ -224,11 +236,12 @@ def execute_stage(
     # Before any model work: CUDA or nothing, and a numerical policy that is
     # enforced and then re-asserted, so a global setting changed elsewhere in the
     # process cannot reach a run whose artifact claims fp32 and determinism.
-    require_deterministic_cublas_workspace()
-    device = resolve_scientific_device()
-    enforce_numerical_policy()
-    verify_numerical_policy()
-    execution = current_fingerprint(device)
+    with phase(sink, "cuda_policy"):
+        require_deterministic_cublas_workspace()
+        device = resolve_scientific_device()
+        enforce_numerical_policy()
+        verify_numerical_policy()
+        execution = current_fingerprint(device)
     print(f"scientific execution VERIFIED: {execution.backend} {execution.gpu_name} "
           f"(cc {execution.compute_capability}), torch {execution.torch_version}, "
           f"CUDA {execution.cuda_version}")
@@ -238,29 +251,39 @@ def execute_stage(
           f"cublas={execution.cublas_workspace_config} "
           f"matmul={execution.float32_matmul_precision}")
 
-    train_text, dev_text = load_prepared_chunks(prepared_corpus)
+    # The 2.2 GB read that went silent for minutes in the first lr-pilot attempt.
+    with phase(sink, "corpus_load", prepared_corpus=str(prepared_corpus)):
+        train_text, dev_text = load_prepared_chunks(prepared_corpus)
+    sink.emit("corpus_loaded", train_chunks=len(train_text), dev_chunks=len(dev_text))
     # STAGE-SCOPE IMMUTABLE STATE. The frozen encoder is loaded once, placed once
     # and shared by every nominal run -- it is pinned, immutable backbone state,
     # and shuttling ~135M parameters per candidate would buy nothing. It is the
     # ONLY model state permitted to cross nominal runs (D-S1B-017).
-    tokenizer, frozen_encoder, hidden_size = build_backbone(revision)
-    frozen_encoder.to(device)
-    encoder_state_hash = module_state_hash(frozen_encoder)
+    with phase(sink, "backbone_load", checkpoint=ENCODER_CHECKPOINT, revision=revision):
+        tokenizer, frozen_encoder, hidden_size = build_backbone(revision)
+        frozen_encoder.to(device)
+    with phase(sink, "backbone_verify"):
+        encoder_state_hash = module_state_hash(frozen_encoder)
     print(f"frozen backbone VERIFIED on {device}: state_dict sha256 "
           f"{encoder_state_hash[:12]}... ({hidden_size}d)")
-    classifier = make_classifier(try_load_inventory())
+    with phase(sink, "classifier_build"):
+        classifier = make_classifier(try_load_inventory())
     pad_token_id = tokenizer.pad_token_id
     held_out = [HeldOutExample(cid, text) for cid, text in sorted(dev_text.items())]
 
     # The held-out corruption realization is built ONCE and reused by every
     # candidate: the same examples under the same fixed conditions, so candidates
     # differ only by the model. Independent of any training seed.
-    prepared_by_condition = {
-        condition: prepare_condition_batch(
-            held_out, tokenizer, condition, truncation=TRUNCATION, classifier=classifier
-        )
-        for condition in VALIDATION_CONDITIONS
-    }
+    # Tokenising every held-out chunk under all four locked conditions: the
+    # other long pre-update phase.
+    with phase(sink, "validation_batch_build",
+               held_out=len(held_out), conditions=list(VALIDATION_CONDITIONS)):
+        prepared_by_condition = {
+            condition: prepare_condition_batch(
+                held_out, tokenizer, condition, truncation=TRUNCATION, classifier=classifier
+            )
+            for condition in VALIDATION_CONDITIONS
+        }
 
     # The VERIFIED digest (Audit 030 F1). Until the hardening this read
     # `manifest["counts"][...]` -- a declaration accepted on trust, so a run
@@ -268,6 +291,27 @@ def execute_stage(
     # can only exist if every artifact COMPLETE.json binds was re-hashed from
     # disk and matched.
     manifest_digest = verified.chunk_membership_digest
+
+    # THE single campaign identity, built once here and reused verbatim for the
+    # stage artifact below (Audit 040 review). Building it early lets telemetry
+    # report authoritative provenance at the START of a stage instead of only
+    # after the last candidate finishes -- without creating a second identity
+    # definition, which is exactly what Audit 031 B4 / 032 MAJ1 forbade.
+    campaign = CampaignIdentity.from_inputs(
+        repository_head=repository_head,
+        corpus_manifest_digest=manifest_digest,
+        encoder_revision=revision,
+        inventory=inputs.inventory,
+    )
+    # The corpus pin comes from the VERIFIED corpus object, not from a constant
+    # restated here: `verified` exists only if those bytes were re-hashed.
+    sink.emit(
+        "campaign_identity",
+        corpus_dataset=verified.identity.corpus_dataset,
+        corpus_revision=verified.identity.corpus_revision,
+        **campaign.to_dict(),
+    )
+
     candidates: list[Candidate] = []
     output_dir.mkdir(parents=True, exist_ok=resume)
 
@@ -309,6 +353,19 @@ def execute_stage(
           # init seed, then moved to the already-resident encoder's device. New
           # Parameter objects and new storage every time: candidates 2..N used to
           # inherit the previous candidate's TRAINED weights (Audit 030 §AD).
+          # The candidate identity every downstream telemetry event carries.
+          # Derived from the PRODUCTION plan, never hard-coded: "candidate 2/3
+          # LR=3e-4" is whatever `schedule` actually says it is.
+          candidate_index = list(schedule).index(planned) + 1
+          telemetry_identity = {
+              "stage": stage,
+              "candidate_index": candidate_index,
+              "candidate_count": len(schedule),
+              "label": planned.label,
+              "lr": planned.learning_rate,
+              "r": planned.r,
+              "seed": planned.seed,
+          }
           adapter = fresh_adapter(hidden_size, provenance.init_seed)
           fresh_hash = trainable_state_hash(trainable_state(adapter))
           adapter.to(device)
@@ -346,6 +403,19 @@ def execute_stage(
           # 20k budget (Audit 031 B3 / Audit 032 B2).
           carried = load_training_checkpoint(run_checkpoints) if resume else None
           leg_cap = resume_cap(carried) if carried is not None else INITIAL_MAX_UPDATES
+          sink.emit(
+              "run_start",
+              initial_global_update=int(carried["global_update"]) if carried else 0,
+              cap=leg_cap,
+              repository_head=repository_head,
+              protocol_version=STAGE1_PROTOCOL_VERSION,
+              init_seed=provenance.init_seed,
+              corruption_seed=CORRUPTION_SEED,
+              batch_size=BATCH_SIZE,
+              train_chunks=len(train_text),
+              resumed=carried is not None,
+              **telemetry_identity,
+          )
           result = train_run(
               objective=objective,
               provenance=provenance,
@@ -361,6 +431,8 @@ def execute_stage(
               execution=execution,
               preparation_pool=preparation_pool,
               resume=carried,
+              telemetry=sink,
+              telemetry_identity=telemetry_identity,
           )
           # ONE continuation, and only out of a completed INITIAL leg. Gating on
           # `result.continued` was wrong once a resumed run could already be on
@@ -397,6 +469,8 @@ def execute_stage(
                   checkpoint_dir=run_checkpoints,
                   execution=execution,
                   preparation_pool=preparation_pool,
+                  telemetry=sink,
+                  telemetry_identity=telemetry_identity,
               )
           # The shared backbone must come out of this run exactly as it went in.
           require_frozen_backbone_unchanged(frozen_encoder, encoder_state_hash, planned.label)
@@ -418,12 +492,8 @@ def execute_stage(
     # inputs. Recorded as one block so a consumer cannot check three fields and
     # forget the fourth (Audit 031 B4 / Audit 032 MAJ1). The two legacy
     # top-level keys are kept so existing readers and artifacts stay readable.
-    campaign = CampaignIdentity.from_inputs(
-        repository_head=repository_head,
-        corpus_manifest_digest=manifest_digest,
-        encoder_revision=revision,
-        inventory=inputs.inventory,
-    )
+    # `campaign` was built once above; telemetry and the artifact therefore
+    # cannot disagree about what campaign this is.
     artifact = {
         "stage": stage,
         "protocol_version": STAGE1_PROTOCOL_VERSION,
@@ -440,10 +510,15 @@ def execute_stage(
         "downstream_score_used": False,
     }
     if stage == "lr_pilot":
-        artifact["selected"] = select_learning_rate(candidates).to_dict()
+        with phase(sink, "selection", stage=stage):
+            artifact["selected"] = select_learning_rate(candidates).to_dict()
+        # The PRODUCTION selection result, not a re-derivation.
+        sink.emit("selection", stage=stage, selected=artifact["selected"])
     elif stage == "r_phase1":
         frozen = candidates[0].learning_rate
-        artifact["selected"] = select_r(candidates, frozen).to_dict()
+        with phase(sink, "selection", stage=stage):
+            artifact["selected"] = select_r(candidates, frozen).to_dict()
+        sink.emit("selection", stage=stage, selected=artifact["selected"])
     else:
         from unmark.stage1.selection import descriptive_summary
 
@@ -456,6 +531,13 @@ def execute_stage(
         json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(f"\nWrote {output_dir}/{stage}.json")
+    sink.emit(
+        "stage_complete",
+        stage=stage,
+        artifact_path=str(output_dir / f"{stage}.json"),
+        candidate_count=len(candidates),
+        identity=campaign.to_dict(),
+    )
     return 0
 
 
