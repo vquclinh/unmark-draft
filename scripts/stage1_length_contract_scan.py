@@ -391,39 +391,66 @@ def _init_worker(revision: str) -> None:
 
 
 def _measure_batch(batch):
-    """Measure one batch of `(line_index, row)`. Pure; returns plain data.
+    """Measure one batch of `(line_index, row, spot_check)`. Pure; plain data out.
 
-    Runs in a worker process. Only the rows of this batch cross the process
-    boundary -- never the 2.2 GB corpus.
+    **The prepared row schema does not persist `base_length`.**
+    `unmark/stage1/checkpoint.py::chunk_record` writes exactly `chunk_id`,
+    `document_id`, `partition`, `chunk_index`, `text`, `source_start`,
+    `source_end`, `source_shard` -- the lengths are computed by the chunker,
+    used by its guard, and discarded. An earlier version of this scanner read
+    `row.get("base_length")`; on the real artifact that is always `None`, which
+    silently emptied the near-boundary stratum and forced an authoritative
+    recomputation on every row (Audit 043 §9e). Nothing here reads it now.
+
+    So the authoritative Stage-6 length is computed **only** where it is
+    scientifically needed:
+
+    * for every **offender** (`realised > MAX_LENGTH`), to confirm Stage-6
+      admitted it at `<= MAX_LENGTH` and to record the true delta; and
+    * on a deterministic **spot-check** sample, which re-tests the Stage-6
+      guarantee rather than assuming it.
+
+    An offender additionally gets the FULL production `project_text` length, and
+    the fast and full values must agree -- so no violation is ever reported on
+    the shortcut's word alone.
+
+    Runs in a worker process; only this batch's rows cross the boundary.
     """
     counter = _WORKER["counter"]
     base_length = _WORKER["base_length"]
+    tokenizer = _WORKER["tokenizer"]
+    classifier = _WORKER["classifier"]
+    unk = _WORKER["unk"]
     out = []
-    for line_index, row, verify in batch:
+    for line_index, row, spot_check in batch:
         text = row["text"]
         realised = counter.length(text)
-        persisted = row.get("base_length")
-        recomputed = None
-        # Fail-closed verification: recompute the authoritative length on a
-        # deterministic sample, and ALWAYS for anything reported as an offender.
-        if verify or realised > MAX_LENGTH or not isinstance(persisted, int):
-            recomputed = authoritative_base_length(base_length, text)
+        over = realised > MAX_LENGTH
+        authoritative = None
+        full = None
+        if over:
+            full = realised_base_length(text, tokenizer, classifier, unk)
+            authoritative = authoritative_base_length(base_length, text)
+        elif spot_check:
+            authoritative = authoritative_base_length(base_length, text)
         out.append({
             "line_index": line_index,
             "chunk_id": row.get("chunk_id"),
+            "document_id": row.get("document_id"),
             "partition": row.get("partition"),
             "text_sha256_16": stable_id(text),
             "characters": len(text),
             "contains_newline": "\n" in text,
-            "persisted": persisted,
-            "recomputed": recomputed,
             "realised": realised,
+            "full_project_text": full,
+            "authoritative": authoritative,
+            "spot_checked": bool(spot_check) and not over,
         })
     return out
 
 
 def _batches(rows, size, verify_every):
-    """Stream `(index, row, verify)` triples in bounded batches."""
+    """Stream `(index, row, spot_check)` triples in bounded batches."""
     batch = []
     for index, row in rows:
         batch.append((index, row, verify_every > 0 and index % verify_every == 0))
@@ -435,66 +462,107 @@ def _batches(rows, size, verify_every):
 
 
 class Aggregate:
-    """Order-independent totals, so the report cannot depend on worker count."""
+    """Order-independent totals, so the report cannot depend on worker count.
+
+    The MUST-HAVE scientific quantity is the exact **overflow scope**: how many
+    TRAIN chunks have Stage-1 realised base length > `MAX_LENGTH`. That is what
+    `over`, `realised_histogram`, `max_realised` and `offenders` carry, and it
+    is computed for **every** row.
+
+    `spot_check_disagreements` is a *sample* statistic over the deterministic
+    spot-check subset only -- it is explicitly NOT an all-row Stage-6-vs-Stage-1
+    delta histogram, because obtaining that would require authoritative Stage-6
+    tokenization on all 2.6 million rows for a quantity that does not change the
+    repair decision (Audit 043 §9f).
+    """
 
     def __init__(self) -> None:
         self.scanned = 0
         self.within = 0
         self.over = 0
-        self.disagreements = 0
-        self.max_authoritative = 0
+        self.spot_checked = 0
+        self.spot_check_disagreements = 0
         self.max_realised = 0
-        self.verified = 0
+        self.max_authoritative_seen = 0
+        self.realised_histogram: collections.Counter = collections.Counter()
         self.over_histogram: collections.Counter = collections.Counter()
-        self.delta_histogram: collections.Counter = collections.Counter()
+        self.spot_delta_histogram: collections.Counter = collections.Counter()
         self.offenders: list[dict] = []
+        self.contract_failures: list[str] = []
         self.next_index = 0
 
     def absorb(self, measured, max_offenders: int) -> None:
         for item in measured:
-            authoritative = (item["recomputed"] if item["recomputed"] is not None
-                             else item["persisted"])
             realised = item["realised"]
             self.scanned += 1
             self.next_index = max(self.next_index, item["line_index"] + 1)
             self.max_realised = max(self.max_realised, realised)
-            if isinstance(authoritative, int):
-                self.max_authoritative = max(self.max_authoritative, authoritative)
-                delta = realised - authoritative
+            self.realised_histogram[realised] += 1
+
+            if item["spot_checked"] and isinstance(item["authoritative"], int):
+                self.spot_checked += 1
+                self.max_authoritative_seen = max(self.max_authoritative_seen,
+                                                  item["authoritative"])
+                delta = realised - item["authoritative"]
                 if delta:
-                    self.disagreements += 1
-                    self.delta_histogram[delta] += 1
-            if item["recomputed"] is not None:
-                self.verified += 1
+                    self.spot_check_disagreements += 1
+                    self.spot_delta_histogram[delta] += 1
+                if item["authoritative"] > MAX_LENGTH:
+                    # Stage-6's own guard should make this impossible.
+                    self.contract_failures.append(
+                        f"row {item['line_index']} chunk {item['chunk_id']!r}: "
+                        f"authoritative Stage-6 length {item['authoritative']} > "
+                        f"{MAX_LENGTH}, contradicting the Stage-6 completion guarantee"
+                    )
+
             if realised > MAX_LENGTH:
                 self.over += 1
                 self.over_histogram[realised] += 1
+                full = item["full_project_text"]
+                authoritative = item["authoritative"]
+                if full is not None and full != realised:
+                    self.contract_failures.append(
+                        f"row {item['line_index']} chunk {item['chunk_id']!r}: fast "
+                        f"realised {realised} != full project_text {full}"
+                    )
+                if isinstance(authoritative, int) and authoritative > MAX_LENGTH:
+                    self.contract_failures.append(
+                        f"row {item['line_index']} chunk {item['chunk_id']!r}: Stage-6 "
+                        f"admitted a chunk at {authoritative} > {MAX_LENGTH}"
+                    )
                 self.offenders.append({
                     "line_index": item["line_index"],
                     "chunk_id": item["chunk_id"],
+                    "document_id": item["document_id"],
                     "partition": item["partition"],
                     "text_sha256_16": item["text_sha256_16"],
                     "characters": item["characters"],
                     "contains_newline": item["contains_newline"],
-                    "stage6_persisted_base_length": item["persisted"],
-                    "stage6_recomputed_base_length": item["recomputed"],
-                    "stage1_realised_base_length": realised,
-                    "delta": realised - (item["recomputed"] if item["recomputed"]
-                                         is not None else item["persisted"] or 0),
+                    "stage6_authoritative_base_length": authoritative,
+                    "stage1_fast_base_length": realised,
+                    "stage1_full_project_text_length": full,
+                    "delta": (realised - authoritative)
+                             if isinstance(authoritative, int) else None,
                 })
-                # Deterministic and bounded, independent of arrival order.
                 self.offenders.sort(key=lambda o: o["line_index"])
                 del self.offenders[max_offenders:]
+            else:
+                self.within += 1
 
     def state(self) -> dict:
         return {
             "scanned": self.scanned, "within": self.within, "over": self.over,
-            "disagreements": self.disagreements, "verified": self.verified,
-            "max_authoritative": self.max_authoritative,
+            "spot_checked": self.spot_checked,
+            "spot_check_disagreements": self.spot_check_disagreements,
             "max_realised": self.max_realised,
+            "max_authoritative_seen": self.max_authoritative_seen,
+            "realised_histogram": {str(k): v for k, v in self.realised_histogram.items()},
             "over_histogram": {str(k): v for k, v in self.over_histogram.items()},
-            "delta_histogram": {str(k): v for k, v in self.delta_histogram.items()},
-            "offenders": self.offenders, "next_index": self.next_index,
+            "spot_delta_histogram": {str(k): v
+                                     for k, v in self.spot_delta_histogram.items()},
+            "offenders": self.offenders,
+            "contract_failures": self.contract_failures,
+            "next_index": self.next_index,
         }
 
     @classmethod
@@ -503,15 +571,18 @@ class Aggregate:
         aggregate.scanned = state["scanned"]
         aggregate.within = state["within"]
         aggregate.over = state["over"]
-        aggregate.disagreements = state["disagreements"]
-        aggregate.verified = state.get("verified", 0)
-        aggregate.max_authoritative = state["max_authoritative"]
+        aggregate.spot_checked = state.get("spot_checked", 0)
+        aggregate.spot_check_disagreements = state.get("spot_check_disagreements", 0)
         aggregate.max_realised = state["max_realised"]
+        aggregate.max_authoritative_seen = state.get("max_authoritative_seen", 0)
+        aggregate.realised_histogram = collections.Counter(
+            {int(k): v for k, v in state.get("realised_histogram", {}).items()})
         aggregate.over_histogram = collections.Counter(
             {int(k): v for k, v in state["over_histogram"].items()})
-        aggregate.delta_histogram = collections.Counter(
-            {int(k): v for k, v in state["delta_histogram"].items()})
+        aggregate.spot_delta_histogram = collections.Counter(
+            {int(k): v for k, v in state.get("spot_delta_histogram", {}).items()})
         aggregate.offenders = list(state["offenders"])
+        aggregate.contract_failures = list(state.get("contract_failures", []))
         aggregate.next_index = state["next_index"]
         return aggregate
 
@@ -555,19 +626,8 @@ def scan(args) -> int:
     work = _batches(rows, args.batch_size, args.verify_every)
 
     started = time.monotonic()
-    failures: list[str] = []
 
     def absorb(measured):
-        for item in measured:
-            # Fail closed: a persisted length that disagrees with the real
-            # Stage-6 function invalidates the whole shortcut.
-            if item["recomputed"] is not None and isinstance(item["persisted"], int):
-                if item["recomputed"] != item["persisted"]:
-                    failures.append(
-                        f"row {item['line_index']} chunk {item['chunk_id']!r}: persisted "
-                        f"base_length {item['persisted']} != recomputed "
-                        f"{item['recomputed']}"
-                    )
         aggregate.absorb(measured, args.max_offenders)
 
     if args.workers and args.workers > 1:
@@ -578,41 +638,50 @@ def scan(args) -> int:
                           initargs=(args.revision,)) as pool:
             for measured in pool.imap(_measure_batch, work, chunksize=1):
                 absorb(measured)
-                if failures:
+                if aggregate.contract_failures:
                     break
                 _progress(aggregate, args, started, state_path, identity)
     else:
         _init_worker(args.revision)
         for batch in work:
             absorb(_measure_batch(batch))
-            if failures:
+            if aggregate.contract_failures:
                 break
             _progress(aggregate, args, started, state_path, identity)
 
-    if failures:
-        print("REFUSED: persisted Stage-6 base_length failed verification. The "
-              "shortcut in §2 is not valid for this corpus:", file=sys.stderr)
-        for line in failures[:10]:
+    if aggregate.contract_failures:
+        print("REFUSED: a Stage-6/Stage-1 contract guarantee failed:", file=sys.stderr)
+        for line in aggregate.contract_failures[:10]:
             print(f"  {line}", file=sys.stderr)
         return EXIT_DIAGNOSTIC_FAILURE
 
-    aggregate.within = aggregate.scanned - aggregate.over
     exit_code = EXIT_VIOLATION_FOUND if aggregate.over else EXIT_NO_VIOLATION
     elapsed = time.monotonic() - started
     report = {
         "status": STATUS_BY_EXIT[exit_code],
         "exit_code": exit_code,
         "identity": identity,
+        "line_index_base": 0,
+        # --- MUST-HAVE: the exact overflow scope, over EVERY row ---
         "scanned": aggregate.scanned,
         "within_max_length": aggregate.within,
         "over_max_length": aggregate.over,
-        "stage6_vs_stage1_disagreements": aggregate.disagreements,
-        "authoritative_spot_checks": aggregate.verified,
-        "max_stage6_authoritative_base_length": aggregate.max_authoritative,
         "max_stage1_realised_base_length": aggregate.max_realised,
         "over_length_histogram": dict(sorted(aggregate.over_histogram.items())),
-        "delta_histogram": dict(sorted(aggregate.delta_histogram.items())),
+        "realised_length_histogram": dict(sorted(aggregate.realised_histogram.items())),
         "offenders": aggregate.offenders,
+        # --- contract guard: a deterministic SAMPLE, not an all-row statistic ---
+        "authoritative_spot_checks": aggregate.spot_checked,
+        "spot_check_disagreements": aggregate.spot_check_disagreements,
+        "spot_check_delta_histogram": dict(sorted(aggregate.spot_delta_histogram.items())),
+        "max_stage6_authoritative_seen": aggregate.max_authoritative_seen,
+        "all_row_stage6_delta_histogram": None,
+        "all_row_delta_histogram_note": (
+            "not computed: the prepared row schema does not persist base_length, so "
+            "an all-row Stage-6-vs-Stage-1 histogram would require authoritative "
+            "tokenization on every row for a quantity that does not change the "
+            "repair decision. Overflow scope above is exact and complete."
+        ),
         "workers": args.workers,
         "elapsed_seconds": round(elapsed, 3),
         "rows_per_second": round(aggregate.scanned / elapsed, 1) if elapsed else None,
@@ -636,7 +705,7 @@ def _progress(aggregate, args, started, state_path, identity) -> None:
         rate = aggregate.scanned / elapsed if elapsed else 0
         # stderr, so stdout stays a single parseable JSON document.
         print(f"  scanned {aggregate.scanned}  over={aggregate.over}  "
-              f"disagreements={aggregate.disagreements}  "
+              f"spot_checks={aggregate.spot_checked}  "
               f"{rate:.0f} rows/s", file=sys.stderr, flush=True)
     if (state_path and args.checkpoint_every
             and aggregate.scanned % args.checkpoint_every < args.batch_size):
@@ -647,17 +716,40 @@ def _progress(aggregate, args, started, state_path, identity) -> None:
 
 
 BOUNDARY_MARGIN = 8
-"""A chunk is "near-boundary" when its persisted `base_length` is within this
-many tokens of `MAX_LENGTH`. These are the only chunks a +1 disagreement can
-actually turn into a violation, so they are over-sampled deliberately."""
+"""A chunk is "near-boundary" when its Stage-1 **realised** length is within
+this many tokens of `MAX_LENGTH`. These are the only chunks a +1 disagreement
+can turn into a violation, so they are over-sampled deliberately."""
 
-VALIDATION_STRATA = (("boundary", 0.30), ("newline", 0.40), ("ordinary", 0.30))
+CHARACTER_PREFILTER = 200
+"""Cheap NECESSARY condition for a row to be near-boundary or overflowing.
+
+Computing the fast realised length for all 2.6 M rows during *selection* would
+cost as much as the scan itself, so selection first applies a character filter
+and only measures rows that pass it. The filter is sound, not heuristic:
+
+* every BPE token covers at least one character, so
+  `content_tokens <= len(base_text)`;
+* `base_text` is a per-character mapping of `canon(text)` with combining marks
+  removed, so `len(base_text) <= len(canon(text)) <= len(text)`;
+* therefore `realised = content_tokens + specials <= len(text) + specials`.
+
+A row with `realised >= MAX_LENGTH - BOUNDARY_MARGIN` (248) therefore needs at
+least ~246 characters. 200 leaves a wide margin, so **no near-boundary or
+overflowing row can be filtered out**.
+"""
+
+VALIDATION_STRATA = (("overflow", 0.15), ("boundary", 0.25), ("newline", 0.35),
+                     ("ordinary", 0.25))
 """Quotas of `--validate-rows`, rarest stratum first.
 
-Assignment is rarest-first -- a row that is both near-boundary and
-newline-bearing counts as `boundary` -- because near-boundary rows are the rare
-and interesting ones. Without this, the measured 92.6 % newline rate would crowd
-them out entirely.
+Assignment is rarest-first, so a row that is both overflowing and
+newline-bearing counts as `overflow`. Without this the measured 92.6 % newline
+rate would crowd the interesting strata out entirely.
+
+**`boundary` and `overflow` are keyed on the Stage-1 FAST realised length, not
+on a persisted field.** The prepared row schema does not carry `base_length`
+(Audit 043 §9e), and an earlier version that read `row.get("base_length")`
+silently produced `selected_near_boundary = 0` on the real corpus.
 """
 
 
@@ -666,9 +758,7 @@ class _DeterministicReservoir:
 
     The "random" index comes from a hash of the row's own `chunk_id`, so the
     selection is spread across the whole file, exactly bounded by `capacity`,
-    and identical on every rerun over the same corpus. Reservoir sampling is
-    what lets a single streaming pass sample uniformly without knowing the
-    stratum's size in advance.
+    and identical on every rerun over the same corpus.
     """
 
     def __init__(self, capacity: int) -> None:
@@ -689,25 +779,21 @@ class _DeterministicReservoir:
             self.items[index] = item
 
 
-def _sample_rows(args, wanted: int):
+def _sample_rows(args, wanted: int, counter=None):
     """A BOUNDED, deterministic, STRATIFIED sample of real TRAIN rows.
 
     **`--validate-rows` is a hard cap on expensive work.** The expensive thing
-    is the full production `project_text`, and it runs once per *selected* row
-    only. Selection itself streams cheap metadata -- `json.loads`, a substring
-    test and an integer compare -- over the partition, which is exactly the
-    trade the brief permits.
+    is the full production `project_text`, which `validate` runs once per
+    *selected* row. Selection itself streams cheap metadata and measures the
+    fast realised length only for rows passing `CHARACTER_PREFILTER`.
 
-    The bound is `wanted` selected rows, **plus at most one** extra: the known
-    offender, which is always included when present even if sampling would have
-    missed it. So expensive comparisons <= `--validate-rows` + 1.
+    The bound is `wanted` selected rows **plus at most one**: the known
+    offender, always included when present even if sampling would have missed
+    it. So expensive comparisons <= `--validate-rows` + 1.
 
-    Why stratified. An earlier version took "every stride-th row plus every
-    newline-bearing and every near-boundary row, stop at `wanted`". That was
-    bounded but badly skewed: with the measured 92.6 % newline rate it filled
-    5000 slots from the first ~5 400 lines of the file -- 2.7 % of the corpus,
-    4 996 newline rows, **2** near-boundary rows, and the known offender missed
-    entirely. Quotas plus reservoir sampling fix all three.
+    `line_index` is **0-based** throughout: it is the index of the row within
+    the streamed partition, so a row reported at `line_index = N` is physical
+    line `N + 1` under `enumerate(file, 1)` (Audit 043 §9g).
     """
     rows = iter_chunks(Path(args.prepared_corpus), args.partition, chunks_path_for(args))
     quotas = {name: max(1, int(wanted * share)) for name, share in VALIDATION_STRATA}
@@ -716,17 +802,24 @@ def _sample_rows(args, wanted: int):
     offender = None
     stride = max(1, args.validate_stride)
     streamed = 0
+    measured = 0
 
     for index, row in rows:
         streamed += 1
         text = row["text"]
-        persisted = row.get("base_length")
         chunk_id = str(row.get("chunk_id", index))
 
         if args.offender_hash and stable_id(text) == args.offender_hash:
             offender = (index, row)
 
-        if isinstance(persisted, int) and persisted >= MAX_LENGTH - BOUNDARY_MARGIN:
+        realised = None
+        if counter is not None and len(text) >= CHARACTER_PREFILTER:
+            realised = counter.length(text)
+            measured += 1
+
+        if realised is not None and realised > MAX_LENGTH:
+            stratum = "overflow"
+        elif realised is not None and realised >= MAX_LENGTH - BOUNDARY_MARGIN:
             stratum = "boundary"
         elif "\n" in text:
             stratum = "newline"
@@ -741,29 +834,32 @@ def _sample_rows(args, wanted: int):
             break
 
     picked = [item for reservoir in reservoirs.values() for item in reservoir.items]
-    # Trim to the cap deterministically, then restore file order.
     picked.sort(key=lambda pair: pair[0])
     del picked[wanted:]
     if offender is not None and all(i != offender[0] for i, _ in picked):
-        picked.append(offender)          # the ONE documented extra
+        picked.append(offender)
         picked.sort(key=lambda pair: pair[0])
 
     selected_newline = sum(1 for _i, r in picked if "\n" in r["text"])
-    selected_boundary = sum(
-        1 for _i, r in picked
-        if isinstance(r.get("base_length"), int)
-        and r["base_length"] >= MAX_LENGTH - BOUNDARY_MARGIN
-    )
+    selected_near_boundary = 0
+    if counter is not None:
+        for _i, r in picked:
+            if len(r["text"]) >= CHARACTER_PREFILTER:
+                if counter.length(r["text"]) >= MAX_LENGTH - BOUNDARY_MARGIN:
+                    selected_near_boundary += 1
     stats = {
+        "selected_near_boundary": selected_near_boundary,
         "streamed_rows": streamed,
+        "fast_length_measured_rows": measured,
+        "character_prefilter": CHARACTER_PREFILTER,
         "selected": len(picked),
         "quotas": quotas,
         "available_per_stratum": dict(counts),
         "selected_newline_bearing": selected_newline,
-        "selected_near_boundary": selected_boundary,
         "offender_forced_in": offender is not None,
+        "line_index_base": 0,
     }
-    return picked, selected_boundary, selected_newline, stats
+    return picked, selected_near_boundary, selected_newline, stats
 
 
 def validate(args) -> int:
@@ -790,7 +886,8 @@ def validate(args) -> int:
     counter = RealisedLengthCounter(tokenizer, unk)
     _reference, base_length, _transforms = stage6_length_functions(tokenizer)
 
-    picked, boundary, newline, selection = _sample_rows(args, args.validate_rows)
+    picked, boundary, newline, selection = _sample_rows(
+        args, args.validate_rows, counter=counter)
     print(f"validating {len(picked)} real chunks of {selection['streamed_rows']} "
           f"streamed ({newline} newline-bearing, {boundary} near-boundary)",
           file=sys.stderr, flush=True)
@@ -841,7 +938,10 @@ def validate(args) -> int:
         "near_boundary_sampled": boundary,
         "selection": selection,
         "expensive_comparison_cap": args.validate_rows + 1,
+        # OBJECT or null -- never a boolean. A caller must test `is not None`
+        # and read the evidence fields, not truthiness of a flag.
         "offender_reconfirmed": offender,
+        "offender_reconfirmed_schema": "object-or-null",
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "official_test_used": False,
         "raw_text_persisted": False,
@@ -858,9 +958,8 @@ def aggregate_digest(report: dict) -> str:
     """Fingerprint of everything that must NOT depend on worker count."""
     material = {k: report[k] for k in (
         "scanned", "within_max_length", "over_max_length",
-        "stage6_vs_stage1_disagreements", "max_stage6_authoritative_base_length",
         "max_stage1_realised_base_length", "over_length_histogram",
-        "delta_histogram", "offenders",
+        "realised_length_histogram", "offenders",
     )}
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode("utf-8")).hexdigest()[:16]

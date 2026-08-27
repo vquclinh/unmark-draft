@@ -62,11 +62,16 @@ So Stage-6 checked **both** lengths and admitted every chunk. Yet Stage-1 saw
 | Stage-6 chunk emission | `base_length(content[begin:finish])` | — | included | `chunking.py:270-277` |
 | Stage-6 length function | `base_runs.length(transforms.base(text))` | **`PHOBERT_RUN = \S+\n?`** | included via `build_inputs_with_special_tokens` | `lengths.py:217`, `build_length_functions` |
 | Stage-6 authoritative definition | `len(build_inputs_with_special_tokens(convert_tokens_to_ids(tokenize(transform(x)))))` | whole string | included | `lengths.py` docstring |
-| persisted chunk | `text`, `reference_length`, `base_length` | — | — | `chunking.py:270-277` |
+| Stage-6 **in-memory** `Chunk` | `text`, `reference_length`, `base_length` | — | — | `chunking.py:270-277` |
+| **persisted** `chunks.jsonl` row | `chunk_id`, `chunk_index`, `document_id`, `partition`, `source_end`, `source_shard`, `source_start`, `text` — **no lengths** | — | — | `checkpoint.py::chunk_record` |
 | Stage-1 read | `row["text"]` | — | — | `execute.py::load_prepared_chunks` |
 | Stage-1 base ids | `project_text(...) -> content_ids` | **`_CHUNK_PATTERN = \S+`** | added after | `data.py:181-215`, `alignment/manual.py:63,147` |
 | Stage-1 special tokens | `build_inputs_with_special_tokens(content_ids)` | — | +2 | `data.py::_with_special_tokens` |
 | Stage-1 assertion | `truncation.check(len(base_ids), "base sequence")` | — | — | `data.py:345` |
+
+`reference_length` and `base_length` are checked by Stage-6 *before* persistence
+and are then **discarded**: `checkpoint.py::chunk_record` writes the eight fields
+above and no lengths (see §9e).
 
 Special-token accounting is **identical on both sides** — both call the
 tokenizer's own `build_inputs_with_special_tokens`, adding the same constant.
@@ -281,15 +286,29 @@ Colab** and are listed in §12.
 
 ## 9. Scope Scan
 
-The scanner computes, per chunk, both quantities and reports: total scanned,
-count ≤ 256, count > 256, max Stage-6 authoritative length, max Stage-1 realised
-length, a histogram of violating lengths, a histogram of
-`realised - authoritative` deltas, and stable ids for up to `--max-offenders`
-offenders.
+> The description below is the **final** design (§9f). An earlier version of
+> this section described computing both quantities for every row and producing a
+> complete all-row delta histogram; that is **superseded** — the prepared schema
+> persists no `base_length`, so it would require authoritative tokenization of
+> all 2 621 624 rows for a quantity that does not change the repair decision.
 
-The delta histogram is the decisive artifact: it separates *"one unlucky
-boundary chunk"* from *"a systemic contract mismatch across every
-newline-bearing chunk"*.
+**FULL TRAIN SCOPE means exact OVERFLOW SCOPE.** For **every** TRAIN row the
+scanner computes the exact validated Stage-1 **fast** realised length, and
+reports as must-have, exact outputs:
+
+* total scanned;
+* count `<= 256` and count `> 256`;
+* maximum Stage-1 realised length;
+* realised-length histogram and overflow-length histogram;
+* the exact overflow offender population and count.
+
+For **every offender** it additionally recomputes the full production
+`project_text` length *and* the authoritative Stage-6 length, and requires
+`fast == full` and `Stage-6 <= 256`. For **non-offenders** it performs
+deterministic Stage-6 spot-checks that re-test that guarantee.
+
+The all-row Stage-6-vs-Stage-1 delta histogram is **nice-to-have only** and is
+intentionally reported as `null`, with its reason inline.
 
 **Partial result, from the first real Colab scope scan.** The scan was started
 and then **intentionally stopped before completion** because it was far too
@@ -318,10 +337,15 @@ mechanism is not a one-chunk curiosity.
 What remains **UNKNOWN** is the *violation* scope, which is a different and
 narrower quantity:
 
-* the full TRAIN overflow-violation count;
-* the complete delta histogram;
-* the maximum realised length over the partition;
-* the full offender population.
+* the full TRAIN overflow count;
+* the full overflow offender population;
+* the maximum Stage-1 realised length over the partition;
+* the realised-length and overflow-length histograms.
+
+The **all-row delta histogram is deliberately not on this list.** The systemic
+Stage-6-vs-Stage-1 disagreement mechanism is already established by the 100 000-row
+exact partial result and by the real confirmed offender; computing it for all
+2.62 M rows would change no repair decision.
 
 100 000 of 2 621 624 rows is 3.8 % of the partition and the scan was stopped
 rather than completed, so **no exact full-corpus percentage is extrapolated
@@ -353,7 +377,7 @@ need at all, and it was being paid on every one of 2.6 million rows.
 
 **Four changes.**
 
-1. **Reuse the persisted Stage-6 `base_length`** instead of recomputing it.
+1. **Reuse the persisted Stage-6 `base_length`** instead of recomputing it. **(SUPERSEDED — no such field is persisted; see §9e.)**
    Prepared rows already carry it. This is a shortcut, so it is verified rather
    than trusted: the prepared corpus is required to exist first; the
    authoritative `base_length` is **recomputed on every `--verify-every` row**
@@ -397,6 +421,11 @@ measured speedup                                     33.71x
 peak RSS                                             36 MiB
 ```
 
+> **SUPERSEDED (§9e).** The projections below assumed the scanner could reuse a
+> persisted Stage-6 `base_length`. The prepared row schema does not persist one,
+> so they never applied to the real corpus. The redesigned algorithm is
+> benchmarked in §9f. They are kept only as a record of the reasoning.
+
 **Projection, explicitly labelled as such.** Scaling the *real observed* Colab
 rate of 36 ms/row by the measured 33.71×:
 
@@ -438,7 +467,10 @@ now stage `chunks.jsonl` onto Colab's local SSD, verified at both ends:
 
 1. `verify_prepared_corpus` must succeed on the Drive prepared corpus, so the
    expected size and sha256 come from the re-hashed COMPLETE marker rather than
-   from a filename;
+   from a filename. **This corpus uses split roots**, so `--completion-dir` is
+   **mandatory** alongside `--stage-local`: the default is
+   `<prepared-corpus>/_checkpoint`, which does not exist here and produces the
+   measured 0.11-second `DIAGNOSTIC_FAILURE`;
 2. the source file's own size and sha256 are recomputed and must match;
 3. the copy is made — the Drive source is opened **read-only and never written**;
 4. the local file's size and sha256 are recomputed and must match the source.
@@ -455,16 +487,27 @@ realised length.
 
 Selection is **hard-capped and stratified**. `--validate-rows` bounds the
 expensive full-`project_text` comparisons, plus **at most one** more: the known
-offender, forced in whenever it is present. Rows are assigned to strata
-**rarest-first** — `boundary` (persisted `base_length >= 248`) **30 %**,
-`newline` **40 %**, `ordinary` (stride) **30 %** — so a row that is both
-near-boundary and newline-bearing counts as `boundary`, and the measured 92.6 %
-newline rate cannot crowd the rare stratum out. Each stratum keeps a bounded
-reservoir whose replacement index comes from a hash of the row's own
-`chunk_id`: **no RNG state**, identical on every rerun, and spread across the
-**whole corpus** rather than clustered in its opening rows. Only cheap metadata
-is streamed to build the set; the expensive path runs once per *selected* row.
-See §9d for why the first implementation was replaced.
+offender, forced in whenever it is present.
+
+Strata are keyed on the **Stage-1 fast realised length**, never on persisted
+Stage-6 metadata (there is none — §9e), and assigned **rarest-first**:
+
+| stratum | condition | quota |
+|---|---|---|
+| `overflow` | Stage-1 fast `> 256` | 15 % |
+| `boundary` | Stage-1 fast `>= 248` | 25 % |
+| `newline` | contains a newline | 35 % |
+| `ordinary` | stride | 25 % |
+
+A row that is both overflowing and newline-bearing counts as `overflow`, so the
+measured 92.6 % newline rate cannot crowd the rare strata out. Before any
+fast-length work a **sound character pre-filter** is applied — since
+`realised <= len(text) + specials`, a row at `>= 248` needs ~246 characters, so
+the 200-character filter provably cannot drop a near-boundary or overflowing
+row. Each stratum keeps a **deterministic bounded reservoir** whose replacement
+index comes from a hash of the row's own `chunk_id`: no RNG state, identical on
+every rerun, spread across the whole corpus. See §9d for the superseded
+selectors.
 
 It reports `compared`, `mismatch_count`, `max_stage6_vs_stage1_delta`,
 `offender_reconfirmed` and a `selection` block (rows streamed, quotas,
@@ -517,18 +560,166 @@ row, stop at `wanted`". Measured on a population shaped like the real one
 | corpus span covered | **2.7 %** | **99.9 %** |
 | known offender included | **no** | **yes**, forced |
 
-The fix is quotas plus deterministic reservoir sampling. Strata are assigned
-**rarest first** — `boundary` (persisted `base_length >= 248`) 30 %, `newline`
-40 %, `ordinary` (stride) 30 % — so a row that is both near-boundary and
-newline-bearing counts as `boundary` and the 92.6 % newline rate cannot crowd
-the rare stratum out. Each stratum keeps a bounded reservoir whose replacement
-index comes from a hash of the row's own `chunk_id`, so selection carries **no
-RNG state**, spreads across the whole file, and is identical on every rerun.
+The fix was quotas plus deterministic reservoir sampling. **That first fix was
+itself superseded**: its `boundary` stratum keyed on a persisted
+`base_length >= 248`, which the prepared schema does not carry, so on the real
+corpus it selected **zero** near-boundary rows (§9e). The final selector keys
+`overflow`/`boundary` on the Stage-1 **fast** length behind a sound character
+pre-filter — see §9c for the authoritative description.
 
 The report includes a `selection` block — rows streamed, quotas, rows available
 per stratum, newline and near-boundary counts selected, and whether the offender
 was forced in — so the composition of any validation run is auditable after the
 fact.
+
+## 9e. REAL Colab Validation, and a Falsified Schema Assumption
+
+**The real-tokenizer equivalence gate PASSED.** Run against the real prepared
+corpus, split-root COMPLETE marker, pinned PhoBERT tokenizer and local-SSD
+staging:
+
+```
+compared            = 2886
+mismatch_count      = 0
+status              = SUCCESS_NO_VIOLATION
+official_test_used  = false
+```
+
+Offender reconfirmed:
+
+```
+chunk_id                         = Mô_đun:Inflation/data#572
+text_sha256_16                   = 7d99f2dba18e45c0
+Stage-6 authoritative length     = 256
+Stage-1 fast length              = 257
+Stage-1 full project_text length = 257
+delta                            = +1
+matches_audit_043                = true
+```
+
+So on the measured real validation set the optimised `RealisedLengthCounter`
+**is** the full Stage-1 production path, and §7's offender reproduces exactly.
+
+**But the same run falsified an optimisation assumption.** The offender row was
+inspected directly; its top-level keys are
+
+```
+chunk_id  chunk_index  document_id  partition
+source_end  source_shard  source_start  text
+```
+
+There is **no `base_length`**. Confirmed in the producer:
+`unmark/stage1/checkpoint.py::chunk_record` emits exactly those eight fields.
+The chunker computes `reference_length` and `base_length` on its in-memory
+`Chunk`, uses them in its own guard, and **discards them**.
+
+Audit 043 previously asserted *"Prepared rows already carry Stage-6
+`base_length`."* **That is false**, and two things followed from it:
+
+1. **The near-boundary sampler was inert.** Selection keyed `boundary` on
+   `row.get("base_length")`, which is always `None`, so the real validation
+   reported `available_per_stratum: {newline: 2 535 745, ordinary: 885}` and
+   `selected_near_boundary = 0`. The 256->257 offender appeared **only because
+   it was forced by hash**. A real diagnostic bug, not a reporting artifact.
+2. **The persisted-length speed shortcut never existed.** The worker recomputed
+   the authoritative Stage-6 length whenever the persisted value was not an int
+   — i.e. on every row.
+
+> **Every performance projection in §9a that relied on reusing a persisted
+> `base_length` is SUPERSEDED.** It was never applicable to this artifact. The
+> redesigned algorithm is benchmarked in §9f.
+
+No `base_length` field was synthesised and the prepared corpus was not modified.
+
+## 9f. Redesigned Scope Scan — Exact Overflow Scope
+
+**The scientific quantity actually needed** before repair is: *how many TRAIN
+chunks have Stage-1 realised base length > 256?* Nothing more is required to
+decide whether the Stage-1 repair is confined to Stage-1 or whether regeneration
+must be discussed.
+
+**Is recomputing Stage-6 length on all 2 621 624 rows necessary? No — and the
+guarantee is proven from source, not assumed:**
+
+1. `chunking.py:220-221` — the subdivision predicate `fits` requires **both**
+   `reference_length(piece) <= max_length` **and** `base_length(piece) <= max_length`;
+2. `chunking.py:281-286` — after emission, any chunk exceeding either raises
+   `ChunkingViolation`, aborting the run;
+3. `manifest.py:99-102` — building the manifest **raises** on a non-zero
+   `overflow_count`: *"After correct pre-chunking this must be zero;
+   on_overflow=FAIL is a guard, not a policy."*;
+4. `checkpoint.py::verify_prepared_corpus` re-hashes `chunks.jsonl` and
+   `manifest.json` against the COMPLETE marker.
+
+A Stage-6 run that completed and wrote a COMPLETE marker therefore **cannot**
+have admitted a chunk with authoritative `base_length > 256`; the first such
+chunk aborts it. The verified bytes are that run's output. **Every admitted
+prepared chunk satisfies Stage-6 `base_length <= 256`.**
+
+**The algorithm.**
+
+* **A.** Every TRAIN row: the exact validated Stage-1 **fast** realised length
+  only.
+* **B.** Count `<= 256` and `> 256`, the maximum realised length, and full
+  realised-length and overflow-length histograms.
+* **C.** Every offender: recompute the **full production `project_text`** length
+  *and* the authoritative Stage-6 length; require `fast == full` and
+  `Stage-6 <= 256`. A violation is never reported on the shortcut's word alone.
+* **D.** Deterministic Stage-6 spot-checks on non-offenders, which **re-test**
+  the guarantee above rather than assuming it. Any spot-check exceeding 256, or
+  any offender where `fast != full`, aborts with `DIAGNOSTIC_FAILURE`.
+
+**MUST-HAVE versus NICE-TO-HAVE.** The report now says so explicitly. Must-have
+and exact over every row: overflow count, offender metadata with recomputed
+Stage-6, max realised length, overflow histogram. Nice-to-have and **not
+computed**: the all-row Stage-6-vs-Stage-1 delta histogram, which without a
+persisted `base_length` would cost authoritative tokenization on all 2.6 M rows
+for a quantity that does not change the repair decision. The disagreement is
+already known to be systemic — 92 566 of 100 000 in the earlier exact partial
+scan, plus the confirmed 256->257 offender — and `spot_check_delta_histogram`
+keeps a deterministic sample of it. The report carries
+`all_row_stage6_delta_histogram: null` with the reason inline, so its absence is
+explicit rather than an omission.
+
+**FULL TRAIN SCOPE now means exact OVERFLOW SCOPE**, not an all-row delta
+histogram.
+
+**Corrected validation sampling.** The `boundary` stratum no longer touches any
+persisted field. Strata are rarest-first — `overflow` (fast > 256) 15 %,
+`boundary` (fast >= 248) 25 %, `newline` 35 %, `ordinary` 25 % — keyed on the
+Stage-1 **fast** length. To avoid measuring 2.6 M rows during selection, a
+**sound** character pre-filter is applied first: every BPE token covers at least
+one character and `base_text` is a per-character mapping of `canon(text)` with
+marks removed, so `realised <= len(text) + specials`; a row at `realised >= 248`
+needs ~246 characters, and the filter is set at 200. **No near-boundary or
+overflowing row can be filtered out**, and a test asserts it. The cap remains
+`--validate-rows` + 1 (the forced offender).
+
+**Measured speedup of the FINAL algorithm** — both sides on identical inputs
+with the same tokenizer, 10 000 rows in the **real 8-field schema**:
+
+```
+OLD  authoritative every row + full project_text   4.559 ms/row
+FINAL fast every row; Stage-6 only on offenders
+      and spot-checks                              0.123 ms/row  (8 150 rows/s)
+measured speedup                                   37.09x
+peak RSS                                           40 MiB
+```
+
+This is **measured locally with a stub tokenizer**, so the ratio is measured and
+the absolute Colab runtime is not. The real per-row cost must come from the §9c
+benchmark on real rows; no runtime projection for the real corpus is claimed
+here.
+
+## 9g. Line-Index Convention
+
+The validation report records `line_index = 2098760` for the offender, while a
+direct `enumerate(file, 1)` inspection finds it on physical line `2098761`.
+
+**These are the same row.** `line_index` is **0-based** — the index of the row
+within the streamed partition — so physical line = `line_index + 1` under
+1-based numbering. Reports now carry `line_index_base: 0` explicitly, and the
+convention is documented in `_sample_rows`. This is not a second offender.
 
 ## 10. Classification
 
@@ -644,8 +835,8 @@ Same definition the audit has used throughout (`unmark` + `scripts` + `configs`
 
 ```
 before this investigation   66b13c39fa5fe01d9bbeb146708cd2bdc7fb4c786fc0aa29b48cddfc24b2d141
-after the OPTIMISED scanner b7a074f4f9e810ef34b9ace8266a28193027f91d8cf90d51b2bfa04ec99a5ac5
-  (scripts/ tree hash       278ae3a1996392d5f98136cf096989efb83eecbd04d3a5a2c2b8e4c4376ddaf0)
+after the OPTIMISED scanner b7905176ecb9dfaa565ee2b2ec8d4c68e6b0a7293e32f1756786a193c2c046e5
+  (scripts/ tree hash       1ecf9f49c7e80afa39c1648c53bfc589f77a8b05556ee319e2a53eae078aab66)
 ```
 
 Superseded intermediate values, kept so the trail is legible: `2386b9e5…` was
@@ -668,16 +859,16 @@ backward.
 ```
 $ .venv/bin/python -B -m pytest -q -p no:cacheprovider \
       tests/test_stage1_length_contract_scanner.py
-70 passed
+76 passed
 
 $ .venv/bin/python -B -m pytest -q -p no:cacheprovider
-3856 passed, 106 skipped in 136.12s (0:02:16)
+3862 passed, 106 skipped in 147.51s (0:02:27)
 ```
 
-The 49 tests added by the §9a-§9d work prove: the count-only fast path
+The 55 tests added by the §9a-§9g work prove: the count-only fast path
 equals the full `project_text` path on every corpus text including edge cases;
-the memo changes speed and not results; a correct persisted `base_length` is
-accepted while a **tampered** one aborts with `DIAGNOSTIC_FAILURE`; an offender
+the memo changes speed and not results; a scan over real-shaped rows (no
+`base_length`) succeeds; an offender
 is always recomputed even with spot checks disabled; aggregation is independent
 of arrival order (three shuffles) so the report cannot depend on worker count;
 the offender list is bounded and deterministic; a resumed scan equals an
@@ -692,7 +883,7 @@ reports zero mismatches, reconfirms the offender by hash, samples
 deterministically, and **fails closed when the fast path is deliberately
 broken**; the benchmark reports a measured recommendation; the aggregate digest
 ignores timing but not results; and the GPU decision is both stated and true
-(no `torch`/`cupy`/`numba` import). §9d adds: `--validate-rows` caps expensive comparisons; the production path runs exactly once per selected row; a skewed 92.6 %-newline corpus no longer starves the rare strata; the known offender is always forced in; selection is stable across runs; the reservoir is bounded and deterministic; and a broken fast path is still detected on a skewed corpus.
+(no `torch`/`cupy`/`numba` import). §9d adds: `--validate-rows` caps expensive comparisons; the production path runs exactly once per selected row; a skewed 92.6 %-newline corpus no longer starves the rare strata; the known offender is always forced in; selection is stable across runs; the reservoir is bounded and deterministic; and a broken fast path is still detected on a skewed corpus. §9e-§9g add: the fixture matches the production row schema exactly and carries no `base_length`; the scanner never reads `base_length` off a row; a scan over real-shaped rows succeeds; an unverified extra metadata field cannot change scientific counts; offenders carry both a recomputed Stage-6 length and a full `project_text` length that must agree; a Stage-6 guarantee violation fails closed; the all-row delta histogram is explicitly null with its reason; and the character pre-filter cannot miss a near-boundary row.
 
 The 21 diagnostic-scanner tests cover:
 
@@ -726,34 +917,39 @@ environment.**
 **Exact Colab diagnostics still required:**
 
 ```
-# 1. DONE (§7) -- first offender measured. Rerun only to reconfirm:
-python -B scripts/stage1_length_contract_scan.py \
-    --prepared-corpus /content/drive/MyDrive/UNMARK/stage1-prepared/aa49785eadcb \
-    --reproduce --seed 21230 --max-updates 1000
-#   expect exit 2 (SUCCESS_VIOLATION_FOUND), position 33147, update 259
-
-# 2. STILL REQUIRED -- real-tokenizer correctness gate (must report 0 mismatches)
+# --- split roots. --completion-dir is MANDATORY with --stage-local: the
+# --- default is <prepared-corpus>/_checkpoint, which does not exist here and
+# --- reproduces the measured 0.11-second DIAGNOSTIC_FAILURE.
 DRIVE=/content/drive/MyDrive/UNMARK
+PREPARED=$DRIVE/stage1-prepared/aa49785eadcb
+COMPLETION=$DRIVE/stage1-checkpoints/aa49785eadcb
 SSD=/content/unmark-stage1-diagnostics
 OUT=$DRIVE/stage1-diagnostics/e495f7417fe4
 
+# 1. DONE (§7) -- first offender measured. Rerun only to reconfirm:
 python -B scripts/stage1_length_contract_scan.py \
-    --prepared-corpus $DRIVE/stage1-prepared/aa49785eadcb \
+    --prepared-corpus $PREPARED --reproduce --seed 21230 --max-updates 1000
+#   expect exit 2 (SUCCESS_VIOLATION_FOUND), position 33147, update 259
+
+# 2. REQUIRED -- real-tokenizer equivalence gate on the FINAL redesigned HEAD
+python -B scripts/stage1_length_contract_scan.py \
+    --prepared-corpus $PREPARED --completion-dir $COMPLETION \
     --stage-local $SSD --validate --validate-rows 5000 \
     --offender-hash 7d99f2dba18e45c0 \
     --report $OUT/length-contract-validate.json
+#   must report mismatch_count = 0 and reconfirm the offender (256 -> 257)
 
-# 3. STILL REQUIRED -- worker benchmark on ONE fixed real subset
+# 3. REQUIRED -- benchmark the REDESIGNED algorithm (§9f), not the superseded one
 python -B scripts/stage1_length_contract_scan.py \
-    --prepared-corpus $DRIVE/stage1-prepared/aa49785eadcb \
+    --prepared-corpus $PREPARED --completion-dir $COMPLETION \
     --stage-local $SSD --benchmark --benchmark-rows 50000 \
-    --benchmark-workers 1,2,4,8 \
+    --benchmark-workers 1,2,4,8,16 \
     --report $OUT/length-contract-benchmark.json
-#   read "recommended_workers" from the report; all digests must be identical
+#   read "recommended_workers"; all aggregate digests must be identical
 
-# 4. STILL REQUIRED -- full TRAIN scope, local SSD, recommended worker count
+# 4. REQUIRED -- exact full TRAIN OVERFLOW scope
 python -B scripts/stage1_length_contract_scan.py \
-    --prepared-corpus $DRIVE/stage1-prepared/aa49785eadcb \
+    --prepared-corpus $PREPARED --completion-dir $COMPLETION \
     --stage-local $SSD --partition train \
     --workers <recommended_workers> \
     --checkpoint-every 100000 --progress 100000 \
@@ -767,16 +963,35 @@ steps.**
 
 * **Step 2** is *only* the real-tokenizer equivalence gate: optimised
   `RealisedLengthCounter` == full production `project_text`. It settles whether
-  the §9a shortcut is exact. It says nothing about how many chunks overflow.
-* **Step 3** benchmarks worker counts and recommends one.
-* **Step 4** determines the full TRAIN overflow-violation scope and the complete
-  delta histogram, and is therefore what quantifies whether violations are rare
-  or widespread — and hence whether the repair stays confined to Stage-1 (§10)
-  or whether regeneration must even be discussed (§11).
+  the §9f fast path is exact. It says nothing about how many chunks overflow.
+* **Step 3** benchmarks worker counts on the redesigned algorithm and
+  recommends one.
+* **Step 4** determines the **exact full TRAIN overflow scope**: the overflow
+  count, the maximum Stage-1 realised length, the realised-length and
+  overflow-length histograms, the exact offender evidence (each with a
+  recomputed full `project_text` length and a recomputed authoritative Stage-6
+  length), and sampled Stage-6 spot-check/delta evidence. It **does not**
+  produce a complete all-row Stage-6-vs-Stage-1 delta histogram; that is
+  intentionally not computed (§9f).
 
-**None of their results exist yet.** §9a's speedup is measured locally with a
-stub tokenizer, and its runtime figures are projections. No Colab measurement of
-the staged, validated or benchmarked scan is claimed anywhere in this audit.
+**Colab status, stated precisely.**
+
+| item | status |
+|---|---|
+| real-tokenizer equivalence (§9e) | **PASS, retained** — `compared = 2886`, `mismatch_count = 0`, offender reconfirmed at Stage-6 256 / Stage-1 fast 257 / Stage-1 full 257 |
+| one validation rerun on the FINAL redesigned committed HEAD | **REQUIRED** as an acceptance/regression gate |
+| worker benchmark of the FINAL algorithm | **NOT YET MEASURED ON COLAB** |
+| full TRAIN overflow scope | **NOT YET MEASURED** |
+
+The §9e evidence stands on its own — the fast path was proven equal to the full
+production path on 2 886 real chunks — but the scanner has since been redesigned
+after the schema bug, so that gate must be re-run once on the final HEAD before
+its result is carried forward.
+
+§9a's speedup figures are measured locally with a stub tokenizer and are marked
+superseded there; §9f's 37.09x is likewise a local measurement with a stub
+tokenizer on both sides. **No real-corpus runtime, benchmark result or overflow
+scope is claimed anywhere in this audit.**
 
 ## 13. Official UIT-VSFC TEST
 

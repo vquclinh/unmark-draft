@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 import pathlib
 import sys
 
@@ -284,22 +285,39 @@ CORPUS_TEXTS = [
 ]
 
 
-def write_corpus(directory, texts, base_lengths=None):
-    """A minimal prepared-corpus shaped file. Never real corpus data."""
+PRODUCTION_ROW_FIELDS = (
+    "chunk_id", "chunk_index", "document_id", "partition",
+    "source_end", "source_shard", "source_start", "text",
+)
+"""EXACTLY what `unmark/stage1/checkpoint.py::chunk_record` persists.
+
+Derived from the production producer, not invented here, and asserted against it
+below. Note what is absent: **`base_length`**. The chunker computes it, uses it
+in its own guard, and discards it. A scanner that reads `row["base_length"]`
+gets `None` on every real row (Audit 043 §9e).
+"""
+
+
+def write_corpus(directory, texts, extra_fields=None):
+    """A prepared-corpus file in the REAL production row schema."""
     from unmark.stage1.manifest import CHUNKS_NAME
 
     directory.mkdir(parents=True, exist_ok=True)
-    tokenizer = CorpusTokenizer()
-    _reference, base_length, _t = build_length_functions(tokenizer)
     rows = []
     for index, text in enumerate(texts):
-        rows.append({
+        row = {
             "chunk_id": f"doc-{index:04d}#0",
+            "chunk_index": 0,
+            "document_id": f"doc-{index:04d}",
             "partition": "train",
+            "source_end": len(text),
+            "source_shard": "shard-000",
+            "source_start": 0,
             "text": text,
-            "base_length": (base_lengths[index] if base_lengths is not None
-                            else base_length(text)),
-        })
+        }
+        if extra_fields:
+            row.update(extra_fields(index, text) or {})
+        rows.append(row)
     (directory / CHUNKS_NAME).write_text(
         "\n".join(json.dumps(r, sort_keys=True) for r in rows) + "\n", encoding="utf-8")
     return directory
@@ -347,42 +365,148 @@ def test_the_memo_changes_speed_not_results():
     assert warm.memo_hits > 0, "the memo must actually be exercised"
 
 
-# -- 2. persisted Stage-6 base_length verification ---------------------------
-def test_a_correct_persisted_base_length_is_accepted(tmp_path, stub_tokenizer, capsys):
+# -- 2. REAL row schema: base_length is NOT persisted ------------------------
+def test_the_test_corpus_matches_the_production_row_schema():
+    """The fixture must not be more generous than the real producer."""
+    import inspect
+
+    import unmark.stage1.checkpoint as checkpoint_module
+
+    source = inspect.getsource(checkpoint_module.chunk_record)
+    emitted = set(re.findall(r'"(\w+)":', source))
+    assert emitted == set(PRODUCTION_ROW_FIELDS), (
+        f"production chunk_record emits {sorted(emitted)}; the fixture models "
+        f"{sorted(PRODUCTION_ROW_FIELDS)}"
+    )
+    assert "base_length" not in emitted, (
+        "base_length is NOT persisted -- this is the Audit 043 §9e schema fact"
+    )
+
+
+def test_a_real_shaped_row_carries_no_base_length(tmp_path):
+    from unmark.stage1.manifest import CHUNKS_NAME
+
+    prepared = write_corpus(tmp_path / "corpus", CORPUS_TEXTS)
+    first = json.loads((prepared / CHUNKS_NAME).read_text(encoding="utf-8").splitlines()[0])
+    assert set(first) == set(PRODUCTION_ROW_FIELDS)
+    assert "base_length" not in first
+
+
+def test_the_scanner_never_reads_base_length_from_a_row():
+    """The exact assumption that broke on Colab, asserted on the AST.
+
+    Scoped to reads off a *row*: `_WORKER["base_length"]` is the worker's cached
+    Stage-6 length *function* and is unrelated to the persisted row schema.
+    """
+    tree = ast.parse(SCANNER.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "get"
+                and getattr(node.func.value, "id", None) == "row"):
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and arg.value == "base_length":
+                    offenders.append("row.get('base_length')")
+        if (isinstance(node, ast.Subscript)
+                and getattr(node.value, "id", None) == "row"
+                and isinstance(node.slice, ast.Constant)
+                and node.slice.value == "base_length"):
+            offenders.append("row['base_length']")
+    assert not offenders, (
+        f"the scanner reads {offenders} -- the prepared schema does not persist it"
+    )
+
+
+def test_a_scan_over_real_shaped_rows_succeeds(tmp_path, stub_tokenizer, capsys):
     prepared = write_corpus(tmp_path / "corpus", CORPUS_TEXTS)
     code = scanner.scan(scan_args(prepared, verify_every=1, workers=1))
     report = json.loads(capsys.readouterr().out)
     assert code == scanner.EXIT_NO_VIOLATION
-    assert report["status"] == "SUCCESS_NO_VIOLATION"
     assert report["scanned"] == len(CORPUS_TEXTS)
     assert report["authoritative_spot_checks"] == len(CORPUS_TEXTS)
+    assert report["line_index_base"] == 0
 
 
-def test_a_tampered_persisted_base_length_fails_closed(tmp_path, stub_tokenizer, capsys):
-    """The shortcut must never silently trust the JSON."""
-    lengths = [None] * len(CORPUS_TEXTS)
+def test_an_optional_extra_field_cannot_change_scientific_counts(tmp_path,
+                                                                 stub_tokenizer, capsys):
+    """Only the verified contract may influence counts."""
+    plain = write_corpus(tmp_path / "plain", CORPUS_TEXTS)
+    scanner.scan(scan_args(plain, verify_every=1, workers=1))
+    baseline = json.loads(capsys.readouterr().out)
+
+    decorated = write_corpus(
+        tmp_path / "decorated", CORPUS_TEXTS,
+        extra_fields=lambda i, t: {"base_length": 9999, "some_future_field": "x"})
+    scanner.scan(scan_args(decorated, verify_every=1, workers=1))
+    other = json.loads(capsys.readouterr().out)
+
+    for field in ("scanned", "within_max_length", "over_max_length",
+                  "max_stage1_realised_base_length", "over_length_histogram",
+                  "realised_length_histogram"):
+        assert baseline[field] == other[field], (
+            f"{field} changed when an unverified metadata field was added"
+        )
+
+
+def plus_one_offender():
+    """A text where Stage-6 <= 256 < Stage-1 -- the real 256->257 shape.
+
+    Under the stub tokenizer a newline-terminated run merges its final pair, so
+    one newline makes the Stage-6 whole-string count exactly one shorter than
+    the Stage-1 per-`\\S+` count. Words are added until Stage-1 realised hits
+    257 with Stage-6 at 256, which is the Audit 043 §7 offender's shape and
+    respects the Stage-6 admission guarantee.
+    """
     tokenizer = CorpusTokenizer()
+    counter = scanner.RealisedLengthCounter(tokenizer, tokenizer.unk_token_id)
     _r, base_length, _t = build_length_functions(tokenizer)
-    for index, text in enumerate(CORPUS_TEXTS):
-        lengths[index] = base_length(text)
-    lengths[3] += 7                                  # a lie
-    prepared = write_corpus(tmp_path / "corpus", CORPUS_TEXTS, base_lengths=lengths)
-    code = scanner.scan(scan_args(prepared, verify_every=1, workers=1))
-    assert code == scanner.EXIT_DIAGNOSTIC_FAILURE
-    assert "failed verification" in capsys.readouterr().err
+    # "abcd" -> 2 pieces, "ab" -> 1 piece, so mixing both reaches every parity.
+    for words in range(100, 400):
+        for tail in ("", " ab"):
+            text = " ".join(["abcd"] * words) + tail
+            text = text.replace(" ", "\n", 1)
+            if (counter.length(text) == LOCKED_MAX + 1
+                    and base_length(text) == LOCKED_MAX):
+                return text
+    return None
 
 
-def test_offenders_are_always_recomputed_even_without_spot_checks(tmp_path,
-                                                                  stub_tokenizer, capsys):
-    long_text = " ".join(["abcdefgh"] * 400)
-    prepared = write_corpus(tmp_path / "corpus", [long_text])
-    scanner.scan(scan_args(prepared, verify_every=0, workers=1, max_offenders=5))
+def test_offenders_carry_recomputed_stage6_and_full_project_text(tmp_path,
+                                                                 stub_tokenizer, capsys):
+    text = plus_one_offender()
+    assert text is not None, "the fixture must be able to construct a 256->257 case"
+    prepared = write_corpus(tmp_path / "corpus", [text])
+    code = scanner.scan(scan_args(prepared, verify_every=0, workers=1, max_offenders=5))
     report = json.loads(capsys.readouterr().out)
+    assert code == scanner.EXIT_VIOLATION_FOUND
     assert report["over_max_length"] == 1
     offender = report["offenders"][0]
-    assert offender["stage6_recomputed_base_length"] is not None, (
-        "an offender must never be reported on the persisted value alone"
-    )
+    assert offender["stage6_authoritative_base_length"] == LOCKED_MAX
+    assert offender["stage1_fast_base_length"] == LOCKED_MAX + 1
+    assert offender["stage1_full_project_text_length"] == offender["stage1_fast_base_length"]
+    assert offender["delta"] == 1
+
+
+def test_a_stage6_guarantee_violation_fails_closed(tmp_path, stub_tokenizer, capsys):
+    """If Stage-6 itself admitted an over-length chunk, refuse rather than report.
+
+    The Stage-6 chunker raises on any chunk exceeding max_length and the manifest
+    refuses a non-zero overflow_count, so this cannot happen on a genuinely
+    completed corpus -- which is exactly why the scanner must notice if it does.
+    """
+    prepared = write_corpus(tmp_path / "corpus", [" ".join(["abcdefgh"] * 400)])
+    code = scanner.scan(scan_args(prepared, verify_every=0, workers=1))
+    assert code == scanner.EXIT_DIAGNOSTIC_FAILURE
+    assert "contract guarantee failed" in capsys.readouterr().err
+
+
+def test_the_all_row_delta_histogram_is_explicitly_not_computed(tmp_path,
+                                                                stub_tokenizer, capsys):
+    prepared = write_corpus(tmp_path / "corpus", CORPUS_TEXTS)
+    scanner.scan(scan_args(prepared, verify_every=1, workers=1))
+    report = json.loads(capsys.readouterr().out)
+    assert report["all_row_stage6_delta_histogram"] is None
+    assert "does not change the repair decision" in report["all_row_delta_histogram_note"]
+    assert report["spot_check_disagreements"] >= 0
 
 
 # -- 3. newline-bearing coverage --------------------------------------------
@@ -396,17 +520,24 @@ def test_newline_bearing_rows_are_scanned(tmp_path, stub_tokenizer, capsys):
 
 # -- 4. worker-count independence -------------------------------------------
 def measured_items(texts):
+    """Items in the shape `_measure_batch` now produces."""
     tokenizer = CorpusTokenizer()
     counter = scanner.RealisedLengthCounter(tokenizer, tokenizer.unk_token_id)
     _r, base_length, _t = build_length_functions(tokenizer)
     items = []
     for index, text in enumerate(texts):
+        realised = counter.length(text)
+        over = realised > LOCKED_MAX
         items.append({
-            "line_index": index, "chunk_id": f"doc-{index:04d}#0", "partition": "train",
+            "line_index": index, "chunk_id": f"doc-{index:04d}#0",
+            "document_id": f"doc-{index:04d}", "partition": "train",
             "text_sha256_16": scanner.stable_id(text), "characters": len(text),
             "contains_newline": "\n" in text,
-            "persisted": base_length(text), "recomputed": None,
-            "realised": counter.length(text),
+            "realised": realised,
+            "full_project_text": realised if over else None,
+            "authoritative": scanner.authoritative_base_length(base_length, text)
+                             if over else None,
+            "spot_checked": False,
         })
     return items
 
@@ -470,13 +601,17 @@ def test_a_resumed_scan_equals_an_uninterrupted_one(tmp_path, stub_tokenizer, ca
         "aggregate": {
             "scanned": half["scanned"], "within": half["within_max_length"],
             "over": half["over_max_length"],
-            "disagreements": half["stage6_vs_stage1_disagreements"],
-            "verified": half["authoritative_spot_checks"],
-            "max_authoritative": half["max_stage6_authoritative_base_length"],
+                        "spot_checked": half["authoritative_spot_checks"],
+            "spot_check_disagreements": half["spot_check_disagreements"],
+            "max_authoritative_seen": half["max_stage6_authoritative_seen"],
             "max_realised": half["max_stage1_realised_base_length"],
             "over_histogram": {str(k): v for k, v in half["over_length_histogram"].items()},
-            "delta_histogram": {str(k): v for k, v in half["delta_histogram"].items()},
-            "offenders": half["offenders"], "next_index": len(texts) // 2,
+            "realised_histogram": {str(k): v
+                                   for k, v in half["realised_length_histogram"].items()},
+            "spot_delta_histogram": {str(k): v
+                                     for k, v in half["spot_check_delta_histogram"].items()},
+            "offenders": half["offenders"], "contract_failures": [],
+            "next_index": len(texts) // 2,
         },
     }, sort_keys=True), encoding="utf-8")
 
@@ -488,10 +623,8 @@ def test_a_resumed_scan_equals_an_uninterrupted_one(tmp_path, stub_tokenizer, ca
     resumed = json.loads((tmp_path / "resumed.json").read_text(encoding="utf-8"))
 
     for field in ("scanned", "within_max_length", "over_max_length",
-                  "stage6_vs_stage1_disagreements",
-                  "max_stage6_authoritative_base_length",
-                  "max_stage1_realised_base_length",
-                  "over_length_histogram", "delta_histogram", "offenders"):
+                  "max_stage1_realised_base_length", "over_length_histogram",
+                  "realised_length_histogram", "offenders"):
         assert resumed[field] == whole[field], f"{field} differs after resume"
 
 
@@ -521,8 +654,10 @@ def test_the_three_exit_codes_are_distinct_and_named():
 
 def test_a_violation_does_not_share_an_exit_code_with_a_failure(tmp_path,
                                                                 stub_tokenizer, capsys):
-    prepared = write_corpus(tmp_path / "corpus", [" ".join(["abcdefgh"] * 400)])
-    code = scanner.scan(scan_args(prepared, workers=1, verify_every=1))
+    text = plus_one_offender()
+    assert text is not None, "the fixture must be able to construct a 256->257 case"
+    prepared = write_corpus(tmp_path / "corpus", [text])
+    code = scanner.scan(scan_args(prepared, workers=1, verify_every=0))
     report = json.loads(capsys.readouterr().out)
     assert code == scanner.EXIT_VIOLATION_FOUND != scanner.EXIT_DIAGNOSTIC_FAILURE
     assert report["status"] == "SUCCESS_VIOLATION_FOUND"
@@ -695,8 +830,8 @@ def test_validation_sampling_is_deterministic(tmp_path, stub_tokenizer):
     prepared = write_corpus(tmp_path / "corpus", CORPUS_TEXTS * 6)
     args = scan_args(prepared, validate_rows=30, validate_stride=3,
                      stage_local=None, local_chunks=None)
-    first, _b1, _n1, _s1 = scanner._sample_rows(args, 30)
-    second, _b2, _n2, _s2 = scanner._sample_rows(args, 30)
+    first, _b1, _n1, _s1 = scanner._sample_rows(args, 30, counter=_counter())
+    second, _b2, _n2, _s2 = scanner._sample_rows(args, 30, counter=_counter())
     assert [i for i, _ in first] == [i for i, _ in second]
 
 
@@ -722,9 +857,9 @@ def test_the_aggregate_digest_ignores_timing_but_not_results():
     base = {
         "scanned": 10, "within_max_length": 9, "over_max_length": 1,
         "stage6_vs_stage1_disagreements": 3,
-        "max_stage6_authoritative_base_length": 256,
         "max_stage1_realised_base_length": 257,
-        "over_length_histogram": {"257": 1}, "delta_histogram": {"1": 3},
+        "over_length_histogram": {"257": 1},
+        "realised_length_histogram": {"257": 1, "40": 9},
         "offenders": [{"line_index": 4}],
     }
     faster = dict(base, elapsed_seconds=0.1, rows_per_second=99999, workers=8)
@@ -762,8 +897,12 @@ def test_the_gpu_decision_is_recorded_in_the_scanner():
 # --validate-rows is a HARD cap on expensive work (Audit 043 §9d)
 # ---------------------------------------------------------------------------
 def skewed_corpus(tmp_path, rows=4000, newline_rate=0.926, offender="OFFENDER\nrow"):
-    """A population shaped like the measured one: 92.6 % newline-bearing, rare
-    near-boundary rows, and the known offender placed far down the file."""
+    """A population shaped like the measured one, in the REAL row schema.
+
+    92.6 % newline-bearing, rare LONG rows that the fast counter will classify
+    as near-boundary/overflow, and the known offender placed far down the file.
+    No `base_length` field -- that is the point.
+    """
     from unmark.stage1.manifest import CHUNKS_NAME
 
     directory = tmp_path / "skewed"
@@ -771,11 +910,14 @@ def skewed_corpus(tmp_path, rows=4000, newline_rate=0.926, offender="OFFENDER\nr
     records = []
     for index in range(rows):
         is_newline = (index % 1000) < int(newline_rate * 1000)
-        is_boundary = (index % 250) == 0
+        is_long = (index % 250) == 0
+        text = (" ".join(["abcdefgh"] * 400) if is_long
+                else ("aa bb\ncc" if is_newline else "aa bb cc"))
         records.append({
-            "chunk_id": f"doc-{index:06d}#0", "partition": "train",
-            "text": "aa bb\ncc" if is_newline else "aa bb cc",
-            "base_length": 251 if is_boundary else 40,
+            "chunk_id": f"doc-{index:06d}#0", "chunk_index": 0,
+            "document_id": f"doc-{index:06d}", "partition": "train",
+            "source_end": len(text), "source_shard": "shard-000",
+            "source_start": 0, "text": text,
         })
     offender_line = int(rows * 0.75)
     records[offender_line]["text"] = offender
@@ -783,6 +925,11 @@ def skewed_corpus(tmp_path, rows=4000, newline_rate=0.926, offender="OFFENDER\nr
     (directory / CHUNKS_NAME).write_text(
         "\n".join(json.dumps(r, sort_keys=True) for r in records) + "\n", encoding="utf-8")
     return directory, offender_line
+
+
+def _counter():
+    tokenizer = CorpusTokenizer()
+    return scanner.RealisedLengthCounter(tokenizer, tokenizer.unk_token_id)
 
 
 def selection_args(prepared, offender_hash, **overrides):
@@ -799,7 +946,7 @@ def test_validate_rows_caps_expensive_comparisons(tmp_path):
     prepared, _line = skewed_corpus(tmp_path, rows=4000)
     for wanted in (50, 200, 1000):
         args = selection_args(prepared, scanner.stable_id("OFFENDER\nrow"))
-        picked, _b, _n, stats = scanner._sample_rows(args, wanted)
+        picked, _b, _n, stats = scanner._sample_rows(args, wanted, counter=_counter())
         assert len(picked) <= wanted + 1, (
             f"asked for {wanted}, selected {len(picked)} -- the expensive full "
             "project_text path must not run more than the cap allows"
@@ -835,7 +982,7 @@ def test_a_skewed_corpus_no_longer_starves_the_rare_strata(tmp_path):
     near-boundary rows and stopping after ~2 % of the file."""
     prepared, _line = skewed_corpus(tmp_path, rows=4000)
     args = selection_args(prepared, scanner.stable_id("OFFENDER\nrow"))
-    picked, boundary, newline, stats = scanner._sample_rows(args, 500)
+    picked, boundary, newline, stats = scanner._sample_rows(args, 500, counter=_counter())
     lines = [i for i, _ in picked]
 
     assert boundary > 0, "near-boundary rows must be represented"
@@ -851,7 +998,7 @@ def test_the_known_offender_is_always_included(tmp_path):
     offender = "OFFENDER\nrow"
     prepared, offender_line = skewed_corpus(tmp_path, rows=4000, offender=offender)
     args = selection_args(prepared, scanner.stable_id(offender))
-    picked, _b, _n, stats = scanner._sample_rows(args, 20)
+    picked, _b, _n, stats = scanner._sample_rows(args, 20, counter=_counter())
     assert stats["offender_forced_in"] is True
     assert any(index == offender_line for index, _row in picked), (
         "the measured Audit 043 offender must be in every validation set"
@@ -861,7 +1008,7 @@ def test_the_known_offender_is_always_included(tmp_path):
 def test_no_offender_hash_means_no_forced_row(tmp_path):
     prepared, _line = skewed_corpus(tmp_path, rows=1000)
     args = selection_args(prepared, "")
-    picked, _b, _n, stats = scanner._sample_rows(args, 50)
+    picked, _b, _n, stats = scanner._sample_rows(args, 50, counter=_counter())
     assert stats["offender_forced_in"] is False
     assert len(picked) <= 50
 
@@ -869,8 +1016,8 @@ def test_no_offender_hash_means_no_forced_row(tmp_path):
 def test_selection_is_stable_across_runs(tmp_path):
     prepared, _line = skewed_corpus(tmp_path, rows=4000)
     args = selection_args(prepared, scanner.stable_id("OFFENDER\nrow"))
-    first = [i for i, _ in scanner._sample_rows(args, 300)[0]]
-    second = [i for i, _ in scanner._sample_rows(args, 300)[0]]
+    first = [i for i, _ in scanner._sample_rows(args, 300, counter=_counter())[0]]
+    second = [i for i, _ in scanner._sample_rows(args, 300, counter=_counter())[0]]
     assert first == second and first, "deterministic selection, no RNG state"
 
 
@@ -891,7 +1038,21 @@ def test_strata_quotas_sum_to_the_cap():
     assert sum(share for _name, share in scanner.VALIDATION_STRATA) == pytest.approx(1.0)
     assert scanner.BOUNDARY_MARGIN == 8
     names = [name for name, _share in scanner.VALIDATION_STRATA]
-    assert names[0] == "boundary", "rarest stratum must be assigned first"
+    assert names[:2] == ["overflow", "boundary"], "rarest strata assigned first"
+    assert "newline" in names and "ordinary" in names
+
+
+def test_the_character_prefilter_cannot_miss_a_near_boundary_row():
+    """Sound, not heuristic: realised <= len(text) + specials."""
+    assert scanner.CHARACTER_PREFILTER < LOCKED_MAX - scanner.BOUNDARY_MARGIN - 8
+    tokenizer = CorpusTokenizer()
+    counter = scanner.RealisedLengthCounter(tokenizer, tokenizer.unk_token_id)
+    for text in CORPUS_TEXTS + [" ".join(["abcdefgh"] * 400)]:
+        realised = counter.length(text)
+        if realised >= LOCKED_MAX - scanner.BOUNDARY_MARGIN:
+            assert len(text) >= scanner.CHARACTER_PREFILTER, (
+                f"a row at realised={realised} was below the prefilter"
+            )
 
 
 def test_validate_still_reports_zero_mismatches_on_a_skewed_corpus(tmp_path,
