@@ -187,6 +187,69 @@ class _FixedPool:
         return list(self._prepared[:len(tasks)])
 
 
+def clone_tensors(state):
+    """Deep, tensor-aware snapshot. Shallow dict equality is not enough here."""
+    out = {}
+    for key, value in state.items():
+        out[key] = value.detach().clone() if torch.is_tensor(value) else copy.deepcopy(value)
+    return out
+
+
+def same_tensor_state(a, b) -> bool:
+    """Bit-identical comparison of two tensor state dicts."""
+    if set(a) != set(b):
+        return False
+    for key, value in a.items():
+        other = b[key]
+        if torch.is_tensor(value) != torch.is_tensor(other):
+            return False
+        if torch.is_tensor(value):
+            if value.shape != other.shape or not torch.equal(value, other):
+                return False
+        elif value != other:
+            return False
+    return True
+
+
+def assert_same_start(first, second, what: str) -> None:
+    """Every scientific input to `train_run` must match, bit for bit."""
+    a, b = first["initial"], second["initial"]
+    assert same_tensor_state(a["adapter"], b["adapter"]), f"{what}: adapter start differs"
+    assert same_tensor_state(a["encoder"], b["encoder"]), (
+        f"{what}: FROZEN ENCODER start differs -- the encoder is restored from no "
+        "checkpoint, so it must be constructed under a controlled seed"
+    )
+    assert same_tensor_state(a["carried_adapter"], b["carried_adapter"]), (
+        f"{what}: resume payload adapter differs")
+    assert a["carried_sampler"] == b["carried_sampler"], f"{what}: sampler state differs"
+    assert a["carried_points"] == b["carried_points"], f"{what}: point history differs"
+    assert a["carried_global_update"] == b["carried_global_update"], f"{what}: global_update"
+    assert a["carried_cap"] == b["carried_cap"], f"{what}: cap differs"
+    assert a["carried_provenance"] == b["carried_provenance"], f"{what}: provenance differs"
+    assert torch.equal(a["rng"], b["rng"]), f"{what}: torch RNG state differs at entry"
+
+
+def assert_same_outcome(first, second, what: str) -> None:
+    """Every scientific output must match, bit for bit."""
+    assert same_tensor_state(first["adapter_state"], second["adapter_state"]), (
+        f"{what}: final adapter tensors differ")
+    assert same_tensor_state(first["checkpoint"]["adapter_state"],
+                             second["checkpoint"]["adapter_state"]), (
+        f"{what}: written checkpoint adapter tensors differ")
+    assert first["points"] == second["points"], f"{what}: validation history differs"
+    assert first["cap"] == second["cap"], f"{what}: cap differs"
+    assert first["continued"] == second["continued"], f"{what}: continued differs"
+    assert first["budget_limited"] == second["budget_limited"], f"{what}: budget_limited"
+    assert first["result"].to_dict() == second["result"].to_dict(), f"{what}: RunResult differs"
+    assert first["checkpoint"]["sampler_state"] == second["checkpoint"]["sampler_state"], (
+        f"{what}: sampler state differs")
+    assert torch.equal(first["rng_after"], second["rng_after"]), f"{what}: RNG state differs"
+    for counter in ("forward", "step", "next_batch", "evaluate"):
+        assert getattr(first["counters"], counter) == getattr(second["counters"], counter), (
+            f"{what}: {counter} count differs")
+    assert first["pool_calls"] == second["pool_calls"], f"{what}: preparation calls differ"
+
+
 class _Counters:
     def __init__(self) -> None:
         self.forward = 0
@@ -238,6 +301,10 @@ def build_resume_payload(tmp_path):
     moments and is compared ON vs OFF.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
+    # Seeded for the same reason `run_once` is: `_TinyBackbone` draws from the
+    # global RNG, so an unseeded build would make the payload depend on whatever
+    # ran before it.
+    torch.manual_seed(0)
     objective = build_objective()
     adapter = objective.unmark_encoder.adapter
     optimizer = build_optimizer(
@@ -259,7 +326,7 @@ def build_resume_payload(tmp_path):
     return load_training_checkpoint(tmp_path)
 
 
-def run_once(tmp_path, *, sink, prepared, carried):
+def run_once(tmp_path, *, sink, prepared, carried, seed=0):
     """One REAL `train_run` RESUME, instrumented with counters.
 
     `carried` is the real checkpoint at 19 950/20 000. Nothing on the restore
@@ -274,6 +341,25 @@ def run_once(tmp_path, *, sink, prepared, carried):
     # scientifically identical state even if a restore path were ever to touch
     # the payload it was handed.
     carried = copy.deepcopy(carried)
+
+    # ------------------------------------------------------------------
+    # SEED FIRST. This line used to sit ~28 lines further down, AFTER
+    # `build_objective()`, and that was the entire CUDA failure (Audit 042).
+    #
+    # `_TinyBackbone.__init__` builds `nn.Embedding` and `nn.Linear`, whose
+    # `reset_parameters()` draws from the GLOBAL torch RNG. The adapter is
+    # immune twice over -- `fresh_adapter` forks the RNG and restores it, and
+    # `adapter.load_state_dict(..., strict=True)` overwrites it from the resume
+    # payload -- but the frozen ENCODER is restored from nothing, because v2
+    # checkpoints are adapter-only by design.
+    #
+    # So with the old ordering the second execution built its encoder from the
+    # RNG state the FIRST execution's 50 updates had left behind: different
+    # frozen weights, different representations, different loss, different
+    # gradients, and a diverged `tone_embedding.weight`. It would have failed
+    # OFF-vs-OFF just as surely as OFF-vs-ON.
+    # ------------------------------------------------------------------
+    torch.manual_seed(seed)
     objective = build_objective()
     counters = _Counters()
     pool = _FixedPool(prepared)
@@ -302,8 +388,20 @@ def run_once(tmp_path, *, sink, prepared, carried):
     Stage1Objective.forward = counted_forward
     torch.optim.AdamW.step = counted_step
     DeterministicSampler.next_batch = counted_next
-    torch.manual_seed(0)
+    # Captured AFTER construction: deterministic, because the seed above is set
+    # before anything consumes RNG.
     rng_before = torch.random.get_rng_state()
+    initial = {
+        "adapter": clone_tensors(objective.unmark_encoder.adapter.state_dict()),
+        "encoder": clone_tensors(objective.unmark_encoder.encoder.state_dict()),
+        "carried_adapter": clone_tensors(carried["adapter_state"]),
+        "carried_sampler": dict(carried["sampler_state"]),
+        "carried_points": [dict(p) for p in carried["points"]],
+        "carried_global_update": carried["global_update"],
+        "carried_cap": carried["cap"],
+        "carried_provenance": dict(carried["provenance"]),
+        "rng": rng_before.clone(),
+    }
     try:
         result = train_run(
             objective=objective,
@@ -343,6 +441,7 @@ def run_once(tmp_path, *, sink, prepared, carried):
         "rng_before": rng_before,
         "rng_after": torch.random.get_rng_state(),
         "checkpoint": written,
+        "initial": initial,
     }
 
 
@@ -350,15 +449,91 @@ def run_once(tmp_path, *, sink, prepared, carried):
 # The equivalence proof
 # ---------------------------------------------------------------------------
 
+def execute(tmp_path, name, carried, prepared, *, telemetry: bool):
+    """One execution, OFF or ON, from an independent deep copy of `carried`."""
+    buffer = io.StringIO() if telemetry else None
+    sink = JsonlSink(buffer) if telemetry else None
+    outcome = run_once(tmp_path / name, sink=sink, prepared=prepared, carried=carried)
+    return outcome, buffer
+
+
+def canonical_start(tmp_path):
+    """The one canonical starting state every execution in a test derives from."""
+    return fixed_batch(), build_resume_payload(tmp_path / "seed")
+
+
 def both_runs(tmp_path):
-    """OFF and ON from the SAME real resume payload, so they start identical."""
-    prepared = fixed_batch()
-    carried = build_resume_payload(tmp_path / "seed")
-    off = run_once(tmp_path / "off", sink=None, prepared=prepared, carried=carried)
-    buffer = io.StringIO()
-    on = run_once(tmp_path / "on", sink=JsonlSink(buffer),
-                  prepared=prepared, carried=carried)
+    """OFF and ON from the SAME real resume payload, so they start identical.
+
+    The start-state equality is ASSERTED here rather than assumed -- that is the
+    check whose absence let the Audit 042 fixture defect masquerade as a
+    telemetry effect.
+    """
+    prepared, carried = canonical_start(tmp_path)
+    off, _ = execute(tmp_path, "off", carried, prepared, telemetry=False)
+    on, buffer = execute(tmp_path, "on", carried, prepared, telemetry=True)
+    assert_same_start(off, on, "OFF vs ON")
     return off, on, buffer
+
+
+def test_off_vs_off_is_reproducible(tmp_path):
+    """OFF1 == OFF2. Without this, an OFF-vs-ON difference proves nothing.
+
+    This is the counterfactual that identifies the Audit 042 root cause: under
+    the old ordering the second execution built its frozen encoder from the RNG
+    state the first had left behind, so even OFF vs OFF diverged.
+    """
+    prepared, carried = canonical_start(tmp_path)
+    first, _ = execute(tmp_path, "off1", carried, prepared, telemetry=False)
+    second, _ = execute(tmp_path, "off2", carried, prepared, telemetry=False)
+    assert_same_start(first, second, "OFF vs OFF")
+    assert_same_outcome(first, second, "OFF vs OFF")
+
+
+def test_on_vs_on_is_reproducible(tmp_path):
+    """ON1 == ON2. Telemetry itself must be deterministic."""
+    prepared, carried = canonical_start(tmp_path)
+    first, _ = execute(tmp_path, "on1", carried, prepared, telemetry=True)
+    second, _ = execute(tmp_path, "on2", carried, prepared, telemetry=True)
+    assert_same_start(first, second, "ON vs ON")
+    assert_same_outcome(first, second, "ON vs ON")
+
+
+def test_the_frozen_encoder_starts_identical_in_every_execution(tmp_path):
+    """The exact tensor that diverged on CUDA.
+
+    The encoder is restored from NO checkpoint -- v2 payloads are adapter-only
+    by design -- so its start state depends entirely on the RNG at construction.
+    """
+    prepared, carried = canonical_start(tmp_path)
+    off, _ = execute(tmp_path, "off", carried, prepared, telemetry=False)
+    on, _ = execute(tmp_path, "on", carried, prepared, telemetry=True)
+    assert same_tensor_state(off["initial"]["encoder"], on["initial"]["encoder"])
+    assert off["initial"]["encoder"], "the stand-in encoder must carry real parameters"
+    # And the adapter, which IS restored, matches the payload it came from.
+    assert same_tensor_state(off["initial"]["adapter"], on["initial"]["adapter"])
+
+
+def test_an_execution_does_not_mutate_the_canonical_starting_payload(tmp_path):
+    """Running OFF must leave the payload ON will use untouched."""
+    prepared, carried = canonical_start(tmp_path)
+    before_adapter = clone_tensors(carried["adapter_state"])
+    before = {
+        "global_update": carried["global_update"],
+        "cap": carried["cap"],
+        "sampler_state": dict(carried["sampler_state"]),
+        "points": [dict(p) for p in carried["points"]],
+        "provenance": dict(carried["provenance"]),
+    }
+    execute(tmp_path, "off", carried, prepared, telemetry=False)
+    execute(tmp_path, "on", carried, prepared, telemetry=True)
+
+    assert same_tensor_state(before_adapter, carried["adapter_state"])
+    assert carried["global_update"] == before["global_update"]
+    assert carried["cap"] == before["cap"]
+    assert carried["sampler_state"] == before["sampler_state"]
+    assert [dict(p) for p in carried["points"]] == before["points"]
+    assert dict(carried["provenance"]) == before["provenance"]
 
 
 def test_the_fixture_resumes_under_the_real_locked_budget(tmp_path):
@@ -401,6 +576,9 @@ def test_telemetry_on_is_scientifically_identical_to_telemetry_off(tmp_path):
         "update 0 is the best point in this fixture, so no continuation is due"
     )
     assert off["result"].to_dict() == on["result"].to_dict()
+    # Same comparator the OFF/OFF and ON/ON reproducibility tests use, so the
+    # three cells of the diagnostic matrix are held to one standard.
+    assert_same_outcome(off, on, "OFF vs ON")
 
 
 def test_the_written_checkpoint_is_scientifically_identical(tmp_path):
