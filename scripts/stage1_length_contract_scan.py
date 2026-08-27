@@ -82,14 +82,41 @@ def load_tokenizer(revision: str):
     )
 
 
-def authoritative_base_length(text: str, tokenizer, classifier) -> int:
-    """Stage-6's definition: whole-string tokenization of the base text."""
-    from unmark.linguistics import canon
-    from unmark.orthography.decompose import decompose
+def stage6_length_functions(tokenizer):
+    """The REAL Stage-6 length functions. No reimplementation, no fallback.
 
-    base_text = decompose(canon(text), eligibility_classifier=classifier).base_text
-    content = tokenizer.convert_tokens_to_ids(list(tokenizer.tokenize(base_text)))
-    return len(tokenizer.build_inputs_with_special_tokens(list(content)))
+    `scripts/stage1_runner.py::_length_functions` builds these exact objects for
+    the chunker, so measuring with them measures precisely the quantity Stage-6
+    enforced with `chunk.base_length > max_length -> ChunkingViolation`.
+
+    The first version of this script instead did its own
+    `decompose(canon(text)).base_text` and guessed the import as
+    `unmark.linguistics.canon`. `canon` is exported from `unmark.orthography`,
+    so the real Colab run died with `ImportError` after loading the corpus and
+    walking the sampler -- see Audit 043 §8a. Delegating removes the guess and
+    the duplicated normalisation together.
+    """
+    from unmark.stage1.lengths import build_length_functions
+
+    return build_length_functions(tokenizer)
+
+
+def authoritative_base_length(base_length, text: str) -> int:
+    """Stage-6's authoritative base length, via Stage-6's own function.
+
+    `base_length` is the callable returned by `build_length_functions`. Its
+    documented definition is::
+
+        len(build_inputs_with_special_tokens(
+            convert_tokens_to_ids(tokenize(transform(x)))))
+
+    Note the classifier is deliberately absent: `ComposedTransforms.base`
+    computes `decompose(canon(t)).base_text` with no eligibility classifier, and
+    the classifier provably does not change `base_text` -- it only labels spans
+    (`decompose` docstring: "the round-trip is unaffected"). So this measures the
+    same string `project_text` bases its ids on.
+    """
+    return base_length(text)
 
 
 def realised_base_length(text: str, tokenizer, classifier, unk_token_id) -> int:
@@ -114,12 +141,23 @@ def iter_chunks(prepared: Path, partition: str | None):
             yield index, row
 
 
+def require_corpus(prepared: Path) -> Path:
+    """Fail closed before loading a tokenizer, so a bad path costs no minutes."""
+    path = Path(prepared) / CHUNKS_NAME
+    if not path.is_file():
+        raise SystemExit(f"REFUSED: prepared chunks not found: {path}")
+    return path
+
+
 def scan(args) -> int:
     from unmark.linguistics import make_classifier, try_load_inventory
+
+    require_corpus(Path(args.prepared_corpus))
 
     tokenizer = load_tokenizer(args.revision)
     classifier = make_classifier(try_load_inventory())
     unk = getattr(tokenizer, "unk_token_id", None)
+    _reference_length, base_length, _transforms = stage6_length_functions(tokenizer)
 
     scanned = 0
     within = 0
@@ -134,7 +172,7 @@ def scan(args) -> int:
     for index, row in iter_chunks(Path(args.prepared_corpus), args.partition):
         text = row["text"]
         realised = realised_base_length(text, tokenizer, classifier, unk)
-        authoritative = authoritative_base_length(text, tokenizer, classifier)
+        authoritative = authoritative_base_length(base_length, text)
 
         scanned += 1
         max_realised = max(max_realised, realised)
@@ -207,9 +245,11 @@ def reproduce(args) -> int:
     from unmark.stage1.execute import load_prepared_chunks
     from unmark.stage1.sampler import DeterministicSampler
 
+    require_corpus(Path(args.prepared_corpus))
     tokenizer = load_tokenizer(args.revision)
     classifier = make_classifier(try_load_inventory())
     unk = getattr(tokenizer, "unk_token_id", None)
+    _reference_length, base_length, _transforms = stage6_length_functions(tokenizer)
 
     train_text, _dev = load_prepared_chunks(Path(args.prepared_corpus))
     sampler = DeterministicSampler(tuple(sorted(train_text)), seed=args.seed)
@@ -225,7 +265,7 @@ def reproduce(args) -> int:
             text = train_text[chunk_id]
             realised = realised_base_length(text, tokenizer, classifier, unk)
             if realised > MAX_LENGTH:
-                authoritative = authoritative_base_length(text, tokenizer, classifier)
+                authoritative = authoritative_base_length(base_length, text)
                 print(json.dumps({
                     "first_offence": True,
                     "would_fail_at_update": update,

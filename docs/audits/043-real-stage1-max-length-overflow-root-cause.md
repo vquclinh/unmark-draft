@@ -1,7 +1,9 @@
 # Audit 043 — Real Stage-1 MAX_LENGTH Overflow: Root Cause
 
 **Scope:** production-blocking root-cause investigation of the first real Stage-1
-training abort. **No repair applied.** Audits 001–042 untouched.
+training abort. **No Stage-1 production repair applied** — the only code change
+in this investigation is the read-only diagnostic scanner and its tests (§8a).
+Audits 001–042 untouched.
 **Date:** 2026-08-27
 
 ---
@@ -181,6 +183,70 @@ official TEST is never touched.** Two modes:
 
 It reports **hashes, ids and lengths only** — never raw chunk or document text.
 
+## 8a. Scanner Failure on First Real Execution, and Its Repair
+
+The reproducer of §8 was run on Colab at diagnostic HEAD `42cf7e91` and **did not
+complete**:
+
+```
+python -B scripts/stage1_length_contract_scan.py \
+    --prepared-corpus /content/drive/MyDrive/UNMARK/stage1-prepared/aa49785eadcb \
+    --reproduce --seed 21230 --max-updates 1000
+
+File "scripts/stage1_length_contract_scan.py", line 87, in authoritative_base_length
+    from unmark.linguistics import canon
+ImportError: cannot import name 'canon' from 'unmark.linguistics'
+```
+
+It loaded the real prepared corpus and walked the deterministic sampler first, so
+the failure cost minutes and produced **no offender and no scope scan**. No
+scientific training occurred.
+
+**Cause.** The first version of the scanner rebuilt the base text itself —
+`decompose(canon(text), eligibility_classifier=classifier).base_text` — and
+guessed the import. `canon` is exported from **`unmark.orthography`**
+(`unmark/stage1/data.py:35`: `from unmark.orthography import Eligibility, canon,
+decompose`), not from `unmark.linguistics`, whose exports are inventory and
+classifier utilities only.
+
+**Why the earlier local checks missed it.** The import sat **inside a function
+body**, so importing the module could not surface it; and the only local
+exercises were `--help` and the fail-closed missing-corpus path, neither of which
+reaches `authoritative_base_length`. Nothing statically resolved the nested
+imports.
+
+**Repair — delegation, not a corrected guess.** `authoritative_base_length` now
+takes the `base_length` callable returned by
+`unmark.stage1.lengths.build_length_functions(tokenizer)` — the *same* objects
+`scripts/stage1_runner.py::_length_functions` builds for the chunker. The
+scanner therefore measures precisely the quantity Stage-6 enforced, with **zero
+duplicated normalisation, zero reimplemented canon rules and zero approximate
+fallback**. It no longer imports or calls `canon` or `decompose` at all.
+
+One subtlety, checked rather than assumed: `ComposedTransforms.base` computes
+`decompose(canon(t)).base_text` **without** an eligibility classifier, while
+`project_text` passes one. The classifier provably does not change `base_text` —
+`decompose`'s docstring states the round-trip is unaffected, and it was verified
+on five Vietnamese and newline-bearing samples locally — so both paths base their
+ids on the same string. This removes a candidate second mechanism and leaves the
+run-unit difference of §5 as the sole one.
+
+**Regression tests added** (`tests/test_stage1_length_contract_scanner.py`, 21
+tests, torch-free). The decisive one statically resolves **every**
+`from X import Y` in the scanner — function bodies included — against the real
+modules, which is exactly what would have caught this before Colab. A mutation
+check asserts `unmark.linguistics` has no `canon` while `unmark.orthography`
+does. Others prove the scanner no longer normalises anything itself, imports no
+torch and calls no `step`/`backward`/`train_run`/`build_optimizer`, executes
+`authoritative_base_length` end to end on five synthetic texts (three
+newline-bearing) through the real `build_length_functions`, and agrees exactly
+with an independently constructed Stage-6 `base_length` on all of them.
+
+Local tests use a stub tokenizer that decomposes with the real `PHOBERT_RUN`,
+because `transformers` is absent from the ML-free venv by design. **The
+import/API contract is proven locally; the real-tokenizer numbers require
+Colab** and are listed in §12.
+
 ## 9. Scope Scan
 
 The scanner computes, per chunk, both quantities and reports: total scanned,
@@ -275,28 +341,91 @@ needed for root-cause reproduction).
 
 ## 12. Files Changed, Fingerprints, Tests, and Required Colab Diagnostics
 
-**Files changed:** `scripts/stage1_length_contract_scan.py` (new, read-only
-diagnostic) and this audit. **No scientific module was modified.**
+**Files changed** (cumulative, this investigation):
+`scripts/stage1_length_contract_scan.py` (read-only diagnostic; created, then
+repaired per §8a), `tests/test_stage1_length_contract_scanner.py` (new), and this
+audit. **No scientific module was modified.**
+
+Two different questions, deliberately reported separately.
+
+**(a) Scientific production modules — BYTE-IDENTICAL to the investigation
+baseline.** Recomputed after the final scanner repair of §8a:
 
 ```
-unmark/ tree hash        48d96b98a32dabd825ed10f583fa670efad053a3604eea8e7bfff3ba5baf5089
-                         (unchanged; git diff over unmark/ configs/ requirements/
-                          docs/spec/ is empty)
-
-production fingerprint   before  66b13c39fa5fe01d9bbeb146708cd2bdc7fb4c786fc0aa29b48cddfc24b2d141
-(unmark+scripts+configs  after   2386b9e551217d41ea03981e085129a103c79b2f26f7a933e411b496d19677e5
- +requirements)
+unmark/         48d96b98a32dabd825ed10f583fa670efad053a3604eea8e7bfff3ba5baf5089
+configs/        d76156925cc6af8f642c08cb4bdf7eb42af0d7002d9f16b104f03552a3a26a29
+requirements/   29e3bd63b85a67dad88f7111df245d6b48450624994bf4da776071a976e0ae50
 ```
 
-The fingerprint changes **only** because the diagnostic script lives under
-`scripts/`, which is an execution-relevant path for the clean-tree guard. It
-must be committed before any scientific run, and it is inert with respect to
-training.
+Authoritative check:
 
-**Local tests:** the mechanism demonstration in §5 runs locally and
-deterministically. The scanner's CLI and fail-closed behaviour were exercised;
-its scanning path requires `transformers`, absent locally by design. **No CUDA
-or real-corpus result is claimed from this environment.**
+```
+$ git diff --name-only e495f7417fe41ac97aaaf9c2ea6aba0e89afb3e9 \
+      -- unmark configs requirements docs/spec unmark-proposal.md
+(empty)
+```
+
+Nothing scientific changed at any point in this investigation.
+
+**(b) Execution-relevant repository fingerprint — CHANGED, and expected to.**
+Same definition the audit has used throughout (`unmark` + `scripts` + `configs`
++ `requirements`, all files, sha256 of sorted per-file sha256s):
+
+```
+before this investigation   66b13c39fa5fe01d9bbeb146708cd2bdc7fb4c786fc0aa29b48cddfc24b2d141
+after the FINAL scanner     64e659e99574276cb4a6d609c6c414900fa10d459161f5fef4baffefec25a184
+  (scripts/ tree hash       d272bbede84d3c0a640e9554aae344a336a8452f31074bc3e588e9d356e19515)
+```
+
+The earlier value recorded here, `2386b9e5…`, described the **first** version of
+the scanner and is superseded: that version never ran successfully, and its
+`authoritative_base_length` was replaced in §8a.
+
+The fingerprint moves **only** because the read-only diagnostic lives under
+`scripts/`, an execution-relevant path for the clean-tree provenance guard. It
+must therefore be committed before any scientific run, and it is inert with
+respect to training: it loads no model, constructs no optimizer, and calls no
+backward.
+
+**Local tests, after the final scanner repair:**
+
+```
+$ .venv/bin/python -B -m pytest -q -p no:cacheprovider \
+      tests/test_stage1_length_contract_scanner.py
+21 passed
+
+$ .venv/bin/python -B -m pytest -q -p no:cacheprovider
+3807 passed, 106 skipped, 0 failed
+```
+
+The 21 diagnostic-scanner tests cover:
+
+* **nested `from X import Y` resolution, function bodies included** — every
+  import in the scanner is resolved against the real module. This is the check
+  that would have caught the §8a Colab `ImportError` before runtime, and it is
+  paired with a mutation check asserting `unmark.linguistics` has no `canon`
+  while `unmark.orthography` does;
+* **correct delegation** to
+  `build_length_functions(tokenizer)` → `base_length`, asserted structurally
+  (`build_length_functions` is imported) and behaviourally;
+* **newline-bearing examples** — three of the five synthetic texts contain
+  newlines, which is the only condition under which the §5 mechanism appears;
+* **no duplicated canonicalisation/normalisation** — the scanner neither imports
+  nor calls `canon` or `decompose`;
+* **no torch, no optimizer, no backward, no `train_run`/`execute_stage`** —
+  checked on the AST's imports and call names, not on source text, because an
+  earlier draft of this very test matched the scanner's own docstring;
+* **exact agreement with an independently constructed Stage-6 `base_length`** on
+  all five synthetic texts.
+
+The mechanism demonstration in §5 also runs locally and deterministically.
+
+**What is still Colab-only, and is NOT claimed here.** These tests use a stub
+tokenizer that decomposes with the real `PHOBERT_RUN`, because `transformers` is
+absent from the ML-free venv by design. They prove the scanner's **import and API
+contract** and its delegation — not any number about the real corpus. **No real
+tokenizer, real-corpus, offender or scope result is claimed from this
+environment.**
 
 **Exact Colab diagnostics still required:**
 
@@ -309,12 +438,14 @@ python -B scripts/stage1_length_contract_scan.py \
 # 2. Quantify scope over the whole TRAIN partition
 python -B scripts/stage1_length_contract_scan.py \
     --prepared-corpus /content/drive/MyDrive/UNMARK/stage1-prepared/aa49785eadcb \
-    --partition train --report /content/drive/MyDrive/UNMARK/length-scan.json
+    --partition train \
+    --report /content/drive/MyDrive/UNMARK/stage1-diagnostics/e495f7417fe4/length-contract-full-train.json
 ```
 
-Both are read-only and train nothing. Step 2 decides one candidate/small class
-versus systemic mismatch, and therefore whether the repair is confined to
-Stage-1 (§10) or whether regeneration must even be discussed (§11).
+Both are read-only, train nothing, and execute **zero** scientific optimizer
+steps. Step 2 decides one candidate/small class versus systemic mismatch, and
+therefore whether the repair is confined to Stage-1 (§10) or whether
+regeneration must even be discussed (§11).
 
 ## 13. Official UIT-VSFC TEST
 
@@ -324,9 +455,21 @@ corpus and records `official_test_used: false`.
 
 ## 14. Verdict
 
-**PRODUCTION BLOCKED — STAGE-1 IMPLEMENTATION BUG (CLASS A).** Stage-1 must not
-be launched until the base-length contract is repaired and the scope scan has
-run. No repair is applied in this audit. No training was performed and no
-scientific optimizer step was executed.
+**PRODUCTION BLOCKED — STAGE-1 IMPLEMENTATION BUG (CLASS A), pending measurement.**
+Stage-1 must not be launched until the base-length contract is repaired and the
+scope scan has run. No repair to Stage-1 production is applied in this audit.
+
+**Provenance, stated precisely.** No additional training or scientific optimizer
+step was executed by this root-cause investigation. The previously aborted real
+`lr-pilot` attempt remains recorded with **250 confirmed optimizer updates and
+no checkpoint** (§2, §11); this audit neither adds to nor erases that history.
+
+**Still unproven, and deliberately not claimed.** The offending chunk is
+**NOT YET MEASURED** and the full TRAIN scope is **UNKNOWN**: the reproducer's
+first real execution failed on its own ImportError (§8a) before measuring
+anything. The classification rests on source evidence — two modules asserting
+contradictory BPE run units, one of them backed by 1708 of 1920 measured slice
+cases — which the repair to the scanner does not change. It becomes a *measured*
+finding only after the Colab rerun in §12.
 
 *End of Audit 043.*
