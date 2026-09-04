@@ -23,6 +23,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+from collections import deque
 from pathlib import Path
 
 
@@ -59,6 +61,66 @@ def capture(cmd, cwd=None, env=None):
         env=env,
         text=True,
     ).strip()
+
+
+def print_tail(path, *, lines=160, title=None):
+    path = Path(path)
+    print("\n" + "-" * 110)
+    print(title or f"TAIL: {path}")
+    print("-" * 110)
+    if not path.is_file():
+        print("missing:", path)
+        return
+    tail = deque(maxlen=lines)
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            tail.append(line.rstrip("\n"))
+    for line in tail:
+        print(line)
+
+
+def summarize_telemetry(path, *, lines=80):
+    path = Path(path)
+    print("\n" + "-" * 110)
+    print(f"TELEMETRY SUMMARY: {path}")
+    print("-" * 110)
+    if not path.is_file():
+        print("missing:", path)
+        return
+    tail = deque(maxlen=lines)
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                tail.append(__import__("json").loads(line))
+            except Exception:
+                pass
+    if not tail:
+        print("no parseable telemetry events in tail")
+        return
+    for event in tail:
+        kind = event.get("event")
+        stage = event.get("stage")
+        label = event.get("label")
+        update = event.get("global_update", event.get("update"))
+        phase = event.get("phase")
+        state = event.get("state")
+        error = event.get("error_type")
+        pieces = [f"event={kind}"]
+        if phase:
+            pieces.append(f"phase={phase}")
+        if state:
+            pieces.append(f"state={state}")
+        if error:
+            pieces.append(f"error={error}")
+        if stage:
+            pieces.append(f"stage={stage}")
+        if label:
+            pieces.append(f"label={label}")
+        if update is not None:
+            pieces.append(f"update={update}")
+        if event.get("cap") is not None:
+            pieces.append(f"cap={event.get('cap')}")
+        print(" | ".join(pieces))
 
 
 REPO_URL = "https://github.com/vquclinh/unmark-draft.git"
@@ -224,12 +286,15 @@ if (OUTPUT / "r_phase1.json").is_file():
 
 CACHE.mkdir(parents=True, exist_ok=True)
 MONITOR_STATE.mkdir(parents=True, exist_ok=True)
+RUN_LOG = MONITOR_STATE / "r_phase1_monitor.stdout.log"
+TELEMETRY_LOG = MONITOR_STATE / "telemetry.jsonl"
 
 print("Preparation workers:", PREPARATION_WORKERS)
 print("r-phase1 execution :", "fused")
 print("Output             :", OUTPUT)
 print("Cache              :", CACHE)
 print("Monitor state      :", MONITOR_STATE)
+print("Run log            :", RUN_LOG)
 
 
 # ==========================================================================================
@@ -369,14 +434,41 @@ This does NOT change batch size, r grid, update budget, precision or validation 
     flush=True,
 )
 
-result = subprocess.run(CMD, cwd=REPO, env=env)
+print("\nStreaming monitor output; a copy is written to:")
+print(RUN_LOG)
+
+RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
+with RUN_LOG.open("a", encoding="utf-8", errors="replace") as log:
+    log.write("\n" + "=" * 110 + "\n")
+    log.write(f"START {time.strftime('%Y-%m-%d %H:%M:%S %Z')} HEAD={HEAD}\n")
+    log.write(shlex.join(CMD) + "\n")
+    log.flush()
+    result = subprocess.Popen(
+        CMD,
+        cwd=REPO,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert result.stdout is not None
+    for line in result.stdout:
+        print(line, end="", flush=True)
+        log.write(line)
+        log.flush()
+    returncode = result.wait()
+    log.write(f"END returncode={returncode}\n")
+    log.flush()
 
 print("\n" + "=" * 110)
-if result.returncode == 0:
+if returncode == 0:
     print("ACCELERATED R-PHASE1 COMPLETED")
     print("artifact:", OUTPUT / "r_phase1.json")
 else:
-    print(f"ACCELERATED R-PHASE1 EXITED rc={result.returncode}")
+    print(f"ACCELERATED R-PHASE1 EXITED rc={returncode}")
+    print_tail(RUN_LOG, title="LAST MONITOR OUTPUT")
+    summarize_telemetry(TELEMETRY_LOG)
     print(
         """
 DO NOT DELETE:
