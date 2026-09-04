@@ -211,12 +211,18 @@ def execute_stage(
         trainable_state,
         trainable_state_hash,
     )
+    from unmark.stage1.fused import (
+        R_PHASE1_EXECUTION_FUSED,
+        R_PHASE1_EXECUTION_SEQUENTIAL,
+        resolve_r_phase1_execution,
+        train_fused_r_phase1,
+    )
     from unmark.stage1.objective import Stage1Objective
     from unmark.stage1.preflight import verify_scientific_inputs
     from unmark.stage1.preparation import (
-        PREPARATION_WORKERS,
         PreparationPool,
         preparation_provenance,
+        resolve_preparation_workers,
         worker_config,
     )
     from unmark.stage1.protocol import adapter_init_seed
@@ -326,13 +332,43 @@ def execute_stage(
         truncation=TRUNCATION,
         unk_token_id=getattr(tokenizer, "unk_token_id", None),
     )
-    provenance_of_preparation = preparation_provenance(PREPARATION_WORKERS)
+    preparation_workers = resolve_preparation_workers()
+    provenance_of_preparation = preparation_provenance(preparation_workers)
+    r_phase1_execution = (
+        resolve_r_phase1_execution() if stage == "r_phase1"
+        else R_PHASE1_EXECUTION_SEQUENTIAL
+    )
+    if stage == "r_phase1":
+        provenance_of_preparation["candidate_execution"] = r_phase1_execution
     print(f"preparation: {provenance_of_preparation['preparation_backend']} x"
-          f"{PREPARATION_WORKERS}, order_preserving="
+          f"{preparation_workers}, order_preserving="
           f"{provenance_of_preparation['order_preserving']}, "
           f"prefetch={provenance_of_preparation['prefetch']}")
+    if stage == "r_phase1":
+        print(f"r-phase1 execution: {r_phase1_execution}")
 
-    with PreparationPool(preparation, PREPARATION_WORKERS) as preparation_pool:
+    with PreparationPool(preparation, preparation_workers) as preparation_pool:
+      if stage == "r_phase1" and r_phase1_execution == R_PHASE1_EXECUTION_FUSED:
+          candidates = train_fused_r_phase1(
+              schedule=schedule,
+              train_chunks=train_text,
+              tokenizer=tokenizer,
+              frozen_encoder=frozen_encoder,
+              hidden_size=hidden_size,
+              encoder_state_hash=encoder_state_hash,
+              prepared_by_condition=prepared_by_condition,
+              pad_token_id=pad_token_id,
+              device=device,
+              execution=execution,
+              manifest_digest=manifest_digest,
+              repository_head=repository_head,
+              inventory=inputs.inventory,
+              output_dir=output_dir,
+              preparation_pool=preparation_pool,
+              resume=resume,
+              telemetry=sink,
+          )
+          schedule = ()
       for planned in schedule:
           # One checkpoint namespace per run, named by the run's own label, so two
           # runs in a stage can never overwrite each other's state.

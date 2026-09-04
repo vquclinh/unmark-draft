@@ -4954,3 +4954,44 @@ regenerated from the completed `wandb/run-lr*.json` evidence and the original
 | **Audit** | [`docs/audits/045-stage1-lr-pilot-author-override.md`](../audits/045-stage1-lr-pilot-author-override.md) |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
 | **Proposal updated** | **NO** — this is recorded as an explicit deviation/override, not folded back into the original proposal text. PDF stale: **YES** |
+
+
+### D-S1B-021 — r-phase1 operational acceleration does not change protocol
+
+| | |
+|---|---|
+| **Status** | **IMPLEMENTED / OPERATIONAL** |
+| **Owner** | Stage-1B |
+| **Date** | 2026-09-04 |
+
+**Decision.** Stage-1 may use operational acceleration for `r-phase1` without
+changing the scientific protocol. The locked values remain unchanged:
+`BATCH_SIZE = 128`, `INITIAL_MAX_UPDATES = 20000`, `EVAL_EVERY_UPDATES = 500`,
+fp32 deterministic execution, the frozen LR from `lr_pilot.json`, and the
+locked r grid `{0.25, 0.5, 1, 2, 4}`.
+
+**Worker count.** `UNMARK_STAGE1_PREPARATION_WORKERS` may raise or lower the
+training-time preparation worker count from the default `8`. This is
+operational provenance only: prepared output is byte-identical across worker
+counts, and worker count is not part of run identity or resume blocking.
+
+**Fused r-phase1.** `UNMARK_STAGE1_R_PHASE1_EXECUTION=fused` enables an
+interleaved `r-phase1` execution path. It is accepted only for the locked
+five-candidate r schedule with one frozen LR and one shared selection seed. Each
+candidate still has its own adapter, optimizer, checkpoint directory,
+validation history and run JSON. Only the already-selected training batch
+preparation is shared, after all active candidates prove they would consume the
+same `(chunk_id, visit)` batch.
+
+**Fallback.** If fused resume finds candidates at different update/cap/cursor
+states, it refuses instead of guessing. The original sequential path remains
+available and can resume the same per-candidate checkpoints.
+
+| | |
+|---|---|
+| **Affected code** | `unmark/stage1/preparation.py`, `unmark/stage1/fused.py`, `unmark/stage1/execute.py` |
+| **Affected tests** | `tests/test_stage1_parallel_preparation.py`, `tests/test_stage1_fused_r_phase1.py` |
+| **Colab handoff** | `docs/colab/run_r_phase1_accelerated_cell.py` |
+| **Audit** | [`docs/audits/046-stage1-r-phase1-operational-acceleration.md`](../audits/046-stage1-r-phase1-operational-acceleration.md) |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Proposal updated** | **NO** — operational acceleration only. PDF stale: **YES** |

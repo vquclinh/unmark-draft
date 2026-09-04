@@ -421,7 +421,7 @@ this tuple selects, it never defines."""
 CANDIDATE_CONFIG_KEYS = (
     "stage", "label", "lr", "r", "seed", "init_seed", "corruption_seed",
     "batch_size", "cap", "candidate_index", "candidate_count",
-    "train_chunks", "resumed",
+    "train_chunks", "resumed", "execution_mode",
 )
 """Per-candidate scalars."""
 

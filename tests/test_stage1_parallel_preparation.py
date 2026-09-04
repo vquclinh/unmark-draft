@@ -30,11 +30,13 @@ from unmark.stage1.contracts import (
 from unmark.stage1.preparation import (
     MULTIPROCESSING_START_METHOD,
     PREPARATION_WORKERS,
+    PREPARATION_WORKERS_ENV,
     PreparationContractViolation,
     PreparationPool,
     pinned_tokenizer,
     prepare_serially,
     preparation_provenance,
+    resolve_preparation_workers,
     worker_config,
 )
 
@@ -177,6 +179,18 @@ def test_the_production_worker_count_is_the_locked_operational_constant():
         "order_preserving": True,
         "prefetch": False,
     }
+
+
+def test_training_worker_count_can_be_operationally_raised_by_environment():
+    assert resolve_preparation_workers({}) == PREPARATION_WORKERS == 8
+    assert resolve_preparation_workers({PREPARATION_WORKERS_ENV: "24"}) == 24
+    assert preparation_provenance(24)["preparation_workers"] == 24
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "many"])
+def test_invalid_training_worker_count_environment_fails_closed(value):
+    with pytest.raises(PreparationContractViolation):
+        resolve_preparation_workers({PREPARATION_WORKERS_ENV: value})
 
 
 # ---------------------------------------------------------------------------

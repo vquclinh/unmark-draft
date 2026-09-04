@@ -30,8 +30,9 @@ scoped to solve.
 from __future__ import annotations
 
 import multiprocessing
+import os
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from unmark.stage1.contracts import (
     CorruptionRatePolicy,
@@ -49,6 +50,14 @@ and nothing else. It is therefore recorded as operational provenance and is
 deliberately **not** part of `RunProvenance` and **not** resume-blocking: a run
 interrupted with 8 workers may legitimately resume with 4 and remain the same
 experiment. Chosen from the §AF benchmark on a 24-physical-core host.
+"""
+
+PREPARATION_WORKERS_ENV = "UNMARK_STAGE1_PREPARATION_WORKERS"
+"""Operational override for training-time preparation workers.
+
+This is deliberately an environment variable, not a scientific CLI flag. Worker
+count changes wall-clock only: the main process still owns sampler advancement,
+batch membership/order, checkpointing and CUDA.
 """
 
 MULTIPROCESSING_START_METHOD = "spawn"
@@ -71,6 +80,36 @@ PREFETCH_ENABLED = False
 
 class PreparationContractViolation(Stage1ContractViolation):
     """Parallel preparation could not honour its contract. Never falls back."""
+
+
+def resolve_preparation_workers(
+    env: Mapping[str, str] | None = None,
+    *,
+    default: int = PREPARATION_WORKERS,
+) -> int:
+    """Resolve the operational worker count for training preparation.
+
+    The locked default stays in `PREPARATION_WORKERS`; this helper lets a
+    stronger runtime use more CPU preparation workers without introducing a CLI
+    route to any scientific value. Invalid values fail closed before the pool is
+    built.
+    """
+    environment = os.environ if env is None else env
+    raw = environment.get(PREPARATION_WORKERS_ENV)
+    if raw is None or str(raw).strip() == "":
+        workers = int(default)
+    else:
+        try:
+            workers = int(str(raw).strip())
+        except ValueError as error:
+            raise PreparationContractViolation(
+                f"{PREPARATION_WORKERS_ENV} must be a positive integer, got {raw!r}"
+            ) from error
+    if workers < 1:
+        raise PreparationContractViolation(
+            f"{PREPARATION_WORKERS_ENV} must be >= 1, got {workers}"
+        )
+    return workers
 
 
 _WORKER: dict[str, Any] = {}
