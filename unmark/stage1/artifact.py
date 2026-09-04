@@ -23,6 +23,10 @@ Two rules make that impossible, and both are implemented here:
    `select_r`, so an edited winner and edited evidence that would change the
    winner are both refused. The locked-grid checks come along for free, because
    those are the same functions that enforce them.
+3. A post-hoc LR-pilot author override is accepted only when it is explicit in
+   the artifact, names the superseded locked-rule winner, and selects one of the
+   real candidates. This keeps the scientific record honest without requiring
+   the three expensive LR pilot runs to be repeated.
 """
 
 from __future__ import annotations
@@ -47,6 +51,34 @@ from unmark.stage1.selection import (
 
 class ArtifactViolation(Stage1ContractViolation):
     """Raised when a stage artifact does not belong to the current campaign."""
+
+
+LR_PILOT_AUTHOR_OVERRIDE_KIND = "author_lr_override_after_validation_curve_review"
+"""The only accepted post-hoc LR-pilot override kind.
+
+It is deliberately specific. A generic "override" field would become a second
+selection protocol by accident; this one records exactly the researcher action
+that occurred after inspecting the W&B validation curves.
+"""
+
+LOCKED_LR_SELECTION_RULE = (
+    "min(candidate.selected.score, candidate.selected.d_clean, "
+    "candidate.learning_rate)"
+)
+"""Human-readable copy of the superseded production LR selector."""
+
+LR_PILOT_OVERRIDE_FIELDS: tuple[str, ...] = (
+    "kind",
+    "author",
+    "created_at",
+    "selected_label",
+    "selected_learning_rate",
+    "superseded_locked_rule",
+    "superseded_locked_rule_winner",
+    "reason",
+    "evidence",
+)
+"""Closed schema for the explicit LR-pilot author override block."""
 
 
 IDENTITY_FIELDS: tuple[str, ...] = (
@@ -183,7 +215,17 @@ def validate_selection_artifact(
 
     try:
         if expected_stage == "lr_pilot":
-            winner = select_learning_rate(candidates)
+            locked_winner = select_learning_rate(candidates)
+            override = artifact.get("selection_override")
+            if override is not None:
+                return _validate_lr_pilot_author_override(
+                    override=override,
+                    candidates=candidates,
+                    locked_winner=locked_winner,
+                    recorded=recorded,
+                    what=what,
+                )
+            winner = locked_winner
         elif expected_stage == "r_phase1":
             frozen = candidates[0].learning_rate
             winner = select_r(candidates, frozen)
@@ -202,5 +244,88 @@ def validate_selection_artifact(
             f"{what} records selected {dict(recorded)!r}, but rerunning the locked "
             f"selection rule over its own candidate evidence yields {expected!r}. "
             "Either the recorded winner or the evidence behind it was altered."
+        )
+    return winner
+
+
+def _validate_lr_pilot_author_override(
+    *,
+    override: Any,
+    candidates: list[Candidate],
+    locked_winner: Candidate,
+    recorded: Mapping[str, Any],
+    what: str,
+) -> Candidate:
+    """Validate the one supported post-hoc LR-pilot override.
+
+    The override does not pretend the locked selector chose a different LR. It
+    records that the author rejected the locked-rule winner after inspecting
+    validation curves and picked another completed LR-pilot candidate.
+    """
+    if not isinstance(override, Mapping):
+        raise ArtifactViolation(f"{what} selection_override is not a JSON object")
+    missing = [field for field in LR_PILOT_OVERRIDE_FIELDS if field not in override]
+    if missing:
+        raise ArtifactViolation(f"{what} selection_override is missing {missing}")
+    unknown = sorted(set(override) - set(LR_PILOT_OVERRIDE_FIELDS))
+    if unknown:
+        raise ArtifactViolation(
+            f"{what} selection_override carries unknown field(s) {unknown}; the "
+            "override schema is closed"
+        )
+    if override["kind"] != LR_PILOT_AUTHOR_OVERRIDE_KIND:
+        raise ArtifactViolation(
+            f"{what} selection_override kind {override['kind']!r} is not "
+            f"{LR_PILOT_AUTHOR_OVERRIDE_KIND!r}"
+        )
+    if override["superseded_locked_rule"] != LOCKED_LR_SELECTION_RULE:
+        raise ArtifactViolation(
+            f"{what} selection_override names superseded rule "
+            f"{override['superseded_locked_rule']!r}, not {LOCKED_LR_SELECTION_RULE!r}"
+        )
+    recorded_locked_winner = override["superseded_locked_rule_winner"]
+    if not isinstance(recorded_locked_winner, Mapping):
+        raise ArtifactViolation(
+            f"{what} selection_override superseded_locked_rule_winner must be a JSON object"
+        )
+    if dict(recorded_locked_winner) != locked_winner.to_dict():
+        raise ArtifactViolation(
+            f"{what} selection_override does not preserve the locked-rule winner; "
+            f"rerunning the locked selection yields {locked_winner.to_dict()!r}"
+        )
+    for field in ("author", "created_at", "selected_label", "reason"):
+        value = override[field]
+        if not isinstance(value, str) or not value.strip():
+            raise ArtifactViolation(
+                f"{what} selection_override field {field!r} must be a non-empty string"
+            )
+    selected_lr = override["selected_learning_rate"]
+    if isinstance(selected_lr, bool) or not isinstance(selected_lr, (int, float)):
+        raise ArtifactViolation(
+            f"{what} selection_override selected_learning_rate must be numeric"
+        )
+    selected_lr = float(selected_lr)
+    if not isinstance(override["evidence"], Mapping):
+        raise ArtifactViolation(f"{what} selection_override evidence must be a JSON object")
+
+    matches = [
+        candidate for candidate in candidates
+        if candidate.learning_rate == selected_lr and candidate.label == override["selected_label"]
+    ]
+    if len(matches) != 1:
+        raise ArtifactViolation(
+            f"{what} selection_override selects {override['selected_label']!r} at "
+            f"LR {selected_lr!r}, but that is not exactly one completed LR-pilot candidate"
+        )
+    winner = matches[0]
+    if winner.to_dict() == locked_winner.to_dict():
+        raise ArtifactViolation(
+            f"{what} selection_override selects the locked-rule winner; no override "
+            "is needed and the artifact would be ambiguous"
+        )
+    if dict(recorded) != winner.to_dict():
+        raise ArtifactViolation(
+            f"{what} records selected {dict(recorded)!r}, but the explicit "
+            f"selection_override selects {winner.to_dict()!r}"
         )
     return winner

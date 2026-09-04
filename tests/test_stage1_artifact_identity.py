@@ -31,6 +31,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from unmark.stage1.artifact import (  # noqa: E402
     IDENTITY_FIELDS,
+    LOCKED_LR_SELECTION_RULE,
+    LR_PILOT_AUTHOR_OVERRIDE_KIND,
     ArtifactViolation,
     CampaignIdentity,
     validate_selection_artifact,
@@ -106,6 +108,26 @@ def artifact_for(stage, candidates, *, ident=None, selected=None) -> dict:
         "identity": ident.to_dict(),
         "candidates": [c.to_dict() for c in candidates],
         "selected": selected,
+    }
+
+
+def author_override_for(selected: Candidate, locked: Candidate) -> dict:
+    return {
+        "kind": LR_PILOT_AUTHOR_OVERRIDE_KIND,
+        "author": "test author",
+        "created_at": "2026-09-04",
+        "selected_label": selected.label,
+        "selected_learning_rate": selected.learning_rate,
+        "superseded_locked_rule": LOCKED_LR_SELECTION_RULE,
+        "superseded_locked_rule_winner": locked.to_dict(),
+        "reason": (
+            "Author selected a completed LR-pilot candidate after validation-curve "
+            "review instead of the single-point locked-rule minimum."
+        ),
+        "evidence": {
+            "source": "unit-test fixture",
+            "review_basis": "validation curve stability",
+        },
     }
 
 
@@ -278,6 +300,40 @@ def test_an_edited_selected_score_is_refused():
     artifact = artifact_for("lr_pilot", lr_candidates())
     artifact["selected"]["d_clean"] = 0.0
     with pytest.raises(ArtifactViolation, match="rerunning the locked selection"):
+        validate(artifact)
+
+
+def test_an_explicit_lr_pilot_author_override_validates():
+    candidates = lr_candidates()
+    locked = candidates[1]
+    selected = candidates[0]
+    artifact = artifact_for("lr_pilot", candidates, selected=selected.to_dict())
+    artifact["selection_override"] = author_override_for(selected, locked)
+
+    winner = validate(artifact)
+
+    assert winner.learning_rate == 1e-4
+
+
+def test_an_lr_pilot_override_must_preserve_the_locked_rule_winner():
+    candidates = lr_candidates()
+    selected = candidates[0]
+    artifact = artifact_for("lr_pilot", candidates, selected=selected.to_dict())
+    artifact["selection_override"] = author_override_for(selected, selected)
+
+    with pytest.raises(ArtifactViolation, match="preserve the locked-rule winner"):
+        validate(artifact)
+
+
+def test_an_lr_pilot_override_must_match_the_recorded_selected_candidate():
+    candidates = lr_candidates()
+    locked = candidates[1]
+    selected = candidates[0]
+    artifact = artifact_for("lr_pilot", candidates, selected=selected.to_dict())
+    artifact["selection_override"] = author_override_for(selected, locked)
+    artifact["selected"] = candidates[2].to_dict()
+
+    with pytest.raises(ArtifactViolation, match="explicit selection_override selects"):
         validate(artifact)
 
 

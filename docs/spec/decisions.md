@@ -42,6 +42,7 @@ apart at a glance:
 | **RESOLVED DECISION** (cont.) | D-S1B-013 — **implementation correction**: RAW_BASE strips **Vietnamese** features only (the base recomposes, so Hangul no longer expands into Jamo), and a protected span is a **Latin-script** run, not any Unicode alphabetic run. Found by the real Stage-6 failure at source row 894 182 |
 | **RESOLVED DECISION** (cont.) | D-S1B-010 — Stage-6 corpus preparation is **streamed and durably resumable**; token lengths use the **public tokenizer wrapper** only (operational, no scientific change) |
 | **RESOLVED DECISION** (cont.) | D-S1B-011 — Stage-6 **compute** may fan out across processes (`--prepare-workers`, default 1); **order, serialisation, membership and checkpoint durability stay with the single main process**. Output byte-identical for 1/2/4/8 workers (operational, no scientific change) |
+| **DEVIATED / AUTHOR OVERRIDE** | D-S1B-020 — LR pilot winner manually changed from the locked-rule `3e-4` to `1e-4` after W&B validation-curve review; recorded as an explicit `selection_override`, not as if the old rule selected it |
 | **BLOCKING STAGE-1 TRAINING — DECIDED, NOT IMPLEMENTED** | Stage-1 corruption gives **STRIP-ALL zero training support** ([Audit 028 §F](../audits/028-stage1-scientific-config-review.md)). Mechanism and value are decided by D-S1B-003; **`scope_for` does not exist yet**, so support is still zero until it is implemented and tested |
 | **RESOLVED DECISION** (cont.) | D-S1A-008 (syllable-inventory provenance — **blocking** for scientific training), D-S1A-008a (absent historical diagnostic driver — **non-blocking**), D-S1A-009 (revised roadmap) |
 | **RESOLVED DECISION** (cont.) | D-G1-001 (pre-G1 burden diagnostic), D-G1-002 (BASE_ONLY implemented without the adapter), D-G1-003 (GRR reconciled and unclamped), D-G1-005 (Stage-2 pooling stays OPEN) |
@@ -4897,3 +4898,59 @@ ever completed, and it is recorded here rather than absorbed silently.
 | **Audit** | [`docs/audits/044-stage1-phobert-run-grid-repair.md`](../audits/044-stage1-phobert-run-grid-repair.md) |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** — not opened, inspected, mounted, searched, tokenized, scanned or evaluated |
 | **Proposal updated** | **NO** — this is conformance to an already-existing tokenizer contract, not a new scientific decision. `lengths.py` already stated *"This regex is the contract; `\S+` must never be used for it"*; Stage-1 was violating it. Nothing in the proposal is factually inconsistent with the repair. PDF stale: **YES** (unchanged) |
+
+
+### D-S1B-020 — LR pilot author override after W&B validation-curve review
+
+| | |
+|---|---|
+| **Status** | **DEVIATED / AUTHOR OVERRIDE** |
+| **Owner** | Stage-1B |
+| **Date** | 2026-09-04 |
+| **Artifact** | `wandb/lr_pilot.json` |
+
+**What changed.** The LR pilot artifact now selects **`learning_rate = 1e-4`**
+for `r-phase1` and `final-main`, even though the original locked single-point
+selector would select **`learning_rate = 3e-4`**.
+
+**Why.** The original selector chose the LR whose selected checkpoint had the
+lowest `validation/score`, with ties broken by lower `d_clean` and then lower
+LR. On the completed pilot evidence, `3e-4` won only because it reached
+`validation/score = 0.08824253183326698` at update **500**. Immediately after
+that, its score rose to `0.10005928909487942` at update **1000**,
+`0.20531023229990536` at update **1500**, and `0.30160508679935255` at update
+**2000**. After inspecting the W&B validation curves, the author judged this
+early minimum too transient to drive the rest of Stage-1.
+
+The selected `1e-4` run reached `validation/score = 0.09000698585438581` at
+update **14500** and showed the more stable later validation trajectory. This is
+a post-hoc author decision based on Stage-1 held-out validation curves, not a
+claim that the original selector picked `1e-4`.
+
+**Implementation.** `unmark.stage1.artifact.validate_selection_artifact` still
+recomputes the locked-rule winner from the recorded candidates. For LR-pilot
+artifacts only, it now accepts a closed-schema `selection_override` block when
+that block:
+
+- names the only supported override kind,
+  `author_lr_override_after_validation_curve_review`;
+- preserves the superseded locked-rule winner (`lr=0.0003`);
+- selects exactly one real LR-pilot candidate (`lr=0.0001`);
+- makes top-level `selected` match that candidate.
+
+Plain edits to `selected`, edits to candidate evidence, off-grid candidates,
+wrong identity, wrong protocol, and malformed overrides are still refused.
+
+**No rerun.** The three LR-pilot candidates are not rerun. The artifact is
+regenerated from the completed `wandb/run-lr*.json` evidence and the original
+`wandb/all_3.png` curve review.
+
+| | |
+|---|---|
+| **Superseded rule winner** | `lr=0.0003`, score `0.08824253183326698`, update `500` |
+| **Author-selected LR** | `lr=0.0001`, score `0.09000698585438581`, update `14500` |
+| **Affected code** | `unmark/stage1/artifact.py` |
+| **Affected tests** | `tests/test_stage1_artifact_identity.py` |
+| **Audit** | [`docs/audits/045-stage1-lr-pilot-author-override.md`](../audits/045-stage1-lr-pilot-author-override.md) |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Proposal updated** | **NO** — this is recorded as an explicit deviation/override, not folded back into the original proposal text. PDF stale: **YES** |
