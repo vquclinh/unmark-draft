@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import pathlib
+import statistics
 import sys
 import types
 
@@ -21,9 +22,11 @@ from unmark.stage1.artifact import (  # noqa: E402
     LOCKED_LR_SELECTION_RULE,
     LR_PILOT_AUTHOR_OVERRIDE_KIND,
     RESOURCE_BOUNDED_R_COMPARISON_WINDOW,
+    RESOURCE_BOUNDED_R_SCORE_STD_KIND,
     R_PHASE1_RESOURCE_BOUNDED_AUTHOR_OVERRIDE_KIND,
     ArtifactViolation,
     CampaignIdentity,
+    resource_bounded_r_summary,
     validate_selection_artifact,
 )
 from unmark.stage1.protocol import (  # noqa: E402
@@ -40,6 +43,7 @@ from unmark.stage1.protocol import (  # noqa: E402
 )
 from unmark.stage1.r_phase1_amendment import (  # noqa: E402
     RPhase1AmendmentViolation,
+    assert_expected_resource_bounded_summaries,
     build_resource_bounded_r_phase1_artifact,
     load_r_phase1_last_checkpoints,
     verify_r_phase1_telemetry_evidence,
@@ -68,6 +72,15 @@ WINDOW_SCORES = {
     2.0: (0.22, 0.23, 0.24, 0.25, 0.26, 0.27),
     4.0: (0.41, 0.42, 0.43, 0.44, 0.45, 0.46),
 }
+
+FROZEN_R025_SCORE_WINDOW = (
+    0.1005609352,
+    0.11306432795740916,
+    0.1192311382,
+    0.1192311382,
+    0.13478668534259092,
+    0.1909501625,
+)
 
 
 def identity(**overrides) -> CampaignIdentity:
@@ -351,6 +364,59 @@ def test_resource_bounded_r_artifact_validates_and_selects_author_r(tmp_path):
     assert artifact["selection_override"]["global_optimum_claimed"] is False
     assert artifact["official_test_used"] is False
     assert artifact["downstream_score_used"] is False
+    assert artifact["selection_override"]["evidence"]["resource_bounded_order"][0] == "r=1"
+
+
+def test_resource_bounded_score_std_uses_population_window_convention():
+    points = [
+        point(update, score)
+        for update, score in zip(
+            RESOURCE_BOUNDED_R_COMPARISON_WINDOW,
+            FROZEN_R025_SCORE_WINDOW,
+        )
+    ]
+    summary = resource_bounded_r_summary(
+        label="r=0.25",
+        r=0.25,
+        learning_rate=1e-4,
+        points=points,
+        source_checkpoint="run-r0.25/_checkpoint/training-checkpoint-last.pt",
+        source_repository_head=HISTORICAL_SOURCE_R_HEAD,
+        checkpoint_schema_version=CHECKPOINT_SCHEMA_VERSION,
+        checkpoint_global_update=6500,
+        checkpoint_cap=20000,
+    )
+
+    assert summary["score_std_kind"] == RESOURCE_BOUNDED_R_SCORE_STD_KIND
+    assert RESOURCE_BOUNDED_R_SCORE_STD_KIND == "population_stdev_n"
+    assert summary["score_std"] == pytest.approx(
+        statistics.pstdev(FROZEN_R025_SCORE_WINDOW),
+        rel=1e-12,
+        abs=1e-12,
+    )
+    assert summary["score_std"] != pytest.approx(
+        statistics.stdev(FROZEN_R025_SCORE_WINDOW),
+        rel=1e-9,
+        abs=5e-10,
+    )
+
+    expected = {
+        0.25: {
+            "median_score": 0.1192311382,
+            "mean_score": 0.1296373979,
+            "median_d_clean": 0.0596155691,
+            "score_range": 0.0903892273,
+            "score_std": 0.0292188811,
+            "score_at_cutoff": 0.1909501625,
+        }
+    }
+    assert_expected_resource_bounded_summaries([summary], expected)
+
+    with pytest.raises(RPhase1AmendmentViolation, match="score_std recomputed"):
+        assert_expected_resource_bounded_summaries(
+            [summary],
+            {0.25: {"score_std": 0.0320076805}},
+        )
 
 
 def test_helper_fails_if_any_update_6500_durable_state_is_missing(tmp_path):

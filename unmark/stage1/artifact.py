@@ -133,7 +133,7 @@ RESOURCE_BOUNDED_R_STABILITY_DIAGNOSTICS: tuple[str, ...] = (
     "score_range",
     "score_std",
 )
-RESOURCE_BOUNDED_R_SCORE_STD_KIND = "sample_stdev_n_minus_1"
+RESOURCE_BOUNDED_R_SCORE_STD_KIND = "population_stdev_n"
 
 RESOURCE_BOUNDED_R_SELECTED_R = 1.0
 """The one r this amendment kind may adopt.
@@ -475,7 +475,7 @@ def resource_bounded_r_summary(
         "mean_score": statistics.fmean(scores),
         "median_d_clean": statistics.median(d_clean),
         "score_range": max(scores) - min(scores),
-        "score_std": statistics.stdev(scores),
+        "score_std": statistics.pstdev(scores),
         "score_std_kind": RESOURCE_BOUNDED_R_SCORE_STD_KIND,
         "score_at_cutoff": scores[-1],
     }
