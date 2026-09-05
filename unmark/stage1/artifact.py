@@ -49,6 +49,7 @@ from unmark.stage1.protocol import (
     INITIAL_MAX_UPDATES,
     PRECISION,
     R_PHASE1_GRID,
+    SELECTION_SEED,
     STAGE1_PROTOCOL_VERSION,
     VALIDATION_CONDITIONS,
 )
@@ -134,6 +135,25 @@ RESOURCE_BOUNDED_R_STABILITY_DIAGNOSTICS: tuple[str, ...] = (
 )
 RESOURCE_BOUNDED_R_SCORE_STD_KIND = "sample_stdev_n_minus_1"
 
+RESOURCE_BOUNDED_R_SELECTED_R = 1.0
+"""The one r this amendment kind may adopt.
+
+Audit 047 is a record of a *specific* author decision, not a configurable
+override mechanism. Without this pin a coherently edited artifact -- one whose
+`selected`, `selected_label`, `selected_r` and recomputed evidence all agree on
+some other r -- would validate, because every other check in this path only
+proves internal consistency. Pinning the value is what makes the amendment a
+transcript of the decision that was actually reviewed.
+"""
+
+RESOURCE_BOUNDED_R_FIXED_LEARNING_RATE = 1e-4
+"""The frozen LR the resource-bounded r sweep ran under.
+
+The historical locked LR selector preferred 3e-4; the adopted handoff is the
+author override at 1e-4. A reissue at any other LR is a different experiment,
+so it is refused here rather than silently carried into final-main.
+"""
+
 R_PHASE1_OVERRIDE_FIELDS: tuple[str, ...] = (
     "kind",
     "author",
@@ -216,6 +236,7 @@ R_PHASE1_CONTROL_EQUIVALENCE_FIELDS: tuple[str, ...] = (
     "control_candidate_label",
     "control_source",
     "control_repository_head",
+    "control_run_seed",
     "comparison_window",
     "metrics_compared",
     "max_abs_validation_metric_difference_by_update",
@@ -591,6 +612,24 @@ def _validate_r_phase1_resource_bounded_author_override(
             f"{what} resource-bounded evidence selects {order[0]!r}, not "
             f"{winner.label!r}"
         )
+    # Last gate, deliberately after the evidence was recomputed: everything above
+    # proves the artifact is INTERNALLY consistent, which a coherent forgery also
+    # is. These two pins are what tie this amendment kind to the one decision
+    # Audit 047 records.
+    if selected_r != RESOURCE_BOUNDED_R_SELECTED_R:
+        raise ArtifactViolation(
+            f"{what} selection_override selected_r must be "
+            f"{RESOURCE_BOUNDED_R_SELECTED_R!r} for kind "
+            f"{R_PHASE1_RESOURCE_BOUNDED_AUTHOR_OVERRIDE_KIND!r}, got {selected_r!r}; "
+            "this amendment kind records one specific author decision and is not a "
+            "general-purpose r override"
+        )
+    if fixed_lr != RESOURCE_BOUNDED_R_FIXED_LEARNING_RATE:
+        raise ArtifactViolation(
+            f"{what} selection_override fixed_learning_rate must be "
+            f"{RESOURCE_BOUNDED_R_FIXED_LEARNING_RATE!r} for kind "
+            f"{R_PHASE1_RESOURCE_BOUNDED_AUTHOR_OVERRIDE_KIND!r}, got {fixed_lr!r}"
+        )
     # Kept as a named argument to prove the original locked selector was still
     # recomputed before the override was considered.
     if not isinstance(locked_winner, Candidate):  # pragma: no cover - defensive
@@ -892,6 +931,15 @@ def _validate_r1_control_equivalence(control: Any, *, what: str) -> None:
         if not isinstance(control[field], str) or not control[field]:
             raise ArtifactViolation(f"{what} {field} must be non-empty")
     _full_sha(control["control_repository_head"], f"{what} control_repository_head")
+    # The control is the historical LR-pilot leg, which ran at the selection seed.
+    # Re-checked here so the pin survives into whatever final-main validates,
+    # rather than living only in the builder that produced this block.
+    if _integer(control["control_run_seed"], f"{what} control_run_seed") != SELECTION_SEED:
+        raise ArtifactViolation(
+            f"{what} control_equivalence control_run_seed "
+            f"{control['control_run_seed']!r} is not the historical LR-pilot "
+            f"selection seed {SELECTION_SEED}"
+        )
     if _sequence(control["comparison_window"], f"{what} control comparison_window") != RESOURCE_BOUNDED_R_COMPARISON_WINDOW:
         raise ArtifactViolation(f"{what} control_equivalence comparison_window is wrong")
     if _sequence(control["metrics_compared"], f"{what} metrics_compared") != R_PHASE1_CONTROL_METRICS:

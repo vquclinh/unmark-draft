@@ -19,6 +19,7 @@
 import datetime
 import json
 import os
+import re
 import shlex
 import shutil
 import statistics
@@ -34,9 +35,23 @@ from pathlib import Path
 REPO_URL = "https://github.com/vquclinh/unmark-draft.git"
 REPO = Path("/content/UNMARK")
 
-# Use latest pushed main by default. Set UNMARK_REPO_REF to pin a specific
-# commit that contains the artifact override support.
-REPO_REF = os.environ.get("UNMARK_REPO_REF", "origin/main")
+# ------------------------------------------------------------------------------------------
+# THE HUMAN MUST PASTE THE REVIEWED COMMIT SHA HERE WHEN RUNNING THIS CELL ALONE.
+#
+# The r-phase1 reissue cell exec()s this file after pinning and verifying its own
+# commit, and injects it as INJECTED_IMPLEMENTATION_COMMIT. Without that
+# injection a branch name here would check the repository back out onto a moving
+# ref in the middle of that run.
+# ------------------------------------------------------------------------------------------
+
+IMPLEMENTATION_COMMIT = globals().get(
+    "INJECTED_IMPLEMENTATION_COMMIT", "REPLACE_WITH_FULL_40_HEX_COMMIT_SHA"
+)
+
+# Optional escape hatch for automation; NO default, same 40-hex rule.
+IMPLEMENTATION_COMMIT = os.environ.get(
+    "UNMARK_IMPLEMENTATION_COMMIT", IMPLEMENTATION_COMMIT
+)
 
 DRIVE = Path("/content/drive/MyDrive/UNMARK/UNMARK-BACKUP")
 
@@ -99,6 +114,34 @@ def run(cmd, cwd=None, env=None):
     if completed.returncode != 0:
         fail(f"Command failed rc={completed.returncode}:\n" + shlex.join(cmd))
     return completed
+
+
+def require_immutable_commit(value):
+    """Return `value` only if it is a full 40-hex commit SHA.
+
+    Rejects every moving target -- ``origin/main``, ``main``, ``master``,
+    ``HEAD``, tags, arbitrary refs, short SHAs, the unreplaced placeholder and
+    the empty string -- because each of them can resolve to different code on
+    two different days while the artifact claims a single provenance.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text or text == "REPLACE_WITH_FULL_40_HEX_COMMIT_SHA":
+        fail(
+            "No implementation commit was supplied.\n\n"
+            "Edit this cell and replace the placeholder with the full 40-hex SHA of the\n"
+            "reviewed commit (or export UNMARK_IMPLEMENTATION_COMMIT):\n\n"
+            '    IMPLEMENTATION_COMMIT = "REPLACE_WITH_FULL_40_HEX_COMMIT_SHA"\n\n'
+            "Nothing has been read or written yet."
+        )
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", text):
+        fail(
+            f"IMPLEMENTATION_COMMIT must match ^[0-9a-fA-F]{{40}}$, got {text!r}.\n\n"
+            "Branch names, tags, HEAD and short SHAs are refused: this cell writes a\n"
+            "scientific handoff artifact that records the producing commit as provenance,\n"
+            "so that commit has to be immutable.\n\n"
+            "Nothing has been read or written yet."
+        )
+    return text.lower()
 
 
 def require_clean_repo_checkout(repo):
@@ -171,6 +214,16 @@ def score_stats(run_payload, threshold):
 
 
 # ==========================================================================================
+# 0. REQUIRE AN IMMUTABLE IMPLEMENTATION COMMIT
+#
+# First, before Drive is mounted and before anything is read or written.
+# ==========================================================================================
+
+IMPLEMENTATION_COMMIT = require_immutable_commit(IMPLEMENTATION_COMMIT)
+print("Requested implementation commit:", IMPLEMENTATION_COMMIT)
+
+
+# ==========================================================================================
 # 1. MOUNT DRIVE
 # ==========================================================================================
 
@@ -228,8 +281,9 @@ if not (REPO / ".git").is_dir():
 
 require_clean_repo_checkout(REPO)
 
-run(["git", "fetch", "--quiet", "origin", "main"], cwd=REPO)
-run(["git", "checkout", "--quiet", "--detach", REPO_REF], cwd=REPO)
+# Fetch the object by SHA, not by branch, so no branch name participates.
+run(["git", "fetch", "--quiet", "origin", IMPLEMENTATION_COMMIT], cwd=REPO)
+run(["git", "checkout", "--quiet", "--detach", IMPLEMENTATION_COMMIT], cwd=REPO)
 
 require_clean_repo_checkout(REPO)
 
@@ -238,6 +292,12 @@ if status:
     fail("Repository is dirty after checkout:\n" + status)
 
 current_head = capture(["git", "rev-parse", "HEAD"], cwd=REPO)
+if current_head != IMPLEMENTATION_COMMIT:
+    fail(
+        "Checkout did not land on the requested immutable commit.\n"
+        f"requested: {IMPLEMENTATION_COMMIT}\n"
+        f"HEAD     : {current_head}"
+    )
 print("Historical LR-pilot run HEAD:", OLD_LR_PILOT_HEAD)
 print("Current override-support HEAD:", current_head)
 

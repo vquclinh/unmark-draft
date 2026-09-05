@@ -350,6 +350,17 @@ def r1_control_equivalence(
         raise RPhase1AmendmentViolation(
             "control run must be the historical lr=0.0001,r=1 candidate"
         )
+    # The control is one specific run, and lr+r alone do not name it: the LR pilot
+    # and the fused sweep both contain lr=0.0001,r=1 legs. `run_seed` is the
+    # authoritative scientific field (RunProvenance.run_seed, the sampler seed),
+    # so it is read from the payload rather than inferred from a file or folder
+    # name, which carries no scientific guarantee.
+    control_seed = _int_field(provenance.get("run_seed"), "control run_seed")
+    if control_seed != SELECTION_SEED:
+        raise RPhase1AmendmentViolation(
+            f"control run_seed {control_seed} is not the historical LR-pilot "
+            f"selection seed {SELECTION_SEED}"
+        )
     control_head = _full_sha(
         provenance.get("repository_head"),
         "control repository head",
@@ -377,6 +388,7 @@ def r1_control_equivalence(
         "control_candidate_label": "lr=0.0001",
         "control_source": str(control_source),
         "control_repository_head": control_head,
+        "control_run_seed": control_seed,
         "comparison_window": list(RESOURCE_BOUNDED_R_COMPARISON_WINDOW),
         "metrics_compared": list(R_PHASE1_CONTROL_METRICS),
         "max_abs_validation_metric_difference_by_update": diffs,

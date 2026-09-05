@@ -100,12 +100,19 @@ def execution() -> dict:
     }
 
 
-def checkpoint_payload(r: float, *, head: str = SOURCE_R_HEAD, digest: str = DIGEST) -> dict:
+def checkpoint_payload(
+    r: float,
+    *,
+    head: str = SOURCE_R_HEAD,
+    digest: str = DIGEST,
+    scores: dict[float, tuple[float, ...]] | None = None,
+) -> dict:
+    window = (WINDOW_SCORES if scores is None else scores)[r]
     lambda_align, lambda_clean = lambdas_for_r(r)
     points = [point(0, 0.9).to_dict()]
     points.extend(
         point(update, score).to_dict()
-        for update, score in zip(RESOURCE_BOUNDED_R_COMPARISON_WINDOW, WINDOW_SCORES[r])
+        for update, score in zip(RESOURCE_BOUNDED_R_COMPARISON_WINDOW, window)
     )
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -140,8 +147,10 @@ def checkpoint_payload(r: float, *, head: str = SOURCE_R_HEAD, digest: str = DIG
     }
 
 
-def checkpoint_payloads() -> dict[float, dict]:
-    return {float(r): checkpoint_payload(float(r)) for r in R_PHASE1_GRID}
+def checkpoint_payloads(scores: dict[float, tuple[float, ...]] | None = None) -> dict[float, dict]:
+    return {
+        float(r): checkpoint_payload(float(r), scores=scores) for r in R_PHASE1_GRID
+    }
 
 
 def checkpoint_paths(tmp_path: pathlib.Path) -> dict[float, pathlib.Path]:
@@ -151,16 +160,18 @@ def checkpoint_paths(tmp_path: pathlib.Path) -> dict[float, pathlib.Path]:
     }
 
 
-def control_payload() -> dict:
+def control_payload(scores: dict[float, tuple[float, ...]] | None = None) -> dict:
+    window = (WINDOW_SCORES if scores is None else scores)[1.0]
     evaluations = [
         point(update, score).to_dict()
-        for update, score in zip(RESOURCE_BOUNDED_R_COMPARISON_WINDOW, WINDOW_SCORES[1.0])
+        for update, score in zip(RESOURCE_BOUNDED_R_COMPARISON_WINDOW, window)
     ]
     # The historical LR-pilot run may have a tail; the amendment compares only
     # the fair window and must not read beyond it.
     evaluations.append(point(7000, 99.0).to_dict())
     return {
         "provenance": {
+            "run_seed": SELECTION_SEED,
             "learning_rate": 1e-4,
             "r": 1.0,
             "repository_head": CONTROL_HEAD,
@@ -513,3 +524,178 @@ def author_override_for(selected: Candidate, locked: Candidate) -> dict:
         "reason": "test override",
         "evidence": {"source": "unit-test"},
     }
+
+
+# ==========================================================================================
+# Audit 047 repair - Finding 1: the amendment kind is pinned to ONE decision.
+#
+# Every other check in this path proves the artifact is INTERNALLY consistent,
+# which a coherent forgery also is. These tests build or edit artifacts that pass
+# all of those checks and must still be refused.
+# ==========================================================================================
+
+# r=0.5 legitimately wins under this table, so the artifact below is coherent:
+# its summaries, its recomputed ranking and its selected candidate all agree.
+SCORES_FAVOURING_R05 = {
+    0.25: (0.31, 0.32, 0.33, 0.34, 0.35, 0.36),
+    0.5: (0.10, 0.11, 0.12, 0.13, 0.14, 0.15),
+    1.0: (0.21, 0.22, 0.23, 0.24, 0.25, 0.26),
+    2.0: (0.22, 0.23, 0.24, 0.25, 0.26, 0.27),
+    4.0: (0.41, 0.42, 0.43, 0.44, 0.45, 0.46),
+}
+
+
+def test_a_coherent_artifact_selecting_another_r_is_refused(tmp_path):
+    with pytest.raises(ArtifactViolation, match="selected_r must be 1.0"):
+        build_resource_bounded_r_phase1_artifact(
+            checkpoint_payloads=checkpoint_payloads(SCORES_FAVOURING_R05),
+            checkpoint_paths=checkpoint_paths(tmp_path),
+            identity=identity(),
+            source_r_phase1_repository_head=SOURCE_R_HEAD,
+            reissued_under_repository_head=CURRENT_HEAD,
+            fixed_learning_rate=1e-4,
+            control_run_payload=control_payload(SCORES_FAVOURING_R05),
+            control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
+            author="test author",
+            created_at="2026-09-05",
+            selected_r=0.5,
+        )
+
+
+def _rewrite(value, swaps):
+    """Recursively rewrite values so an edited artifact stays self-consistent."""
+    if isinstance(value, dict):
+        return {key: _rewrite(item, swaps) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_rewrite(item, swaps) for item in value]
+    for old, new in swaps:
+        if type(value) is type(old) and value == old:
+            return new
+    return value
+
+
+def test_a_coherent_artifact_at_another_learning_rate_is_refused(tmp_path):
+    artifact = build_artifact(tmp_path)
+    # Move the WHOLE artifact to the historical locked-rule LR. Candidates,
+    # summaries, override and control labels all move together, so nothing
+    # internal disagrees.
+    forged = _rewrite(artifact, [(1e-4, 3e-4), ("lr=0.0001", "lr=0.0003")])
+    assert forged["selection_override"]["fixed_learning_rate"] == 3e-4
+
+    with pytest.raises(ArtifactViolation, match="fixed_learning_rate must be 0.0001"):
+        validate_selection_artifact(
+            forged,
+            expected_stage="r_phase1",
+            identity=identity(),
+            what="r_phase1.json",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("observed_cutoff_update", 6000, "observed_cutoff_update must be 6500"),
+        ("original_planned_cap", 40000, "original_planned_cap must preserve 20000"),
+        (
+            "comparison_window",
+            [4000, 4500, 5000, 5500, 6000],
+            "comparison_window must be",
+        ),
+        (
+            "historical_tail_after_cutoff_used",
+            True,
+            "historical_tail_after_cutoff_used must be False",
+        ),
+        ("official_test_used", True, "official_test_used must be False"),
+        ("downstream_score_used", True, "downstream_score_used must be False"),
+    ],
+)
+def test_editing_a_pinned_override_field_is_refused(tmp_path, field, value, message):
+    artifact = build_artifact(tmp_path)
+    artifact["selection_override"][field] = value
+
+    with pytest.raises(ArtifactViolation, match=message):
+        validate_selection_artifact(
+            artifact,
+            expected_stage="r_phase1",
+            identity=identity(),
+            what="r_phase1.json",
+        )
+
+
+# ==========================================================================================
+# Audit 047 repair - Finding 2: the r=1 control is pinned to the LR-pilot seed.
+# ==========================================================================================
+
+def test_the_r1_control_must_carry_the_selection_seed(tmp_path):
+    wrong_seed = control_payload()
+    wrong_seed["provenance"]["run_seed"] = SELECTION_SEED + 1
+
+    with pytest.raises(RPhase1AmendmentViolation, match="is not the historical LR-pilot"):
+        build_resource_bounded_r_phase1_artifact(
+            checkpoint_payloads=checkpoint_payloads(),
+            checkpoint_paths=checkpoint_paths(tmp_path),
+            identity=identity(),
+            source_r_phase1_repository_head=SOURCE_R_HEAD,
+            reissued_under_repository_head=CURRENT_HEAD,
+            fixed_learning_rate=1e-4,
+            control_run_payload=wrong_seed,
+            control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
+            author="test author",
+            created_at="2026-09-05",
+        )
+
+
+def test_a_control_without_a_seed_is_refused_rather_than_inferred(tmp_path):
+    seedless = control_payload()
+    del seedless["provenance"]["run_seed"]
+
+    with pytest.raises(RPhase1AmendmentViolation, match="control run_seed must be an integer"):
+        build_resource_bounded_r_phase1_artifact(
+            checkpoint_payloads=checkpoint_payloads(),
+            checkpoint_paths=checkpoint_paths(tmp_path),
+            identity=identity(),
+            source_r_phase1_repository_head=SOURCE_R_HEAD,
+            reissued_under_repository_head=CURRENT_HEAD,
+            fixed_learning_rate=1e-4,
+            control_run_payload=seedless,
+            control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
+            author="test author",
+            created_at="2026-09-05",
+        )
+
+
+def test_the_control_seed_is_revalidated_from_the_finished_artifact(tmp_path):
+    """The pin must survive into whatever final-main validates, not just the builder."""
+    artifact = build_artifact(tmp_path)
+    assert artifact["selection_override"]["evidence"]["control_equivalence"][
+        "control_run_seed"
+    ] == SELECTION_SEED
+
+    artifact["selection_override"]["evidence"]["control_equivalence"][
+        "control_run_seed"
+    ] = SELECTION_SEED + 1
+
+    with pytest.raises(ArtifactViolation, match="is not the historical LR-pilot"):
+        validate_selection_artifact(
+            artifact,
+            expected_stage="r_phase1",
+            identity=identity(),
+            what="r_phase1.json",
+        )
+
+
+def test_the_control_window_stops_at_the_cutoff(tmp_path):
+    """The historical r=1 tail after 6500 is not selection evidence."""
+    artifact = build_artifact(tmp_path)
+    control = artifact["selection_override"]["evidence"]["control_equivalence"]
+
+    assert control["comparison_window"] == list(RESOURCE_BOUNDED_R_COMPARISON_WINDOW)
+    assert max(int(update) for update in
+               control["max_abs_validation_metric_difference_by_update"]) == 6500
+    # control_payload() carries a deliberate update-7000 tail; it must not appear.
+    assert "7000" not in control["max_abs_validation_metric_difference_by_update"]
+    assert set(control["max_abs_validation_metric_difference_by_update"].values()) == {0.0}
