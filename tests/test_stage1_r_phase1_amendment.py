@@ -50,6 +50,7 @@ from unmark.stage1.trainer import CHECKPOINT_SCHEMA_VERSION  # noqa: E402
 
 CURRENT_HEAD = "a" * 40
 SOURCE_R_HEAD = "b" * 40
+HISTORICAL_SOURCE_R_HEAD = "3bb2944e6f71865d5a37fe403b78ea640f8a3f1d"
 CONTROL_HEAD = "c" * 40
 DIGEST = "d" * 64
 
@@ -205,7 +206,7 @@ def write_telemetry(tmp_path: pathlib.Path, *, omit_label: str | None = None) ->
                 "event": "run_start",
                 "stage": "r_phase1",
                 "label": label,
-                "learning_rate": 1e-4,
+                "lr": 1e-4,
                 "r": float(r),
                 "repository_head": SOURCE_R_HEAD,
                 "execution_mode": "fused",
@@ -235,6 +236,73 @@ def write_telemetry(tmp_path: pathlib.Path, *, omit_label: str | None = None) ->
                     },
                 ]
             )
+    path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_raw_historical_telemetry(
+    tmp_path: pathlib.Path,
+    *,
+    mutate_event: str | None = None,
+    mutate_label: str = "r=0.25",
+    changes: dict | None = None,
+    remove: tuple[str, ...] = (),
+) -> pathlib.Path:
+    path = tmp_path / "raw-historical-telemetry.jsonl"
+    events = [
+        {
+            "schema": "stage1-telemetry-v1",
+            "event": "stage_start",
+            "stage": "r_phase1",
+            "repository_head": HISTORICAL_SOURCE_R_HEAD,
+        }
+    ]
+    for r in R_PHASE1_GRID:
+        label = f"r={r:g}"
+        common = {
+            "schema": "stage1-telemetry-v1",
+            "stage": "r_phase1",
+            "execution_mode": "fused",
+            "label": label,
+            "lr": 1e-4,
+            "r": float(r),
+            "seed": SELECTION_SEED,
+        }
+        events.extend(
+            [
+                {
+                    **common,
+                    "event": "run_start",
+                    "repository_head": HISTORICAL_SOURCE_R_HEAD,
+                },
+                {
+                    **common,
+                    "event": "train_progress",
+                    "global_update": 6500,
+                },
+                {
+                    **common,
+                    "event": "validation",
+                    "update": 6500,
+                },
+                {
+                    **common,
+                    "event": "checkpoint",
+                    "update": 6500,
+                    "checkpoint_name": "training-checkpoint-last.pt",
+                },
+            ]
+        )
+    if mutate_event is not None:
+        for event in events:
+            if event.get("event") == mutate_event and event.get("label") == mutate_label:
+                for key in remove:
+                    event.pop(key, None)
+                event.update(changes or {})
+                break
     path.write_text(
         "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
         encoding="utf-8",
@@ -393,6 +461,77 @@ def test_helper_fails_if_telemetry_evidence_missing_update_6500(tmp_path):
         verify_r_phase1_telemetry_evidence(
             write_telemetry(tmp_path, omit_label="r=4"),
             expected_source_repository_head=SOURCE_R_HEAD,
+            expected_learning_rate=1e-4,
+        )
+
+
+def test_raw_historical_r_phase1_telemetry_uses_lr_for_candidate_identity(tmp_path):
+    path = write_raw_historical_telemetry(tmp_path)
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    run_start = next(
+        event
+        for event in events
+        if event["event"] == "run_start" and event["label"] == "r=0.25"
+    )
+
+    assert "telemetry_identity" not in run_start
+    assert {
+        "event": run_start["event"],
+        "execution_mode": run_start["execution_mode"],
+        "label": run_start["label"],
+        "r": run_start["r"],
+        "lr": run_start["lr"],
+        "seed": run_start["seed"],
+        "repository_head": run_start["repository_head"],
+        "stage": run_start["stage"],
+        "schema": run_start["schema"],
+    } == {
+        "event": "run_start",
+        "execution_mode": "fused",
+        "label": "r=0.25",
+        "r": 0.25,
+        "lr": 0.0001,
+        "seed": 21230,
+        "repository_head": HISTORICAL_SOURCE_R_HEAD,
+        "stage": "r_phase1",
+        "schema": "stage1-telemetry-v1",
+    }
+
+    good = verify_r_phase1_telemetry_evidence(
+        path,
+        expected_source_repository_head=HISTORICAL_SOURCE_R_HEAD,
+        expected_learning_rate=1e-4,
+    )
+
+    assert set(good["required_events_by_label"]) == {f"r={r:g}" for r in R_PHASE1_GRID}
+    assert good["required_events_by_label"]["r=0.25"]["run_start"] is True
+
+
+@pytest.mark.parametrize(
+    ("changes", "remove", "message"),
+    [
+        ({}, ("lr",), "telemetry r=0.25 lr must be numeric"),
+        ({"lr": "not numeric"}, (), "telemetry r=0.25 lr must be numeric"),
+        ({"lr": 3e-4}, (), "telemetry r=0.25 lr mismatch"),
+        ({"r": 0.5}, (), "telemetry r=0.25 r mismatch"),
+        ({"label": "r=bogus"}, (), "telemetry for r=0.25 is missing required event"),
+    ],
+)
+def test_raw_historical_r_phase1_candidate_identity_fails_closed(
+    tmp_path,
+    changes,
+    remove,
+    message,
+):
+    with pytest.raises(RPhase1AmendmentViolation, match=message):
+        verify_r_phase1_telemetry_evidence(
+            write_raw_historical_telemetry(
+                tmp_path,
+                mutate_event="run_start",
+                changes=changes,
+                remove=remove,
+            ),
+            expected_source_repository_head=HISTORICAL_SOURCE_R_HEAD,
             expected_learning_rate=1e-4,
         )
 

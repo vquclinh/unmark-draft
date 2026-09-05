@@ -648,7 +648,7 @@ def _require_telemetry_candidate_identity(
         values = {
             "label": event.get("label"),
             "r": event.get("r"),
-            "lr": event.get("learning_rate"),
+            "lr": event.get("lr"),
         }
     if values["label"] != label:
         raise RPhase1AmendmentViolation(
