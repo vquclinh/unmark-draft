@@ -29,6 +29,9 @@ DETERMINISTIC_CUBLAS_WORKSPACE = ":4096:8"
 (the other is `:16:8`, which is slower). Required for deterministic GEMMs on
 CUDA >= 10.2, which is every version this project can run on."""
 
+SCIENTIFIC_DEVICE_BACKEND = "cuda"
+"""The single literal name for the required scientific training backend."""
+
 FLOAT32_MATMUL_PRECISION = "highest"
 """True fp32 matmul. `"high"`/`"medium"` would permit TF32 or bf16x3 internally
 while every artifact still recorded `precision: fp32` -- exactly the silent
@@ -82,7 +85,7 @@ def resolve_scientific_device() -> Any:
             "time nothing in the protocol contemplates. `smoke`, the measurement tool "
             "and the tests remain CPU-capable; scientific training does not."
         )
-    return torch.device("cuda")
+    return torch.device(SCIENTIFIC_DEVICE_BACKEND)
 
 
 def enforce_numerical_policy() -> None:
@@ -242,7 +245,7 @@ def current_fingerprint(device: Any) -> ExecutionFingerprint:
         capability = f"{major}.{minor}"
     cudnn_version = torch.backends.cudnn.version() if on_cuda else None
     return ExecutionFingerprint(
-        backend="cuda" if on_cuda else "cpu",
+        backend=SCIENTIFIC_DEVICE_BACKEND if on_cuda else "cpu",
         device=str(device),
         gpu_name=name,
         compute_capability=capability,

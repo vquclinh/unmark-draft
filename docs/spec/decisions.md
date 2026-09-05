@@ -4995,3 +4995,47 @@ available and can resume the same per-candidate checkpoints.
 | **Audit** | [`docs/audits/046-stage1-r-phase1-operational-acceleration.md`](../audits/046-stage1-r-phase1-operational-acceleration.md) |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
 | **Proposal updated** | **NO** — operational acceleration only. PDF stale: **YES** |
+
+
+### D-S1B-022 — r-phase1 resource-bounded author amendment after partial validation review
+
+| | |
+|---|---|
+| **Status** | **DEVIATED / RESOURCE-BOUNDED AUTHOR AMENDMENT** |
+| **Owner** | Stage-1B |
+| **Date** | 2026-09-05 |
+| **Artifact** | `r_phase1.json`, reissued from stopped update-6500 checkpoints |
+
+**What changed.** The `r-phase1` handoff now selects **`r = 1.0`** for
+`final-main` using a resource-bounded observed-window rule over updates
+`[4000, 4500, 5000, 5500, 6000, 6500]`. The frozen LR remains `0.0001`.
+
+**Why.** The original `r-phase1` plan had a 20,000-update initial cap, but the
+resource-bounded fused sweep was intentionally stopped once all five candidates
+had validation, durable checkpoint and training-progress evidence at update
+6500. The author reviewed the partial validation curves and adopted `r=1.0`
+because it had the lowest median validation/score over the stated window.
+
+**Representation.** This is not represented as normal locked-rule selection.
+The artifact must carry `selection_override.kind =
+author_r_override_after_resource_bounded_validation_review`, preserve the
+original planned cap `20000`, record the observed cutoff `6500`, record the
+comparison window, record all five recomputed candidate summaries, set
+`global_optimum_claimed = false`, and set both `official_test_used` and
+`downstream_score_used` to false.
+
+**Exclusions.** The historical `r=1` tail after update 6500 is not selection
+evidence. No completed 20,000-update r sweep is claimed.
+
+| | |
+|---|---|
+| **Observed order** | `r=1`, `r=0.5`, `r=2`, `r=0.25`, `r=4` |
+| **Primary criterion** | lower median validation/score |
+| **Secondary diagnostic** | lower median `d_clean` |
+| **Stability diagnostics** | `score_range`, `score_std` |
+| **Affected code** | `unmark/stage1/artifact.py`, `unmark/stage1/r_phase1_amendment.py` |
+| **Affected tests** | `tests/test_stage1_r_phase1_amendment.py`, `tests/test_stage1_artifact_identity.py`, `tests/test_stage1_runner_contract.py` |
+| **Colab handoff** | `docs/colab/regenerate_r_phase1_resource_bounded_author_override_cell.py` |
+| **Audit** | [`docs/audits/047-stage1-r-phase1-resource-bounded-author-amendment.md`](../audits/047-stage1-r-phase1-resource-bounded-author-amendment.md) |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Proposal updated** | **NO** — this is recorded as an explicit resource-bounded deviation/amendment, not folded back into the original 20,000-update plan. PDF stale: **YES** |

@@ -42,6 +42,7 @@ def test_the_runner_imports_without_torch():
 @pytest.mark.parametrize("module", [
     "protocol.py", "corpus.py", "chunking.py", "sampler.py",
     "selection.py", "optim.py", "manifest.py", "trainer.py", "execute.py",
+    "r_phase1_amendment.py",
 ])
 def test_stage1_modules_do_not_import_torch_at_module_scope(module):
     tree = tree_of(STAGE1 / module)

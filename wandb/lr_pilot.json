@@ -1,0 +1,203 @@
+{
+  "candidates": [
+    {
+      "budget_limited": false,
+      "label": "lr=0.0001",
+      "learning_rate": 0.0001,
+      "r": 1.0,
+      "selected": {
+        "d_clean": 0.059050395112036407,
+        "distances": {
+          "FULL": 0.059050395112036407,
+          "P100": 0.07199110258066246,
+          "P50": 0.06068214014944763,
+          "STRIP_ALL": 0.09000698585438581
+        },
+        "score": 0.09000698585438581,
+        "update": 14500
+      }
+    },
+    {
+      "budget_limited": false,
+      "label": "lr=0.0003",
+      "learning_rate": 0.0003,
+      "r": 1.0,
+      "selected": {
+        "d_clean": 0.05502000740438473,
+        "distances": {
+          "FULL": 0.05502000740438473,
+          "P100": 0.0744697426693283,
+          "P50": 0.061540415848946435,
+          "STRIP_ALL": 0.08824253183326698
+        },
+        "score": 0.08824253183326698,
+        "update": 500
+      }
+    },
+    {
+      "budget_limited": false,
+      "label": "lr=0.001",
+      "learning_rate": 0.001,
+      "r": 1.0,
+      "selected": {
+        "d_clean": 0.051978444788492006,
+        "distances": {
+          "FULL": 0.051978444788492006,
+          "P100": 0.07076452989569079,
+          "P50": 0.05711319281860507,
+          "STRIP_ALL": 0.10682767755677106
+        },
+        "score": 0.10682767755677106,
+        "update": 13500
+      }
+    }
+  ],
+  "corpus_manifest_digest": "250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6",
+  "downstream_score_used": false,
+  "identity": {
+    "corpus_manifest_digest": "250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6",
+    "encoder_checkpoint": "vinai/phobert-base",
+    "encoder_revision": "01daacda68afe13d83023d16ec647239e344a1e6",
+    "inventory_sha256": "78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2",
+    "inventory_source_name": "all-vietnamese-syllables.txt",
+    "inventory_source_revision": "135a4d9716e49a981624474156d6f247b9b46f6a",
+    "precision": "fp32",
+    "protocol_version": "stage1-protocol-v1",
+    "repository_head": "bca24ade208265a5a46a54fb2d2d9bd77d8f6703"
+  },
+  "official_test_used": false,
+  "preparation": {
+    "order_preserving": true,
+    "prefetch": false,
+    "preparation_backend": "multiprocessing_spawn",
+    "preparation_workers": 8
+  },
+  "protocol_version": "stage1-protocol-v1",
+  "raw_text_persisted": false,
+  "repository_head": "bca24ade208265a5a46a54fb2d2d9bd77d8f6703",
+  "selected": {
+    "budget_limited": false,
+    "label": "lr=0.0001",
+    "learning_rate": 0.0001,
+    "r": 1.0,
+    "selected": {
+      "d_clean": 0.059050395112036407,
+      "distances": {
+        "FULL": 0.059050395112036407,
+        "P100": 0.07199110258066246,
+        "P50": 0.06068214014944763,
+        "STRIP_ALL": 0.09000698585438581
+      },
+      "score": 0.09000698585438581,
+      "update": 14500
+    }
+  },
+  "selection_override": {
+    "author": "Linh Vo Quoc",
+    "created_at": "2026-09-04",
+    "evidence": {
+      "author_selected": {
+        "label": "lr=0.0001",
+        "learning_rate": 0.0001,
+        "score": 0.09000698585438581,
+        "update": 14500
+      },
+      "interpretation": "This is a transparent post-hoc author override based on validation-curve stability, not a claim that the original min-score selector chose lr=0.0001.",
+      "lr0.0003_early_scores": {
+        "1000": 0.10005928909487942,
+        "1500": 0.20531023229990536,
+        "2000": 0.30160508679935255,
+        "500": 0.08824253183326698
+      },
+      "old_rule_selected": {
+        "label": "lr=0.0003",
+        "learning_rate": 0.0003,
+        "score": 0.08824253183326698,
+        "update": 500
+      },
+      "robust_score_summary": {
+        "threshold_update_2000": {
+          "lr=0.0001": {
+            "best_score": 0.09000698585438581,
+            "best_update": 14500,
+            "mean_score": 0.11973577680257691,
+            "median_score": 0.10404378789856562,
+            "points": 37,
+            "sample_stdev_score": 0.047075906854690784
+          },
+          "lr=0.0003": {
+            "best_score": 0.11848742018251854,
+            "best_update": 13000,
+            "mean_score": 0.167967636219052,
+            "median_score": 0.1360465747737326,
+            "points": 37,
+            "sample_stdev_score": 0.05989859960825789
+          },
+          "lr=0.001": {
+            "best_score": 0.10682767755677106,
+            "best_update": 13500,
+            "mean_score": 0.11908537473010306,
+            "median_score": 0.11786325569806227,
+            "points": 37,
+            "sample_stdev_score": 0.008397719520188978
+          }
+        },
+        "threshold_update_5000": {
+          "lr=0.0001": {
+            "best_score": 0.09000698585438581,
+            "best_update": 14500,
+            "mean_score": 0.10570159833330355,
+            "median_score": 0.10138155619581189,
+            "points": 31,
+            "sample_stdev_score": 0.014464152146959489
+          },
+          "lr=0.0003": {
+            "best_score": 0.11848742018251854,
+            "best_update": 13000,
+            "mean_score": 0.15120857326512446,
+            "median_score": 0.13348664890414486,
+            "points": 31,
+            "sample_stdev_score": 0.047537618200260846
+          },
+          "lr=0.001": {
+            "best_score": 0.10682767755677106,
+            "best_update": 13500,
+            "mean_score": 0.1183406738895201,
+            "median_score": 0.11711214874358086,
+            "points": 31,
+            "sample_stdev_score": 0.007943566997457598
+          }
+        }
+      },
+      "source_files": [
+        "wandb/run-lr0.0001.json",
+        "wandb/run-lr0.0003.json",
+        "wandb/run-lr0.001.json",
+        "wandb/all_3.png"
+      ]
+    },
+    "kind": "author_lr_override_after_validation_curve_review",
+    "reason": "After reviewing the W&B validation curves, the author selected lr=0.0001 instead of the old locked-rule winner lr=0.0003. The old rule used the single lowest validation/score point; lr=0.0003 won only at update 500 and then rose sharply, while lr=0.0001 was judged more stable across the later validation trajectory.",
+    "selected_label": "lr=0.0001",
+    "selected_learning_rate": 0.0001,
+    "superseded_locked_rule": "min(candidate.selected.score, candidate.selected.d_clean, candidate.learning_rate)",
+    "superseded_locked_rule_winner": {
+      "budget_limited": false,
+      "label": "lr=0.0003",
+      "learning_rate": 0.0003,
+      "r": 1.0,
+      "selected": {
+        "d_clean": 0.05502000740438473,
+        "distances": {
+          "FULL": 0.05502000740438473,
+          "P100": 0.0744697426693283,
+          "P50": 0.061540415848946435,
+          "STRIP_ALL": 0.08824253183326698
+        },
+        "score": 0.08824253183326698,
+        "update": 500
+      }
+    }
+  },
+  "stage": "lr_pilot"
+}
