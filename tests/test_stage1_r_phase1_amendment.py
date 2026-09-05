@@ -42,6 +42,7 @@ from unmark.stage1.r_phase1_amendment import (  # noqa: E402
     RPhase1AmendmentViolation,
     build_resource_bounded_r_phase1_artifact,
     load_r_phase1_last_checkpoints,
+    verify_r_phase1_telemetry_evidence,
 )
 from unmark.stage1.selection import Candidate, ValidationPoint, select_learning_rate  # noqa: E402
 from unmark.stage1.trainer import CHECKPOINT_SCHEMA_VERSION  # noqa: E402
@@ -168,6 +169,76 @@ def control_payload() -> dict:
     }
 
 
+def write_telemetry(tmp_path: pathlib.Path, *, omit_label: str | None = None) -> pathlib.Path:
+    path = tmp_path / "telemetry.jsonl"
+    events = [
+        {
+            "event": "stage_start",
+            "stage": "r_phase1",
+            "repository_head": SOURCE_R_HEAD,
+        }
+    ]
+    for r in R_PHASE1_GRID:
+        label = f"r={r:g}"
+        identity_block = {
+            "stage": "r_phase1",
+            "candidate_index": list(R_PHASE1_GRID).index(r),
+            "candidate_count": len(R_PHASE1_GRID),
+            "label": label,
+            "lr": 1e-4,
+            "r": float(r),
+            "seed": SELECTION_SEED,
+        }
+        events.append(
+            {
+                "event": "run_start",
+                "stage": "r_phase1",
+                "label": label,
+                "learning_rate": 1e-4,
+                "r": float(r),
+                "repository_head": SOURCE_R_HEAD,
+                "execution_mode": "fused",
+            }
+        )
+        if label != omit_label:
+            events.extend(
+                [
+                    {
+                        "event": "train_progress",
+                        "global_update": 6500,
+                        "execution_mode": "fused",
+                        "telemetry_identity": identity_block,
+                    },
+                    {
+                        "event": "validation",
+                        "update": 6500,
+                        "execution_mode": "fused",
+                        "telemetry_identity": identity_block,
+                    },
+                    {
+                        "event": "checkpoint",
+                        "update": 6500,
+                        "checkpoint_name": "training-checkpoint-last.pt",
+                        "execution_mode": "fused",
+                        "telemetry_identity": identity_block,
+                    },
+                ]
+            )
+    path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    return path
+
+
+def telemetry_evidence(tmp_path: pathlib.Path) -> dict:
+    return verify_r_phase1_telemetry_evidence(
+        write_telemetry(tmp_path),
+        expected_source_repository_head=SOURCE_R_HEAD,
+        expected_learning_rate=1e-4,
+    )
+
+
 def build_artifact(tmp_path: pathlib.Path) -> dict:
     return build_resource_bounded_r_phase1_artifact(
         checkpoint_payloads=checkpoint_payloads(),
@@ -178,6 +249,7 @@ def build_artifact(tmp_path: pathlib.Path) -> dict:
         fixed_learning_rate=1e-4,
         control_run_payload=control_payload(),
         control_source=tmp_path / "run-lr0.0001.json",
+        telemetry_evidence=telemetry_evidence(tmp_path),
         author="test author",
         created_at="2026-09-05",
     )
@@ -219,6 +291,7 @@ def test_helper_fails_if_any_update_6500_durable_state_is_missing(tmp_path):
             fixed_learning_rate=1e-4,
             control_run_payload=control_payload(),
             control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
             author="test author",
             created_at="2026-09-05",
         )
@@ -235,6 +308,7 @@ def test_helper_fails_if_any_update_6500_durable_state_is_missing(tmp_path):
             fixed_learning_rate=1e-4,
             control_run_payload=control_payload(),
             control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
             author="test author",
             created_at="2026-09-05",
         )
@@ -253,6 +327,7 @@ def test_helper_fails_if_evidence_corpus_or_head_identities_mismatch(tmp_path):
             fixed_learning_rate=1e-4,
             control_run_payload=control_payload(),
             control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
             author="test author",
             created_at="2026-09-05",
         )
@@ -269,6 +344,7 @@ def test_helper_fails_if_evidence_corpus_or_head_identities_mismatch(tmp_path):
             fixed_learning_rate=1e-4,
             control_run_payload=control_payload(),
             control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
             author="test author",
             created_at="2026-09-05",
         )
@@ -288,8 +364,25 @@ def test_helper_fails_if_r_checkpoint_contains_tail_after_cutoff(tmp_path):
             fixed_learning_rate=1e-4,
             control_run_payload=control_payload(),
             control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
             author="test author",
             created_at="2026-09-05",
+        )
+
+
+def test_helper_fails_if_telemetry_evidence_missing_update_6500(tmp_path):
+    good = verify_r_phase1_telemetry_evidence(
+        write_telemetry(tmp_path),
+        expected_source_repository_head=SOURCE_R_HEAD,
+        expected_learning_rate=1e-4,
+    )
+    assert set(good["required_events_by_label"]) == {f"r={r:g}" for r in R_PHASE1_GRID}
+
+    with pytest.raises(RPhase1AmendmentViolation, match="r=4.*missing"):
+        verify_r_phase1_telemetry_evidence(
+            write_telemetry(tmp_path, omit_label="r=4"),
+            expected_source_repository_head=SOURCE_R_HEAD,
+            expected_learning_rate=1e-4,
         )
 
 
@@ -353,6 +446,7 @@ def test_fused_r1_control_evidence_must_be_exact_where_tested(tmp_path):
             fixed_learning_rate=1e-4,
             control_run_payload=bad_control,
             control_source=tmp_path / "run-lr0.0001.json",
+            telemetry_evidence=telemetry_evidence(tmp_path),
             author="test author",
             created_at="2026-09-05",
         )

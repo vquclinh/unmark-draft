@@ -34,9 +34,9 @@ from pathlib import Path
 REPO_URL = "https://github.com/vquclinh/unmark-draft.git"
 REPO = Path("/content/UNMARK")
 
-# Use latest pushed main by default. To pin a specific commit, replace this with
-# the full commit SHA that contains the artifact override support.
-REPO_REF = "origin/main"
+# Use latest pushed main by default. Set UNMARK_REPO_REF to pin a specific
+# commit that contains the artifact override support.
+REPO_REF = os.environ.get("UNMARK_REPO_REF", "origin/main")
 
 DRIVE = Path("/content/drive/MyDrive/UNMARK/UNMARK-BACKUP")
 
@@ -101,34 +101,17 @@ def run(cmd, cwd=None, env=None):
     return completed
 
 
-def move_repo_wandb_pollution(repo):
-    """Move only untracked repo-local wandb/ debris out of the checkout."""
+def require_clean_repo_checkout(repo):
+    """Refuse any dirty checkout without moving or deleting W&B state."""
     status = capture(["git", "status", "--porcelain"], cwd=repo)
     if not status:
         return
 
-    unexpected = []
-    for line in status.splitlines():
-        payload = line[3:] if len(line) >= 4 else line
-        if not (
-            line.startswith("?? ")
-            and (payload == "wandb/" or payload.startswith("wandb/"))
-        ):
-            unexpected.append(line)
-
-    if unexpected:
-        fail(
-            "Repository dirt is not merely untracked W&B operational state:\n"
-            + "\n".join(unexpected)
-        )
-
-    repo_wandb = repo / "wandb"
-    if repo_wandb.exists():
-        target = Path("/content/unmark-wandb-old-operational-before-lr-override")
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.move(str(repo_wandb), str(target))
-        print("Moved repo-local W&B debris to:", target)
+    fail(
+        "Repository checkout is dirty. This helper does not move, delete or "
+        "rewrite W&B state; use a fresh runtime or clean checkout.\n"
+        + status
+    )
 
 
 def load_json(path):
@@ -243,12 +226,12 @@ if not REPO.exists():
 if not (REPO / ".git").is_dir():
     fail(f"Not a Git repository: {REPO}")
 
-move_repo_wandb_pollution(REPO)
+require_clean_repo_checkout(REPO)
 
 run(["git", "fetch", "--quiet", "origin", "main"], cwd=REPO)
 run(["git", "checkout", "--quiet", "--detach", REPO_REF], cwd=REPO)
 
-move_repo_wandb_pollution(REPO)
+require_clean_repo_checkout(REPO)
 
 status = capture(["git", "status", "--porcelain"], cwd=REPO)
 if status:

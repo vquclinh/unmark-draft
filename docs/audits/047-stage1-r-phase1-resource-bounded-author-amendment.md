@@ -66,6 +66,9 @@ For `r_phase1` only, the validator now accepts a closed-schema
 - the observed cutoff and comparison window are exactly the documented values;
 - top-level `official_test_used` and `downstream_score_used` are false;
 - all five candidate summaries are present;
+- fused monitoring telemetry records `run_start`, update-6500
+  `train_progress`, update-6500 `validation` and update-6500 checkpoint events
+  for all five candidates under the historical source campaign HEAD;
 - each summary carries the validation points for the observed window;
 - medians, means, range, standard deviation and cutoff score recompute exactly
   from those points;
@@ -77,14 +80,16 @@ For `r_phase1` only, the validator now accepts a closed-schema
 `unmark/stage1/r_phase1_amendment.py` is the reusable helper core. It loads the
 five read-only last checkpoints, verifies their provenance against the expected
 source campaign, verifies update-6500 durability and the complete comparison
-window, recomputes the summaries, validates the control equivalence, builds the
-new artifact under the current repository HEAD, and immediately validates the
-artifact through the same consumer that `final-main` calls.
+window, verifies fused monitoring telemetry, recomputes the summaries, validates
+the control equivalence, builds the new artifact under the current repository
+HEAD, and immediately validates the artifact through the same consumer that
+`final-main` calls.
 
 `docs/colab/regenerate_r_phase1_resource_bounded_author_override_cell.py` is the
-copyable Colab cell. It reissues the LR handoff under the same current HEAD,
-then reissues `r_phase1.json` from the stopped checkpoints. It does not start
-`final-main`.
+copyable Colab cell. It checks out the requested implementation commit,
+fetches/verifies the pinned inventory, reissues the LR handoff under the same
+current HEAD, then reissues `r_phase1.json` from the stopped checkpoints and
+telemetry. It does not start `final-main`.
 
 ## 5. Preserved Protocol
 
@@ -114,7 +119,7 @@ pytest -q tests/test_stage1_runner_contract.py \
   tests/test_stage1_repository_provenance.py \
   tests/test_stage1_device_contract.py
 
-177 passed, 1 skipped in 0.81s
+178 passed, 1 skipped in 0.78s
 ```
 
 No Stage-1 training command was run. Existing checkpoints are not modified by

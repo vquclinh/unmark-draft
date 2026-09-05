@@ -9,6 +9,7 @@ the explicit r-phase1 amendment artifact that final-main validates through
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -112,6 +113,7 @@ def build_resource_bounded_r_phase1_artifact(
     fixed_learning_rate: float,
     control_run_payload: Mapping[str, Any],
     control_source: Path | str,
+    telemetry_evidence: Mapping[str, Any],
     author: str,
     created_at: str,
     previous_artifact: Mapping[str, Any] | None = None,
@@ -212,6 +214,7 @@ def build_resource_bounded_r_phase1_artifact(
                 "reissued_under_repository_head": current_head,
                 "previous_artifact_repository_head": previous_head,
                 "previous_artifact_identity_repository_head": previous_identity_head,
+                "telemetry_evidence": dict(telemetry_evidence),
                 "candidate_summaries": summaries,
                 "resource_bounded_order": order,
                 "control_equivalence": r1_control_equivalence(
@@ -234,6 +237,103 @@ def build_resource_bounded_r_phase1_artifact(
             f"self-validation returned r={winner.r}, not r={selected_r}"
         )
     return artifact
+
+
+def verify_r_phase1_telemetry_evidence(
+    telemetry_path: Path | str,
+    *,
+    expected_source_repository_head: str,
+    expected_learning_rate: float,
+) -> dict[str, Any]:
+    """Verify fused monitoring telemetry records every required 6500 event."""
+    path = Path(telemetry_path)
+    if not path.is_file():
+        raise RPhase1AmendmentViolation(f"missing r-phase1 telemetry: {path}")
+    source_head = _full_sha(expected_source_repository_head, "telemetry source head")
+    events: list[Mapping[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for lineno, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as error:
+                raise RPhase1AmendmentViolation(
+                    f"telemetry line {lineno} is not valid JSON"
+                ) from error
+            if not isinstance(event, Mapping):
+                raise RPhase1AmendmentViolation(
+                    f"telemetry line {lineno} is not a JSON object"
+                )
+            events.append(event)
+    if not events:
+        raise RPhase1AmendmentViolation(f"telemetry has no parseable events: {path}")
+
+    stage_starts = [
+        event for event in events
+        if event.get("event") == "stage_start" and event.get("stage") == "r_phase1"
+    ]
+    if not any(event.get("repository_head") == source_head for event in stage_starts):
+        raise RPhase1AmendmentViolation(
+            f"telemetry does not record r_phase1 stage_start under {source_head}"
+        )
+
+    required: dict[str, dict[str, Any]] = {}
+    for r in R_PHASE1_GRID:
+        label = r_label(float(r))
+        state = {
+            "run_start": False,
+            "train_progress_6500": False,
+            "validation_6500": False,
+            "checkpoint_6500": False,
+            "checkpoint_name": LAST_CHECKPOINT_NAME,
+        }
+        for event in events:
+            if event.get("label") != label:
+                identity = event.get("telemetry_identity")
+                if not isinstance(identity, Mapping) or identity.get("label") != label:
+                    continue
+            _require_telemetry_candidate_identity(
+                event,
+                label=label,
+                r=float(r),
+                learning_rate=expected_learning_rate,
+            )
+            name = event.get("event")
+            if name == "run_start":
+                if event.get("repository_head") == source_head:
+                    state["run_start"] = True
+            elif name == "train_progress" and _telemetry_update(event) == RESOURCE_BOUNDED_R_CUTOFF_UPDATE:
+                state["train_progress_6500"] = True
+            elif name == "validation" and _telemetry_update(event) == RESOURCE_BOUNDED_R_CUTOFF_UPDATE:
+                state["validation_6500"] = True
+            elif name == "checkpoint" and _telemetry_update(event) == RESOURCE_BOUNDED_R_CUTOFF_UPDATE:
+                if event.get("checkpoint_name") == LAST_CHECKPOINT_NAME:
+                    state["checkpoint_6500"] = True
+
+        missing = [
+            field for field in (
+                "run_start",
+                "train_progress_6500",
+                "validation_6500",
+                "checkpoint_6500",
+            )
+            if state[field] is not True
+        ]
+        if missing:
+            raise RPhase1AmendmentViolation(
+                f"telemetry for {label} is missing required event(s) {missing}"
+            )
+        required[label] = state
+
+    return {
+        "source_telemetry": str(path),
+        "source_repository_head": source_head,
+        "observed_cutoff_update": RESOURCE_BOUNDED_R_CUTOFF_UPDATE,
+        "events_parseable": len(events),
+        "required_events_by_label": required,
+    }
 
 
 def r1_control_equivalence(
@@ -504,6 +604,63 @@ def _max_validation_metric_difference(a: ValidationPoint, b: ValidationPoint) ->
         for condition in VALIDATION_CONDITIONS
     )
     return max(differences)
+
+
+def _telemetry_update(event: Mapping[str, Any]) -> int | None:
+    for key in ("global_update", "update"):
+        value = event.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _require_telemetry_candidate_identity(
+    event: Mapping[str, Any],
+    *,
+    label: str,
+    r: float,
+    learning_rate: float,
+) -> None:
+    if event.get("execution_mode") not in {None, "fused"}:
+        raise RPhase1AmendmentViolation(
+            f"telemetry for {label} was not emitted by fused execution"
+        )
+    identity = event.get("telemetry_identity")
+    if isinstance(identity, Mapping):
+        values = {
+            "label": identity.get("label"),
+            "r": identity.get("r"),
+            "lr": identity.get("lr"),
+        }
+    else:
+        values = {
+            "label": event.get("label"),
+            "r": event.get("r"),
+            "lr": event.get("learning_rate"),
+        }
+    if values["label"] != label:
+        raise RPhase1AmendmentViolation(
+            f"telemetry candidate label mismatch: {values['label']!r} != {label!r}"
+        )
+    observed_r = _float_telemetry(values["r"], f"telemetry {label} r")
+    observed_lr = _float_telemetry(values["lr"], f"telemetry {label} lr")
+    if not math.isclose(observed_r, r):
+        raise RPhase1AmendmentViolation(
+            f"telemetry {label} r mismatch: {values['r']!r} != {r!r}"
+        )
+    if not math.isclose(observed_lr, learning_rate):
+        raise RPhase1AmendmentViolation(
+            f"telemetry {label} lr mismatch: {values['lr']!r} != {learning_rate!r}"
+        )
+
+
+def _float_telemetry(value: Any, what: str) -> float:
+    if isinstance(value, bool) or value is None:
+        raise RPhase1AmendmentViolation(f"{what} must be numeric")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as error:
+        raise RPhase1AmendmentViolation(f"{what} must be numeric") from error
 
 
 def _normalise_r_mapping(raw: Mapping[float, Any], what: str) -> dict[float, Any]:

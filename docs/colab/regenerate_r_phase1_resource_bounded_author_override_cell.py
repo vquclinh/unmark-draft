@@ -35,9 +35,9 @@ REPO_URL = "https://github.com/vquclinh/unmark-draft.git"
 REPO = Path("/content/UNMARK")
 SCI_PY = Path("/usr/bin/python3")
 
-# Use latest pushed main by default. To pin this helper, replace with the
-# full commit SHA reported by the implementation handoff.
-REPO_REF = "origin/main"
+# Use latest pushed main by default. Set UNMARK_REPO_REF to pin the exact
+# implementation commit reported by the handoff.
+REPO_REF = os.environ.get("UNMARK_REPO_REF", "origin/main")
 
 DRIVE = Path("/content/drive/MyDrive/UNMARK/UNMARK-BACKUP")
 
@@ -45,6 +45,8 @@ SOURCE_R_PHASE1_HEAD = "3bb2944e6f71865d5a37fe403b78ea640f8a3f1d"
 SOURCE_R_PHASE1_TAG = SOURCE_R_PHASE1_HEAD[:12]
 R_PHASE1_DIR = DRIVE / "stage1-training" / SOURCE_R_PHASE1_TAG / "r-phase1"
 R_PHASE1_ARTIFACT = R_PHASE1_DIR / "r_phase1.json"
+R_PHASE1_MONITOR_DIR = DRIVE / "stage1-monitoring" / SOURCE_R_PHASE1_TAG / "r-phase1"
+R_PHASE1_TELEMETRY = R_PHASE1_MONITOR_DIR / "telemetry.jsonl"
 
 AUTHOR = "Linh Vo Quoc"
 BACKBONE_REVISION = "01daacda68afe13d83023d16ec647239e344a1e6"
@@ -134,34 +136,17 @@ def run(cmd, cwd=None, env=None):
     return completed
 
 
-def move_repo_wandb_pollution(repo):
-    """Move only untracked repo-local W&B debris out of the checkout."""
+def require_clean_repo_checkout(repo):
+    """Refuse any dirty checkout without moving or deleting W&B state."""
     status = capture(["git", "status", "--porcelain"], cwd=repo)
     if not status:
         return
 
-    unexpected = []
-    for line in status.splitlines():
-        payload = line[3:] if len(line) >= 4 else line
-        if not (
-            line.startswith("?? ")
-            and (payload == "wandb/" or payload.startswith("wandb/"))
-        ):
-            unexpected.append(line)
-
-    if unexpected:
-        fail(
-            "Repository dirt is not merely untracked W&B operational state:\n"
-            + "\n".join(unexpected)
-        )
-
-    repo_wandb = repo / "wandb"
-    if repo_wandb.exists():
-        target = Path("/content/unmark-wandb-old-operational-before-r-amendment")
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.move(str(repo_wandb), str(target))
-        print("Moved repo-local W&B debris to:", target)
+    fail(
+        "Repository checkout is dirty. This helper does not move, delete or "
+        "rewrite W&B state; use a fresh runtime or clean checkout.\n"
+        + status
+    )
 
 
 def load_json(path):
@@ -243,12 +228,12 @@ if not REPO.exists():
 if not (REPO / ".git").is_dir():
     fail(f"Not a Git repository: {REPO}")
 
-move_repo_wandb_pollution(REPO)
+require_clean_repo_checkout(REPO)
 
 run(["git", "fetch", "--quiet", "origin", "main"], cwd=REPO)
 run(["git", "checkout", "--quiet", "--detach", REPO_REF], cwd=REPO)
 
-move_repo_wandb_pollution(REPO)
+require_clean_repo_checkout(REPO)
 
 status = capture(["git", "status", "--porcelain"], cwd=REPO)
 if status:
@@ -279,7 +264,26 @@ print("Repository execution tree is clean.")
 # 4. REISSUE LR-PILOT UNDER THIS SAME HEAD
 # ==========================================================================================
 
-banner("4 / 8", "REISSUE LR-PILOT HANDOFF")
+banner("4 / 9", "FETCH AND VERIFY PINNED INVENTORY")
+
+run([SCI_PY, "-m", "pip", "install", "-q", "-r", REPO / "requirements" / "experiment.txt"])
+run([SCI_PY, REPO / "scripts" / "fetch_vietnamese_syllable_inventory.py"], cwd=REPO)
+
+from unmark.stage1.preflight import verify_scientific_inputs  # noqa: E402
+
+scientific_inputs = verify_scientific_inputs(repo_root=REPO)
+inventory = scientific_inputs.inventory
+print("Pinned inventory verified:")
+print("  source_name    :", inventory.source_name)
+print("  source_revision:", inventory.source_revision)
+print("  sha256         :", inventory.sha256)
+
+
+# ==========================================================================================
+# 5. REISSUE LR-PILOT UNDER THIS SAME HEAD
+# ==========================================================================================
+
+banner("5 / 9", "REISSUE LR-PILOT HANDOFF")
 
 lr_helper = REPO / "docs" / "colab" / "regenerate_lr_pilot_author_override_cell.py"
 if not lr_helper.is_file():
@@ -300,10 +304,10 @@ if lr_helper_head != HEAD:
 
 
 # ==========================================================================================
-# 5. IMPORT AMENDMENT SUPPORT
+# 6. IMPORT AMENDMENT SUPPORT
 # ==========================================================================================
 
-banner("5 / 8", "IMPORT AMENDMENT SUPPORT")
+banner("6 / 9", "IMPORT AMENDMENT SUPPORT")
 
 try:
     import torch  # noqa: F401
@@ -319,16 +323,17 @@ from unmark.stage1.r_phase1_amendment import (  # noqa: E402
     assert_expected_resource_bounded_summaries,
     build_resource_bounded_r_phase1_artifact,
     load_r_phase1_last_checkpoints,
+    verify_r_phase1_telemetry_evidence,
 )
 
 print("Override kind available:", R_PHASE1_RESOURCE_BOUNDED_AUTHOR_OVERRIDE_KIND)
 
 
 # ==========================================================================================
-# 6. VERIFY INPUT HANDOFFS AND STOPPED CHECKPOINTS
+# 7. VERIFY INPUT HANDOFFS, STOPPED CHECKPOINTS, AND TELEMETRY
 # ==========================================================================================
 
-banner("6 / 8", "VERIFY SOURCE EVIDENCE")
+banner("7 / 9", "VERIFY SOURCE EVIDENCE")
 
 if not R_PHASE1_DIR.is_dir():
     fail(f"r-phase1 source directory is missing:\n{R_PHASE1_DIR}")
@@ -356,6 +361,20 @@ print("Loaded stopped r-phase1 checkpoints:")
 for r, path in sorted(checkpoint_paths.items()):
     print(f"  r={r:g}: {path}")
 
+telemetry_evidence = verify_r_phase1_telemetry_evidence(
+    R_PHASE1_TELEMETRY,
+    expected_source_repository_head=SOURCE_R_PHASE1_HEAD,
+    expected_learning_rate=lr_winner.learning_rate,
+)
+print("Telemetry evidence verified:", telemetry_evidence["source_telemetry"])
+for label, state in sorted(telemetry_evidence["required_events_by_label"].items()):
+    print(
+        f"  {label}: run_start={state['run_start']}, "
+        f"train_progress_6500={state['train_progress_6500']}, "
+        f"validation_6500={state['validation_6500']}, "
+        f"checkpoint_6500={state['checkpoint_6500']}"
+    )
+
 control_source = LR_PILOT_DIR / "run-lr0.0001.json"
 if not control_source.is_file():
     fail(f"Missing historical lr=0.0001,r=1 control run:\n{control_source}")
@@ -363,10 +382,10 @@ control_run = load_json(control_source)
 
 
 # ==========================================================================================
-# 7. REBUILD AND VERIFY R-PHASE1 HANDOFF
+# 8. REBUILD AND VERIFY R-PHASE1 HANDOFF
 # ==========================================================================================
 
-banner("7 / 8", "REBUILD RESOURCE-BOUNDED R-PHASE1 ARTIFACT")
+banner("8 / 9", "REBUILD RESOURCE-BOUNDED R-PHASE1 ARTIFACT")
 
 previous_artifact = load_json(R_PHASE1_ARTIFACT) if R_PHASE1_ARTIFACT.is_file() else None
 artifact = build_resource_bounded_r_phase1_artifact(
@@ -378,6 +397,7 @@ artifact = build_resource_bounded_r_phase1_artifact(
     fixed_learning_rate=lr_winner.learning_rate,
     control_run_payload=control_run,
     control_source=control_source,
+    telemetry_evidence=telemetry_evidence,
     author=AUTHOR,
     created_at=str(datetime.date.today()),
     previous_artifact=previous_artifact,
@@ -421,10 +441,10 @@ print("Regenerated:", R_PHASE1_ARTIFACT)
 
 
 # ==========================================================================================
-# 8. VALIDATE EXACTLY WHAT FINAL-MAIN WILL CONSUME
+# 9. VALIDATE EXACTLY WHAT FINAL-MAIN WILL CONSUME
 # ==========================================================================================
 
-banner("8 / 8", "VALIDATE FINAL-MAIN HANDOFFS")
+banner("9 / 9", "VALIDATE FINAL-MAIN HANDOFFS")
 
 reloaded_lr = load_json(LR_PILOT_ARTIFACT)
 reloaded_r = load_json(R_PHASE1_ARTIFACT)

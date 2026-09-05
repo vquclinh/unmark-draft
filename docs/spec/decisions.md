@@ -5004,7 +5004,7 @@ available and can resume the same per-candidate checkpoints.
 | **Status** | **DEVIATED / RESOURCE-BOUNDED AUTHOR AMENDMENT** |
 | **Owner** | Stage-1B |
 | **Date** | 2026-09-05 |
-| **Artifact** | `r_phase1.json`, reissued from stopped update-6500 checkpoints |
+| **Artifact** | `r_phase1.json`, reissued from stopped update-6500 checkpoints and telemetry |
 
 **What changed.** The `r-phase1` handoff now selects **`r = 1.0`** for
 `final-main` using a resource-bounded observed-window rule over updates
@@ -5021,7 +5021,8 @@ The artifact must carry `selection_override.kind =
 author_r_override_after_resource_bounded_validation_review`, preserve the
 original planned cap `20000`, record the observed cutoff `6500`, record the
 comparison window, record all five recomputed candidate summaries, set
-`global_optimum_claimed = false`, and set both `official_test_used` and
+`global_optimum_claimed = false`, preserve fused monitoring telemetry evidence
+for all five update-6500 candidates, and set both `official_test_used` and
 `downstream_score_used` to false.
 
 **Exclusions.** The historical `r=1` tail after update 6500 is not selection

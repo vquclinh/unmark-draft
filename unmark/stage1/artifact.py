@@ -164,10 +164,29 @@ R_PHASE1_OVERRIDE_EVIDENCE_FIELDS: tuple[str, ...] = (
     "reissued_under_repository_head",
     "previous_artifact_repository_head",
     "previous_artifact_identity_repository_head",
+    "telemetry_evidence",
     "candidate_summaries",
     "resource_bounded_order",
     "control_equivalence",
 )
+
+R_PHASE1_TELEMETRY_EVIDENCE_FIELDS: tuple[str, ...] = (
+    "source_telemetry",
+    "source_repository_head",
+    "observed_cutoff_update",
+    "events_parseable",
+    "required_events_by_label",
+)
+
+R_PHASE1_TELEMETRY_REQUIRED_EVENT_FIELDS: tuple[str, ...] = (
+    "run_start",
+    "train_progress_6500",
+    "validation_6500",
+    "checkpoint_6500",
+    "checkpoint_name",
+)
+
+R_PHASE1_LAST_CHECKPOINT_NAME = "training-checkpoint-last.pt"
 
 R_PHASE1_RESOURCE_SUMMARY_FIELDS: tuple[str, ...] = (
     "label",
@@ -617,6 +636,11 @@ def _validate_r_phase1_resource_evidence(
         value = evidence[nullable]
         if value is not None:
             _full_sha(value, f"{what} {nullable}")
+    _validate_r_phase1_telemetry_evidence(
+        evidence["telemetry_evidence"],
+        source_head=source_head,
+        what=what,
+    )
 
     raw_summaries = evidence["candidate_summaries"]
     if not isinstance(raw_summaries, list):
@@ -665,6 +689,77 @@ def _validate_r_phase1_resource_evidence(
         )
     _validate_r1_control_equivalence(evidence["control_equivalence"], what=what)
     return summaries
+
+
+def _validate_r_phase1_telemetry_evidence(
+    telemetry: Any,
+    *,
+    source_head: str,
+    what: str,
+) -> None:
+    if not isinstance(telemetry, Mapping):
+        raise ArtifactViolation(f"{what} telemetry_evidence must be a JSON object")
+    missing = [
+        field for field in R_PHASE1_TELEMETRY_EVIDENCE_FIELDS
+        if field not in telemetry
+    ]
+    if missing:
+        raise ArtifactViolation(f"{what} telemetry_evidence is missing {missing}")
+    unknown = sorted(set(telemetry) - set(R_PHASE1_TELEMETRY_EVIDENCE_FIELDS))
+    if unknown:
+        raise ArtifactViolation(
+            f"{what} telemetry_evidence carries unknown field(s) {unknown}; the "
+            "telemetry evidence schema is closed"
+        )
+    source = telemetry["source_telemetry"]
+    if not isinstance(source, str) or not source.strip():
+        raise ArtifactViolation(f"{what} telemetry_evidence source_telemetry is empty")
+    telemetry_head = _full_sha(
+        telemetry["source_repository_head"],
+        f"{what} telemetry source_repository_head",
+    )
+    if telemetry_head != source_head:
+        raise ArtifactViolation(
+            f"{what} telemetry source head {telemetry_head!r} does not match "
+            f"source r-phase1 head {source_head!r}"
+        )
+    if _integer(telemetry["observed_cutoff_update"], f"{what} telemetry cutoff") != RESOURCE_BOUNDED_R_CUTOFF_UPDATE:
+        raise ArtifactViolation(f"{what} telemetry observed_cutoff_update is not 6500")
+    if _integer(telemetry["events_parseable"], f"{what} telemetry events_parseable") <= 0:
+        raise ArtifactViolation(f"{what} telemetry has no parseable events")
+    by_label = telemetry["required_events_by_label"]
+    if not isinstance(by_label, Mapping):
+        raise ArtifactViolation(
+            f"{what} telemetry required_events_by_label must be a JSON object"
+        )
+    expected_labels = {f"r={r:g}" for r in R_PHASE1_GRID}
+    if set(by_label) != expected_labels:
+        raise ArtifactViolation(
+            f"{what} telemetry labels {sorted(by_label)} do not cover "
+            f"{sorted(expected_labels)}"
+        )
+    for label, raw in by_label.items():
+        if not isinstance(raw, Mapping):
+            raise ArtifactViolation(f"{what} telemetry block for {label} is not an object")
+        missing = [
+            field for field in R_PHASE1_TELEMETRY_REQUIRED_EVENT_FIELDS
+            if field not in raw
+        ]
+        if missing:
+            raise ArtifactViolation(f"{what} telemetry block for {label} is missing {missing}")
+        unknown = sorted(set(raw) - set(R_PHASE1_TELEMETRY_REQUIRED_EVENT_FIELDS))
+        if unknown:
+            raise ArtifactViolation(
+                f"{what} telemetry block for {label} has unknown field(s) {unknown}"
+            )
+        for field in R_PHASE1_TELEMETRY_REQUIRED_EVENT_FIELDS[:-1]:
+            if raw[field] is not True:
+                raise ArtifactViolation(f"{what} telemetry {label} {field} must be true")
+        if raw["checkpoint_name"] != R_PHASE1_LAST_CHECKPOINT_NAME:
+            raise ArtifactViolation(
+                f"{what} telemetry {label} checkpoint_name must be "
+                f"{R_PHASE1_LAST_CHECKPOINT_NAME!r}"
+            )
 
 
 def _validate_r_phase1_candidate_summary(
