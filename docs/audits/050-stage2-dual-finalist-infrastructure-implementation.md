@@ -1,20 +1,19 @@
 # Audit 050 - Stage-2 Dual-Finalist Infrastructure Implementation
 
-**Scope:** static implementation acceptance for the Stage-2 frozen UNMARK
+**Scope:** implementation acceptance for the Stage-2 frozen UNMARK
 dual-finalist pathway and downstream corruption/input path required by Audit
-049. Runtime acceptance with torch, the real finalist checkpoints and the real
-pinned PhoBERT model remains pending after the device-coherence repair recorded
-below.
+049, including authoritative real-torch/CUDA runtime acceptance of the frozen
+representation path after the device-coherence repair recorded below.
 **Date:** 2026-09-06
-**Type:** implementation audit. No scientific protocol change. No runtime
-artifact acceptance.
+**Type:** implementation audit. No scientific protocol change. No Stage-2
+training.
 
 ---
 
 ## 1. Executive verdict
 
-**PASS WITH RUNTIME EVIDENCE PENDING - structural / torch-free infrastructure
-review passed; authoritative real-torch artifact acceptance is pending retest.**
+**PASS - static and authoritative real-torch runtime acceptance complete for
+the frozen dual-finalist infrastructure. No Stage-2 training executed.**
 
 This audit implements the two gaps Audit 049 deliberately left open:
 
@@ -27,12 +26,12 @@ No classification head was trained. No UIT-VSFC row was read. No
 measurement-dev result was inspected. Official TEST remains sealed. No A/B
 selection, winner rule, margin, p-value or significance test was added.
 
-This audit does not claim authoritative runtime acceptance. The first
-authoritative A100 runtime attempt verified both real finalist checkpoints and
-loaded the real pinned PhoBERT encoder, but the first real `UNMARK-A` forward
-failed because the adapter stayed on CPU while the encoder was on `cuda:0`.
-That implementation blocker is repaired here. Runtime acceptance remains
-pending until a fresh exact-commit A100 retest proves the repaired forward path.
+The first authoritative A100 runtime attempt verified both real finalist
+checkpoints and loaded the real pinned PhoBERT encoder, but the first real
+`UNMARK-A` forward failed because the adapter stayed on CPU while the encoder
+was on `cuda:0`. That implementation blocker is preserved below as historical
+evidence. A fresh exact-commit A100 retest then accepted the repaired path for
+both arms across all six frozen corruption conditions, using synthetic text only.
 
 ---
 
@@ -188,7 +187,8 @@ include the runtime-critical tensor/checkpoint/freezing/representation checks
 and the new device-coherence regressions. Therefore UNMARK-A/B real checkpoint
 loading, pinned PhoBERT forward execution, freezing, FP32/finite/detached
 representation properties, first-token runtime extraction and CUDA transfer are
-not locally executed by this audit repair.
+not locally executed by this audit repair. They are accepted by the
+authoritative A100 Attempt 2 evidence in §9.
 
 Importer contract:
 
@@ -330,20 +330,115 @@ ids and condition metadata are not moved.
 
 ---
 
-## 9. Limitations
+## 9. Authoritative runtime attempt 2 - PASS
 
-Runtime acceptance is PENDING_RETEST, not PASS. Attempt 1 verified both real
-finalist checkpoints and loaded the real pinned PhoBERT encoder, but no real
-UNMARK forward was accepted because the device-coherence blocker stopped the
-first `UNMARK-A` forward. No `UNMARK-B` real forward was attempted or accepted.
+Fresh exact-commit runtime:
 
-Torch is unavailable in the local sandbox, so tensor-level Stage-2 tests and
-CUDA-specific device regressions skipped locally. They are written against
-synthetic checkpoints/modules and should run where torch and CUDA are available.
+```
+repository_head = 1edcb67f95818b931a4c6d33015d7a1759be155e
+```
 
-The repaired real pinned PhoBERT forward has not been executed yet. No
-authoritative runtime `[batch, 768]` representation evidence exists for the
-repaired code. No network access was needed for this implementation repair.
+This was the retest after the device-coherence repair.
+
+Test gates:
+
+* Stage-2 focused real-torch/CUDA: `37 passed, 0 failed, 0 errors, 0 skipped`;
+* PREG1 importer contract: `16 passed, 0 failed, 0 errors, 0 skipped`;
+* authoritative Stage-1 finalist verifier: `40 passed, 0 failed, 0 errors,
+  0 skipped`.
+
+Real finalist verification:
+
+* `UNMARK-A`: PASS, sha256
+  `6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91`,
+  8 adapter tensors, 3,551,232 adapter parameters, FP32, finite;
+* `UNMARK-B`: PASS, sha256
+  `9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2`,
+  8 adapter tensors, 3,551,232 adapter parameters, FP32, finite.
+
+Checkpoint hashes were unchanged before and after the entire runtime attempt.
+
+Pinned PhoBERT:
+
+* checkpoint: `vinai/phobert-base`;
+* revision: `01daacda68afe13d83023d16ec647239e344a1e6`;
+* encoder device: `cuda:0`;
+* encoder dtype: `torch.float32`;
+* frozen: yes;
+* eval: yes.
+
+Device coherence:
+
+* `UNMARK-A`: encoder `cuda:0`, adapter `cuda:0`, PASS;
+* `UNMARK-B`: encoder `cuda:0`, adapter `cuda:0`, PASS.
+
+The Attempt-1 device-coherence blocker is empirically repaired.
+
+Synthetic `SCIENTIFIC` corruption smoke covered exactly:
+
+* `FULL`;
+* `P25`;
+* `P50`;
+* `P75`;
+* `P100`;
+* `STRIP_ALL`.
+
+Runtime corruption/input acceptance:
+
+* base-grid invariance: PASS;
+* `STRIP_ALL` side-channel change: PASS;
+* keyed corruption determinism: PASS;
+* row-order independence: PASS;
+* `VARIANT` fail-closed: PASS.
+
+The normal collator produced CPU tensors. The repaired extraction path
+successfully consumed those CPU batches with CUDA encoder/adapter, proving the
+implementation-owned internal device transfer.
+
+Pinned PhoBERT forward path: PASS for all 12 arm-by-condition real forwards.
+
+Real forwards:
+
+| Arm | FULL | P25 | P50 | P75 | P100 | STRIP_ALL |
+|---|---|---|---|---|---|---|
+| `UNMARK-A` | PASS | PASS | PASS | PASS | PASS | PASS |
+| `UNMARK-B` | PASS | PASS | PASS | PASS | PASS | PASS |
+
+Total: 12 arm-by-condition real forwards.
+
+For every forward:
+
+* representation shape: `[2,768]`;
+* dtype: FP32;
+* finite: yes;
+* detached: yes;
+* first-token runtime proof: exact `hidden_states[:,0,:]`.
+
+Durable evidence:
+
+```
+/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/stage2-runtime-acceptance/1edcb67f9581/20260906T163606Z/050-authoritative-runtime-attempt2-final.json
+```
+
+Negative evidence:
+
+* UIT-VSFC rows read: NO;
+* `protocol-train` read: NO;
+* `protocol-dev` read: NO;
+* `measurement-dev` read: NO;
+* official TEST read: NO;
+* classification head constructed: NO;
+* optimizer constructed: NO;
+* optimizer steps: 0;
+* training: NO.
+
+---
+
+## 10. Limitations
+
+Runtime acceptance of the frozen dual-finalist representation/corruption
+infrastructure is complete after Attempt 2. This is not Stage-2 campaign
+acceptance and does not start training.
 
 No representation cache schema was added for Stage-2. The implemented boundary
 produces detached `[batch, 768]` representations; cache artifacts can be bound
@@ -353,63 +448,48 @@ No Stage-2 head training runner was implemented. No optimizer, training loop,
 checkpoint selection execution, measurement-dev reporting, or TEST path was
 added.
 
+`READY_FOR_STAGE2_TRAINING` remains `NO` because the representation-cache
+schema, head-training runner, checkpoint-selection execution, campaign
+artifact/resume contract and measurement runner have not yet been implemented
+or accepted.
+
 ---
 
-## 10. Exact next allowed step
+## 11. Exact next allowed step
 
 Author review of this uncommitted diff. If accepted, the author may commit it.
-After that, the next acceptance task is a fresh A100 Colab runtime at the exact
-future committed SHA, not a notebook-side workaround, with:
-
-* real torch;
-* the pinned PhoBERT revision;
-* the real finalist A checkpoint;
-* the real finalist B checkpoint;
-* no downstream dataset rows;
-* no head training;
-* synthetic text only.
-
-The authoritative smoke must:
-
-1. pass all Stage-2 focused real-torch tests;
-2. verify/load A through the existing authoritative Stage-1 finalist verifier;
-3. verify/load B through the existing authoritative Stage-1 finalist verifier;
-4. assert encoder frozen and `eval()`;
-5. assert adapter frozen and `eval()`;
-6. assert exactly 3,551,232 adapter parameters and expected state keys;
-7. assert A/B checkpoint hashes remain unchanged before and after verification;
-8. run a real forward on synthetic Vietnamese text;
-9. assert representation shape `[batch, 768]`, FP32, finite and detached;
-10. prove first-token position 0 is the downstream representation;
-11. exercise `FULL`, `P25`, `P50`, `P75`, `P100` and `STRIP_ALL` on synthetic
-    examples;
-12. assert invariant base token grid across conditions;
-13. assert deterministic keyed corruption;
-14. confirm `VARIANT` refuses;
-15. read no UIT-VSFC rows;
-16. perform no optimizer step and no training.
-
-Only after that fresh exact-commit smoke passes may the runtime pathway be
-marked accepted. Actual Stage-2 head training remains a later task under the
-already frozen Audit-049 protocol.
+After that, the next allowed engineering task is Stage-2 runner implementation
+under the already frozen Audit-049 protocol: representation cache schema,
+head-training runner, checkpoint-selection execution, campaign artifact/resume
+contract and measurement runner. Actual Stage-2 training remains disallowed
+until those runner pieces are implemented, audited and accepted.
 
 ---
 
-## 11. Final state
+## 12. Final state
 
 ```
 STAGE2_PROTOCOL_FROZEN=YES
 STAGE2_DUAL_FINALIST_INFRASTRUCTURE_STATIC=PASS
 AUTHORITATIVE_RUNTIME_ATTEMPT_1=FAIL_DEVICE_COHERENCE
-DEVICE_COHERENCE_REPAIR=IMPLEMENTED
-REAL_TORCH_ACCEPTANCE=PENDING_RETEST
-UNMARK_A_REAL_FORWARD=NOT_ACCEPTED
-UNMARK_B_REAL_FORWARD=NOT_ACCEPTED
-DOWNSTREAM_CORRUPTION_PATH_STATIC=PASS
+DEVICE_COHERENCE_REPAIR=PASS
+AUTHORITATIVE_RUNTIME_ATTEMPT_2=PASS
+REAL_TORCH_ACCEPTANCE=PASS
+UNMARK_A_REAL_CHECKPOINT_LOAD=PASS
+UNMARK_B_REAL_CHECKPOINT_LOAD=PASS
+UNMARK_A_REAL_FORWARD=PASS
+UNMARK_B_REAL_FORWARD=PASS
+PINNED_PHOBERT_REAL_FORWARD=PASS
+DOWNSTREAM_CORRUPTION_PATH_RUNTIME=PASS
+BASE_GRID_INVARIANCE=PASS
+KEYED_CORRUPTION_DETERMINISM=PASS
+FIRST_TOKEN_RUNTIME_PROOF=PASS
+CHECKPOINT_HASHES_UNCHANGED=YES
 FINAL_ADAPTER_SELECTED=NO
 DOWNSTREAM_MAY_SELECT_A_VS_B=NO
 DOWNSTREAM_RESULTS_SEEN=NO
 DOWNSTREAM_TEST=SEALED
 STAGE2_TRAINING_STARTED=NO
+READY_FOR_STAGE2_RUNNER_IMPLEMENTATION=YES
 READY_FOR_STAGE2_TRAINING=NO
 ```
