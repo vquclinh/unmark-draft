@@ -5040,3 +5040,82 @@ evidence. No completed 20,000-update r sweep is claimed.
 | **Audit** | [`docs/audits/047-stage1-r-phase1-resource-bounded-author-amendment.md`](../audits/047-stage1-r-phase1-resource-bounded-author-amendment.md) |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
 | **Proposal updated** | **NO** — this is recorded as an explicit resource-bounded deviation/amendment, not folded back into the original 20,000-update plan. PDF stale: **YES** |
+
+## Stage-1 finalist freeze
+
+### D-S1B-023 — exactly two Stage-1 finalist adapters; final adjudication deferred
+
+| | |
+|---|---|
+| **Status** | **AMENDED / PRE-DOWNSTREAM FINALIST FREEZE** |
+| **Owner** | Stage-1B |
+| **Date** | 2026-09-06 |
+| **Artifact** | `docs/spec/stage1-adapter-finalists.json` |
+
+**What changed.** Stage-1 training, LR selection, `r` selection and **candidate
+generation** are CLOSED. The provisional `canonical-v1` package — built from
+`final_main` seed 36930 at update 3500, the winner of the Stage-1 local-stability
+rule — is **superseded as the FINAL downstream selection** and preserved as
+history. Exactly **two** finalist adapters are frozen:
+
+| | A | B |
+|---|---|---|
+| **Role** | Stage-1 stability-rule winner | mature historical LR-pilot alternative |
+| **Source stage** | `final_main` | `lr_pilot` |
+| **Run seed** | 36930 | 21230 |
+| **Update** | 3500 | 14500 |
+| **validation/score** | 0.0845640671895974 | 0.09000698585438581 |
+| **robust_score** | 0.10167897852382013 | 0.106576028028 |
+| **Source repository HEAD** | `7773c77b1df92a6e685dac13c49765ce974f84d8` | `bca24ade208265a5a46a54fb2d2d9bd77d8f6703` |
+| **checkpoint sha256** | `6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91` | **PENDING** — see Audit 048 §6 |
+
+**Why.** Not because a downstream result was bad: **no downstream experiment had
+been run and no downstream result had been inspected**. The authors reopened only
+the final adapter adjudication because of a training-maturity concern about
+promoting update 3500 of a planned 20,000, while the whole-run descriptive
+behaviour of the historical 21230 run is better (median score 0.1041 vs 0.1183;
+late 10k–20k median 0.1014 vs 0.1189).
+
+**What is reopened.** Only *which of exactly two already-trained frozen
+checkpoints becomes the final downstream adapter*. Nothing else. No Stage-1
+training may resume, the candidate universe is not extensible, and a later
+checkpoint may not be added because it looks attractive.
+
+**Adjudication.** OPEN. The final adapter is **UNSELECTED**. The only admissible
+evidence is downstream **DEV** under a protocol that must be frozen and reviewed
+*before* any downstream result is produced. Official UIT-VSFC TEST is SEALED and
+may never adjudicate A vs B; no downstream result may reopen Stage-1.
+
+**Evidence limitation.** Finalist B's checkpoint sha256 is not present anywhere in
+this repository and its checkpoint is external. It is recorded as the explicit
+sentinel `PENDING_AUTHORITATIVE_EVIDENCE` rather than expanded from an observed
+prefix, and `evidence.freeze_complete` is `false` until it is bound.
+
+**Verification.** A finalist checkpoint is verified through the repository's own
+`trainer.verify_checkpoint` / `RunProvenance.require_match`, so the finalist gate
+enforces the same twelve scientific-identity fields — including `init_seed`,
+`corruption_seed`, `corpus_manifest_digest` and the pinned `inventory` — plus the
+two derived objective weights that a resume must satisfy. It is read-only and
+never weaker than the resume contract.
+
+**Binding a PENDING digest** is a four-field edit enumerated in
+`finalists.BINDING_FIELDS`; every partial binding fails closed.
+
+**Provenance caveat.** A and B were produced under **different repository HEADs**.
+Repository HEAD is part of Stage-1 campaign identity in this project, so they are
+**not** asserted to share one campaign identity. Audit 048 §7 establishes
+**training-core source equivalence** — identical entrypoint, configs, requirements
+and training-numerics source — and explicitly does **not** claim full executable
+or runtime equivalence.
+
+| | |
+|---|---|
+| **Finalist count** | 2, pinned in code and tested |
+| **Candidate universe extensible** | **NO** |
+| **Final adapter selected** | **NO** |
+| **Downstream results seen** | **NO** |
+| **Affected code** | `unmark/stage1/finalists.py`, `scripts/stage1_verify_finalist_checkpoint.py` |
+| **Affected tests** | `tests/test_stage1_finalist_freeze.py`, `tests/test_stage1_finalist_checkpoint_torch.py` |
+| **Audit** | [`docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md`](../audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md) |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Proposal updated** | **NO** — recorded as an explicit post-hoc amendment made before any downstream result existed, not folded back into the original v1.5 plan. PDF stale: **YES** |

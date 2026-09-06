@@ -1,0 +1,275 @@
+{
+  "adjudication": {
+    "allowed_evidence": {
+      "classification": "safety_gate",
+      "note": "the Stage-2 adjudication protocol does not exist yet and must be frozen and reviewed BEFORE any downstream result is produced",
+      "value": "downstream_dev_only_under_a_separately_frozen_protocol"
+    },
+    "candidate_universe_extensible": {
+      "classification": "safety_gate",
+      "note": "a further Stage-1 checkpoint may NOT be added later because it looks attractive",
+      "value": false
+    },
+    "downstream_results_seen": {
+      "classification": "safety_gate",
+      "note": "the amendment was made before any downstream experiment was run",
+      "value": false
+    },
+    "final_adapter_selected": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "finalists": {
+      "classification": "scientific_identity",
+      "note": "exactly two; pinned in unmark/stage1/finalists.py and tested",
+      "value": [
+        {
+          "checkpoint_sha256": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91",
+          "key": "A",
+          "learning_rate": 0.0001,
+          "r": 1.0,
+          "robust_score": 0.10167897852382013,
+          "role": "stage1_stability_rule_winner",
+          "run_seed": 36930,
+          "source_repository_head": "7773c77b1df92a6e685dac13c49765ce974f84d8",
+          "source_stage": "final_main",
+          "update": 3500,
+          "validation_score": 0.0845640671895974
+        },
+        {
+          "checkpoint_sha256": "PENDING_AUTHORITATIVE_EVIDENCE",
+          "key": "B",
+          "learning_rate": 0.0001,
+          "r": 1.0,
+          "robust_score": 0.106576028028,
+          "role": "mature_historical_lr_pilot_alternative",
+          "run_seed": 21230,
+          "source_repository_head": "bca24ade208265a5a46a54fb2d2d9bd77d8f6703",
+          "source_stage": "lr_pilot",
+          "update": 14500,
+          "validation_score": 0.09000698585438581
+        }
+      ]
+    },
+    "status": {
+      "classification": "safety_gate",
+      "value": "OPEN"
+    },
+    "winner": {
+      "classification": "safety_gate",
+      "note": "must stay null until the DEV-only adjudication protocol is frozen, reviewed and executed",
+      "value": null
+    }
+  },
+  "corpus": {
+    "chunk_membership_digest": {
+      "classification": "scientific_identity",
+      "note": "compared by RunProvenance.require_match as corpus_manifest_digest; must equal data.chunk_membership_digest in docs/spec/stage1-final-freeze.json",
+      "value": "250859a57d745675c5dba2c7a35df08ccc123988bece873b0c9b29c6e78413d6"
+    },
+    "corpus_dataset": {
+      "classification": "scientific_input",
+      "value": "undertheseanlp/UVW-2026"
+    },
+    "corpus_revision": {
+      "classification": "scientific_input",
+      "value": "a0a79294e4568137e25828bb3f2a4cde8546e1fb"
+    }
+  },
+  "evidence": {
+    "binding_workflow": {
+      "classification": "safety_gate",
+      "note": "binding a PENDING digest is a four-field edit; leaving any behind yields an artifact validate_freeze_payload refuses",
+      "value": [
+        "unmark/stage1/finalists.py :: FINALIST_B.checkpoint_sha256",
+        "docs/spec/stage1-adapter-finalists.json :: adjudication.finalists[key=B].checkpoint_sha256",
+        "docs/spec/stage1-adapter-finalists.json :: evidence.pending_finalist_digests",
+        "docs/spec/stage1-adapter-finalists.json :: evidence.freeze_complete"
+      ]
+    },
+    "execution_fingerprint": {
+      "classification": "operational_provenance",
+      "note": "operational, not campaign identity: emitted into binding evidence for later comparison of the two finalists' runtime conditions, not enforced by the verifier",
+      "value": "emitted_into_binding_evidence"
+    },
+    "freeze_complete": {
+      "classification": "safety_gate",
+      "note": "false while any finalist digest is PENDING_AUTHORITATIVE_EVIDENCE",
+      "value": false
+    },
+    "heavy_artifacts_location": {
+      "classification": "operational_provenance",
+      "note": "checkpoints, prepared corpus, telemetry and W&B history stay external; *.pt is git-ignored",
+      "value": "external durable scientific evidence (Drive campaign directories and W&B), never committed"
+    },
+    "pending_finalist_digests": {
+      "classification": "safety_gate",
+      "value": [
+        "B"
+      ]
+    },
+    "provenance_fields_verified": {
+      "classification": "safety_gate",
+      "note": "exactly what RunProvenance.require_match compares; the finalist verifier reuses verify_checkpoint so it cannot drift weaker",
+      "value": [
+        "run_seed",
+        "init_seed",
+        "corruption_seed",
+        "learning_rate",
+        "r",
+        "corpus_manifest_digest",
+        "backbone_checkpoint",
+        "backbone_revision",
+        "protocol_version",
+        "precision",
+        "repository_head",
+        "inventory",
+        "lambda_align",
+        "lambda_clean"
+      ]
+    },
+    "validation_trajectories": {
+      "classification": "operational_provenance",
+      "note": "41 points each at updates 0,500,...,20000; update 0 recovered from checkpoint `points` history for both runs",
+      "value": {
+        "21230": "full 0..20000 reconstructed in the Stage-1 read-only closeout",
+        "36930": "full 0..20000 reconstructed in the Stage-1 read-only closeout"
+      }
+    },
+    "verifier": {
+      "classification": "operational_provenance",
+      "value": "scripts/stage1_verify_finalist_checkpoint.py"
+    }
+  },
+  "inventory": {
+    "sha256": {
+      "classification": "scientific_identity",
+      "decision": "D-B3A-001",
+      "note": "D-S1A-008: two runs differing only in inventory are different experiments; it sets every corruption denominator",
+      "value": "78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2"
+    },
+    "size_bytes": {
+      "classification": "scientific_identity",
+      "value": 116290
+    },
+    "source_revision": {
+      "classification": "scientific_identity",
+      "value": "135a4d9716e49a981624474156d6f247b9b46f6a"
+    }
+  },
+  "model": {
+    "adapter_dtype": {
+      "classification": "scientific_protocol",
+      "value": "fp32"
+    },
+    "adapter_state_keys": {
+      "classification": "scientific_identity",
+      "value": [
+        "fusion.bias",
+        "fusion.weight",
+        "gate.bias",
+        "gate.weight",
+        "layer_norm.bias",
+        "layer_norm.weight",
+        "letter_embedding.weight",
+        "tone_embedding.weight"
+      ]
+    },
+    "adapter_tensor_count": {
+      "classification": "scientific_identity",
+      "value": 8
+    },
+    "adapter_trainable_parameters": {
+      "classification": "scientific_identity",
+      "value": 3551232
+    },
+    "backbone": {
+      "classification": "scientific_identity",
+      "value": "vinai/phobert-base"
+    },
+    "checkpoint_schema_version": {
+      "classification": "safety_gate",
+      "value": "stage1-checkpoint-v2"
+    },
+    "protocol_version": {
+      "classification": "scientific_identity",
+      "value": "stage1-protocol-v1"
+    },
+    "revision": {
+      "classification": "scientific_identity",
+      "value": "01daacda68afe13d83023d16ec647239e344a1e6"
+    }
+  },
+  "notes": [
+    "Audit 048. This artifact freezes the Stage-1 FINALIST SET only. It does not select the final downstream adapter and does not define the Stage-2 adjudication protocol.",
+    "classification marks each field: scientific_identity | scientific_protocol | scientific_input | operational_acceptance | operational_provenance | safety_gate.",
+    "Finalist A and finalist B were produced under DIFFERENT repository HEADs. See Audit 048 for what equivalence evidence exists and what is not proven.",
+    "checkpoint_sha256 is either a full 64-hex digest taken from the real artifact or the explicit sentinel PENDING_AUTHORITATIVE_EVIDENCE. A truncated or prefix-expanded digest is refused.",
+    "Checkpoint verification delegates to unmark.stage1.trainer.verify_checkpoint / RunProvenance.require_match, so it enforces the same twelve scientific-identity fields plus the two derived objective weights that a resume must satisfy."
+  ],
+  "provisional_canonical_v1": {
+    "is_final_adapter": {
+      "classification": "safety_gate",
+      "note": "superseded as the FINAL downstream selection; it remains the provisional winner of the Stage-1 stability rule",
+      "value": false
+    },
+    "preserved": {
+      "classification": "operational_provenance",
+      "note": "not deleted and not rewritten",
+      "value": true
+    },
+    "source_finalist": {
+      "classification": "operational_provenance",
+      "value": "A"
+    },
+    "source_sha256": {
+      "classification": "scientific_identity",
+      "value": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91"
+    },
+    "superseded_reason": {
+      "classification": "operational_provenance",
+      "note": "NOT because any downstream result was bad; none had been produced or inspected",
+      "value": "pre-downstream training-maturity concern about promoting update 3500 of 20000"
+    }
+  },
+  "schema_version": "stage1-finalist-freeze-v1",
+  "stage1": {
+    "candidate_generation": {
+      "classification": "safety_gate",
+      "value": "CLOSED"
+    },
+    "learning_rate_selection": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-020",
+      "note": "0.0001, author override after validation-curve review; NOT the automatic locked-rule winner",
+      "value": "CLOSED"
+    },
+    "r_selection": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-022",
+      "note": "r=1.0 from a resource-bounded observed window; NOT claimed globally optimal",
+      "value": "CLOSED"
+    },
+    "training": {
+      "classification": "safety_gate",
+      "note": "no Stage-1 training may resume; no downstream result may reopen it",
+      "value": "CLOSED"
+    }
+  },
+  "test_sealing": {
+    "official_test_used": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "official_uit_vsfc_test": {
+      "classification": "safety_gate",
+      "decision": "D-S1B-001",
+      "value": "SEALED"
+    },
+    "test_used_for_finalist_selection": {
+      "classification": "safety_gate",
+      "note": "choosing between A and B using TEST is forbidden",
+      "value": false
+    }
+  }
+}
