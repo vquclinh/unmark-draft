@@ -3,7 +3,8 @@
 **Scope:** static implementation acceptance for the Stage-2 frozen UNMARK
 dual-finalist pathway and downstream corruption/input path required by Audit
 049. Runtime acceptance with torch, the real finalist checkpoints and the real
-pinned PhoBERT model remains pending.
+pinned PhoBERT model remains pending after the device-coherence repair recorded
+below.
 **Date:** 2026-09-06
 **Type:** implementation audit. No scientific protocol change. No runtime
 artifact acceptance.
@@ -13,7 +14,7 @@ artifact acceptance.
 ## 1. Executive verdict
 
 **PASS WITH RUNTIME EVIDENCE PENDING - structural / torch-free infrastructure
-review passed; authoritative real-torch artifact acceptance is pending.**
+review passed; authoritative real-torch artifact acceptance is pending retest.**
 
 This audit implements the two gaps Audit 049 deliberately left open:
 
@@ -26,10 +27,12 @@ No classification head was trained. No UIT-VSFC row was read. No
 measurement-dev result was inspected. Official TEST remains sealed. No A/B
 selection, winner rule, margin, p-value or significance test was added.
 
-This audit does not claim authoritative runtime acceptance. The local
-environment has no torch, 15 focused runtime-critical tests were skipped, no
-real finalist checkpoint was loaded and no real pinned PhoBERT forward was
-executed.
+This audit does not claim authoritative runtime acceptance. The first
+authoritative A100 runtime attempt verified both real finalist checkpoints and
+loaded the real pinned PhoBERT encoder, but the first real `UNMARK-A` forward
+failed because the adapter stayed on CPU while the encoder was on `cuda:0`.
+That implementation blocker is repaired here. Runtime acceptance remains
+pending until a fresh exact-commit A100 retest proves the repaired forward path.
 
 ---
 
@@ -110,6 +113,11 @@ After load:
 * adapter parameters have `requires_grad=False`;
 * encoder is in `eval()` mode;
 * adapter is in `eval()` mode;
+* encoder parameters must occupy one coherent device;
+* adapter parameters must occupy one coherent device;
+* encoder and adapter devices must match;
+* a newly loaded adapter is moved to the supplied encoder's actual parameter
+  device, preserving FP32;
 * encoder revision and checkpoint identity are checked against the frozen
   downstream PhoBERT pin when an encoder object is supplied;
 * adapter key set and parameter count are rechecked on the constructed module;
@@ -127,7 +135,10 @@ from:
 * the existing authoritative PhoBERT position-id path.
 
 It returns detached FP32 first-token representations shaped `[batch, 768]`.
-Stage-1 masked-mean pooling is not used.
+Stage-1 masked-mean pooling is not used. The representation path accepts the
+normal CPU tensor batch produced by `collate_stage2_unmark_batch(...)` and moves
+only the required forward tensors onto the coherent pathway device before
+embedding, adapter and encoder computation.
 
 ### 4.5 Downstream corruption/input path
 
@@ -169,14 +180,15 @@ pytest -q tests/test_stage2_dual_finalist_infra.py
 Result:
 
 ```
-16 passed, 15 skipped
+16 passed, 21 skipped
 ```
 
-The 15 skips include the runtime-critical tensor/checkpoint/freezing/
-representation checks. Therefore UNMARK-A/B real checkpoint loading, pinned
-PhoBERT forward execution, freezing, FP32/finite/detached representation
-properties and first-token runtime extraction are not yet empirically accepted
-in the authoritative environment.
+The skips are torch/CUDA-gated in a local environment without torch. They
+include the runtime-critical tensor/checkpoint/freezing/representation checks
+and the new device-coherence regressions. Therefore UNMARK-A/B real checkpoint
+loading, pinned PhoBERT forward execution, freezing, FP32/finite/detached
+representation properties, first-token runtime extraction and CUDA transfer are
+not locally executed by this audit repair.
 
 Importer contract:
 
@@ -187,10 +199,8 @@ pytest -q tests/test_preg1_import_contract.py
 Result:
 
 ```
-15 passed, 1 skipped
+16 passed
 ```
-
-The skip is the committed-tree check for the newly added, uncommitted importer.
 
 Relevant regression set:
 
@@ -207,7 +217,7 @@ pytest -q tests/test_corruption.py tests/test_evaluation_harness.py \
 Result:
 
 ```
-1368 passed, 91 skipped
+1369 passed, 96 skipped
 ```
 
 Full repository, excluding the sandbox-blocked multiprocessing file:
@@ -219,28 +229,14 @@ pytest -q --ignore=tests/test_stage1_parallel.py
 Result:
 
 ```
-4168 passed, 124 skipped
-```
-
-Stage-1 parallel tests outside the restricted sandbox:
-
-```
-pytest -q tests/test_stage1_parallel.py
-```
-
-Result:
-
-```
-18 passed
+4169 passed, 129 skipped
 ```
 
 An initial full `pytest -q` run inside the restricted sandbox failed seven
 `tests/test_stage1_parallel.py` cases with `PermissionError: [Errno 1]
 Operation not permitted` while Python's forkserver attempted to bind a local
-AF_UNIX socket. The same file passed when rerun outside the restricted sandbox.
-The only non-environmental full-suite failure was the PREG1 importer registry;
-it was fixed by adding `unmark/evaluation/stage2_dual_finalist.py` to
-`tests/test_preg1_import_contract.py`.
+AF_UNIX socket. The broader repair regression therefore excludes that known
+sandbox-blocked file. No test failure was observed in the repair runs above.
 
 ---
 
@@ -252,25 +248,102 @@ git diff --check
 
 produced no output.
 
-The three new untracked files were also checked with `git diff --no-index
---check /dev/null <path>`; those commands produced no whitespace diagnostics
-and returned non-zero only because each file is new.
+---
+
+## 7. Authoritative runtime attempt 1 - device-coherence blocker
+
+Commit tested:
+
+```
+11cc8813280f22ad2b20421b4029faf2c9a526ac
+```
+
+Evidence completed before the first real forward:
+
+* Stage-2 focused real-torch tests: `31 passed, 0 skipped`;
+* PREG1 committed importer contract: `16 passed, 0 skipped`;
+* authoritative Stage-1 finalist torch tests: `40 passed, 0 skipped`;
+* real finalist A authoritative verification: PASS, sha256
+  `6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91`,
+  8 adapter tensors, 3,551,232 adapter parameters, FP32, finite;
+* real finalist B authoritative verification: PASS, sha256
+  `9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2`,
+  8 adapter tensors, 3,551,232 adapter parameters, FP32, finite;
+* both checkpoint hashes unchanged before and after verification;
+* pinned PhoBERT `vinai/phobert-base` revision
+  `01daacda68afe13d83023d16ec647239e344a1e6` loaded frozen, eval, FP32,
+  hidden size 768, device `cuda:0`, trainable parameters 0;
+* synthetic-only `SCIENTIFIC` corruption smoke passed for `FULL`, `P25`,
+  `P50`, `P75`, `P100` and `STRIP_ALL`;
+* base-grid invariance passed;
+* keyed corruption determinism passed;
+* row-order independence passed;
+* `VARIANT` fail-closed passed.
+
+Runtime failure:
+
+* first real `UNMARK-A` forward failed;
+* immediately before forward, `pathway.adapter` device was CPU;
+* immediately before forward, `pathway.encoder` device was `cuda:0`;
+* the collated Stage-2 input tensors were on CPU;
+* first observed exception:
+
+```
+RuntimeError: Expected all tensors to be on the same device, but got index is
+on cpu, different from other tensors on cuda:0
+```
+
+The exception occurred inside torch embedding / `index_select`. This is a real
+implementation blocker, not a scientific protocol change.
+
+Negative evidence preserved:
+
+* no UIT-VSFC row was read;
+* no downstream result was read;
+* no head was built;
+* no optimizer existed;
+* no training happened;
+* checkpoint hashes were unchanged.
 
 ---
 
-## 7. Limitations
+## 8. Device-coherence repair
 
-Runtime acceptance is PENDING, not PASS. Real finalist `.pt` files were not
-present in this repository and were not copied or mutated. No real finalist A
-checkpoint was verified or loaded. No real finalist B checkpoint was verified
-or loaded. Torch is unavailable in the local sandbox, so tensor-level Stage-2
-tests skipped locally; they are written against synthetic checkpoints and
-should run where torch is installed.
+The repair is implementation-only and does not change any Audit-049 protocol
+constant.
 
-The real pinned PhoBERT checkpoint was not downloaded or loaded. No real
-PhoBERT forward was executed. No authoritative runtime `[batch, 768]`
-representation evidence exists yet. No network access was needed for this
-implementation audit.
+`load_frozen_unmark_pathway(...)` now determines the supplied encoder's actual
+single parameter device, refuses incoherent encoder devices, loads the exact
+Stage-1 adapter as before, then moves the adapter to the encoder device before
+freezing and validation. CUDA is not hard-coded; CPU remains valid.
+
+`require_frozen_unmark_pathway(...)` now fails closed when encoder parameters
+are not on one coherent device, adapter parameters are not on one coherent
+device, encoder and adapter devices differ, either module is trainable, either
+module is in train mode, or FP32 constraints are violated.
+
+`extract_stage2_unmark_representations(...)` now accepts the normal CPU batch
+from `collate_stage2_unmark_batch(...)`, identifies the coherent pathway device
+and moves the required forward tensors there before word-embedding, adapter and
+encoder computation. Tensor dtype and shape are checked after transfer; sample
+ids and condition metadata are not moved.
+
+---
+
+## 9. Limitations
+
+Runtime acceptance is PENDING_RETEST, not PASS. Attempt 1 verified both real
+finalist checkpoints and loaded the real pinned PhoBERT encoder, but no real
+UNMARK forward was accepted because the device-coherence blocker stopped the
+first `UNMARK-A` forward. No `UNMARK-B` real forward was attempted or accepted.
+
+Torch is unavailable in the local sandbox, so tensor-level Stage-2 tests and
+CUDA-specific device regressions skipped locally. They are written against
+synthetic checkpoints/modules and should run where torch and CUDA are available.
+
+The repaired real pinned PhoBERT forward has not been executed yet. No
+authoritative runtime `[batch, 768]` representation evidence exists for the
+repaired code. No network access was needed for this implementation repair.
 
 No representation cache schema was added for Stage-2. The implemented boundary
 produces detached `[batch, 768]` representations; cache artifacts can be bound
@@ -282,11 +355,11 @@ added.
 
 ---
 
-## 8. Exact next allowed step
+## 10. Exact next allowed step
 
 Author review of this uncommitted diff. If accepted, the author may commit it.
-After that, the next acceptance task is a fresh Colab runtime at the exact
-future committed SHA with:
+After that, the next acceptance task is a fresh A100 Colab runtime at the exact
+future committed SHA, not a notebook-side workaround, with:
 
 * real torch;
 * the pinned PhoBERT revision;
@@ -316,21 +389,22 @@ The authoritative smoke must:
 15. read no UIT-VSFC rows;
 16. perform no optimizer step and no training.
 
-Only after that smoke passes may the runtime pathway be marked accepted. Actual
-Stage-2 head training remains a later task under the already frozen Audit-049
-protocol.
+Only after that fresh exact-commit smoke passes may the runtime pathway be
+marked accepted. Actual Stage-2 head training remains a later task under the
+already frozen Audit-049 protocol.
 
 ---
 
-## 9. Final state
+## 11. Final state
 
 ```
 STAGE2_PROTOCOL_FROZEN=YES
 STAGE2_DUAL_FINALIST_INFRASTRUCTURE_STATIC=PASS
-REAL_TORCH_ACCEPTANCE=PENDING
-UNMARK_A_REAL_CHECKPOINT_LOAD=NOT_EXECUTED
-UNMARK_B_REAL_CHECKPOINT_LOAD=NOT_EXECUTED
-PINNED_PHOBERT_REAL_FORWARD=NOT_EXECUTED
+AUTHORITATIVE_RUNTIME_ATTEMPT_1=FAIL_DEVICE_COHERENCE
+DEVICE_COHERENCE_REPAIR=IMPLEMENTED
+REAL_TORCH_ACCEPTANCE=PENDING_RETEST
+UNMARK_A_REAL_FORWARD=NOT_ACCEPTED
+UNMARK_B_REAL_FORWARD=NOT_ACCEPTED
 DOWNSTREAM_CORRUPTION_PATH_STATIC=PASS
 FINAL_ADAPTER_SELECTED=NO
 DOWNSTREAM_MAY_SELECT_A_VS_B=NO

@@ -54,14 +54,19 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 MODULE = "unmark/evaluation/stage2_dual_finalist.py"
 
 try:  # pragma: no cover - depends on the environment
-    import torch  # noqa: F401
+    import torch
 
     TORCH = True
 except ImportError:  # pragma: no cover - the normal ML-free path
+    torch = None
     TORCH = False
 
 requires_torch = pytest.mark.skipif(
     not TORCH, reason="torch is not installed locally; tensor checks run where available"
+)
+CUDA = bool(TORCH and torch.cuda.is_available())
+requires_cuda = pytest.mark.skipif(
+    not CUDA, reason="CUDA is not available locally; authoritative A100 smoke runs this"
 )
 
 
@@ -428,7 +433,13 @@ def _mock_digest(monkeypatch, digest: str):
     monkeypatch.setattr(finalists_module, "sha256_file", lambda _path: digest)
 
 
-def make_encoder(hidden: int = HIDDEN_SIZE, revision: str = ENCODER_REVISION):
+def make_encoder(
+    hidden: int = HIDDEN_SIZE,
+    revision: str = ENCODER_REVISION,
+    *,
+    device=None,
+    dtype=None,
+):
     import torch
     from torch import nn
 
@@ -465,16 +476,29 @@ def make_encoder(hidden: int = HIDDEN_SIZE, revision: str = ENCODER_REVISION):
             hidden_state = positions.expand(batch, length, dim) + offsets
             return SimpleNamespace(last_hidden_state=hidden_state)
 
-    return RobertaModel()
+    model = RobertaModel()
+    if dtype is not None:
+        model.to(dtype=dtype)
+    if device is not None:
+        model.to(device=device)
+    return model
 
 
-def make_frozen_pathway(arm=s2.Stage2UnmarkArm.UNMARK_A):
+def make_frozen_pathway(
+    arm=s2.Stage2UnmarkArm.UNMARK_A,
+    *,
+    encoder_device=None,
+    adapter_device=None,
+):
     from unmark.modeling.adapter import OrthographyInputAdapter
     from unmark.modeling.config import AdapterConfig
 
     resolved = s2.require_stage2_unmark_arm(arm)
-    encoder = make_encoder()
+    encoder = make_encoder(device=encoder_device)
     adapter = OrthographyInputAdapter(AdapterConfig(hidden_size=HIDDEN_SIZE))
+    target_adapter_device = adapter_device if adapter_device is not None else encoder_device
+    if target_adapter_device is not None:
+        adapter.to(device=target_adapter_device)
     for module in (encoder, adapter):
         for parameter in module.parameters():
             parameter.requires_grad_(False)
@@ -512,6 +536,10 @@ def test_correct_finalist_checkpoint_identity_loads(tmp_path, monkeypatch, arm, 
     assert all(not parameter.requires_grad for parameter in pathway.adapter.parameters())
     assert not pathway.encoder.training
     assert not pathway.adapter.training
+    encoder_device = next(pathway.encoder.parameters()).device
+    adapter_device = next(pathway.adapter.parameters()).device
+    assert encoder_device.type == "cpu"
+    assert adapter_device == encoder_device
 
 
 @requires_torch
@@ -606,6 +634,56 @@ def test_frozen_pathway_guard_refuses_training_modes_and_trainable_parameters():
     next(pathway.adapter.parameters()).requires_grad_(True)
     with pytest.raises(EvaluationContractViolation, match="adapter parameter"):
         pathway.require_frozen()
+    next(pathway.adapter.parameters()).requires_grad_(False)
+
+    next(pathway.encoder.parameters()).requires_grad_(True)
+    with pytest.raises(EvaluationContractViolation, match="encoder parameter"):
+        pathway.require_frozen()
+
+
+@requires_torch
+def test_frozen_pathway_guard_refuses_non_fp32_loaded_modules():
+    import torch
+
+    pathway = make_frozen_pathway()
+    pathway.adapter.to(dtype=torch.float64)
+    with pytest.raises(EvaluationContractViolation, match="adapter.*expected torch.float32"):
+        pathway.require_frozen()
+
+    pathway = make_frozen_pathway()
+    pathway.encoder.to(dtype=torch.float64)
+    with pytest.raises(EvaluationContractViolation, match="encoder.*expected torch.float32"):
+        pathway.require_frozen()
+
+
+@requires_torch
+def test_frozen_pathway_guard_refuses_incoherent_parameter_devices():
+    import torch
+    from torch import nn
+
+    pathway = make_frozen_pathway()
+    extra = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE, bias=False)
+    try:
+        extra.to(device="meta")
+    except RuntimeError as error:
+        pytest.skip(f"this torch build cannot create meta tensors: {error}")
+    for parameter in extra.parameters():
+        parameter.requires_grad_(False)
+    pathway.encoder.extra_device_probe = extra
+    with pytest.raises(EvaluationContractViolation, match="multiple devices"):
+        pathway.require_frozen()
+
+    pathway = make_frozen_pathway()
+    extra = nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE, bias=False)
+    try:
+        extra.to(device="meta")
+    except RuntimeError as error:
+        pytest.skip(f"this torch build cannot create meta tensors: {error}")
+    for parameter in extra.parameters():
+        parameter.requires_grad_(False)
+    pathway.adapter.extra_device_probe = extra
+    with pytest.raises(EvaluationContractViolation, match="multiple devices"):
+        pathway.require_frozen()
 
 
 @requires_torch
@@ -659,11 +737,17 @@ def test_extract_representations_are_fp32_detached_and_not_masked_mean():
     batch = s2.collate_stage2_unmark_batch(
         items, pad_token_id=StubTokenizer.pad_token_id, max_length=16
     )
+    assert all(
+        value.device.type == "cpu"
+        for value in batch.values()
+        if torch.is_tensor(value)
+    )
     features = s2.extract_stage2_unmark_representations(make_frozen_pathway(), batch)
     repeated = s2.extract_stage2_unmark_representations(make_frozen_pathway(), batch)
 
     assert features.shape == (2, HIDDEN_SIZE)
     assert features.dtype is torch.float32
+    assert features.device.type == "cpu"
     assert not features.requires_grad
     assert features.grad_fn is None
     assert torch.equal(features, repeated)
@@ -676,6 +760,104 @@ def test_extract_representations_are_fp32_detached_and_not_masked_mean():
         and node.name == "extract_stage2_unmark_representations"
     )
     assert "masked_mean" not in ast.unparse(function)
+
+
+@requires_torch
+def test_forward_tensor_device_transfer_preserves_dtype_shape_and_values():
+    import torch
+
+    inputs = s2.prepare_stage2_unmark_condition_grid(
+        text="Tôi học",
+        sample_id="device-transfer-sample",
+        tokenizer=StubTokenizer(),
+        corruption_seed=1,
+        classifier=vi_classifier,
+        corruption_purpose=CorruptionPurpose.SELF_CHECK,
+        eligibility_policy=EligibilityPolicy.UNRESOLVED,
+        max_length=16,
+    )[:2]
+    batch = s2.collate_stage2_unmark_batch(
+        inputs, pad_token_id=StubTokenizer.pad_token_id, max_length=16
+    )
+    moved = s2._stage2_forward_tensors_on_device(batch, device=torch.device("cpu"))
+
+    assert set(moved) == set(s2.STAGE2_FORWARD_TENSOR_KEYS)
+    assert "sample_ids" not in moved
+    assert "conditions" not in moved
+    for key in s2.STAGE2_FORWARD_TENSOR_KEYS:
+        assert moved[key].device.type == "cpu"
+        assert moved[key].dtype == batch[key].dtype
+        assert tuple(moved[key].shape) == tuple(batch[key].shape)
+        assert torch.equal(moved[key], batch[key])
+
+
+@requires_cuda
+def test_cuda_encoder_load_moves_adapter_to_encoder_device(tmp_path, monkeypatch):
+    import torch
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    path = _write_checkpoint(torch, tmp_path, _payload(torch, FINALIST_A))
+    _mock_digest(monkeypatch, FINALIST_A.checkpoint_sha256)
+    pathway = s2.load_frozen_unmark_pathway(
+        s2.Stage2UnmarkArm.UNMARK_A,
+        path,
+        encoder=make_encoder(device=device),
+        inventory=INVENTORY,
+    )
+
+    assert next(pathway.encoder.parameters()).device == device
+    assert next(pathway.adapter.parameters()).device == device
+    pathway.require_frozen(check_values=True)
+
+
+@requires_cuda
+def test_cuda_extraction_moves_cpu_collated_batch_to_pathway_device():
+    import torch
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    items = s2.prepare_stage2_unmark_condition_grid(
+        text="Tôi học",
+        sample_id="cuda-representation-sample",
+        tokenizer=StubTokenizer(),
+        corruption_seed=1,
+        classifier=vi_classifier,
+        corruption_purpose=CorruptionPurpose.SELF_CHECK,
+        eligibility_policy=EligibilityPolicy.UNRESOLVED,
+        max_length=16,
+    )[:2]
+    batch = s2.collate_stage2_unmark_batch(
+        items, pad_token_id=StubTokenizer.pad_token_id, max_length=16
+    )
+    assert all(
+        value.device.type == "cpu"
+        for value in batch.values()
+        if torch.is_tensor(value)
+    )
+
+    pathway = make_frozen_pathway(encoder_device=device)
+    features = s2.extract_stage2_unmark_representations(pathway, batch)
+
+    assert features.device == device
+    assert features.shape == (2, HIDDEN_SIZE)
+    assert features.dtype is torch.float32
+    assert not features.requires_grad
+    assert all(
+        value.device.type == "cpu"
+        for value in batch.values()
+        if torch.is_tensor(value)
+    )
+
+
+@requires_cuda
+def test_cuda_encoder_adapter_device_mismatch_is_refused():
+    import torch
+
+    pathway = make_frozen_pathway(
+        encoder_device=torch.device("cuda", torch.cuda.current_device()),
+        adapter_device=torch.device("cpu"),
+    )
+    with pytest.raises(EvaluationContractViolation, match="encoder and adapter devices differ"):
+        pathway.require_frozen()
 
 
 @requires_torch

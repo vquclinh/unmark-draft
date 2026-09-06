@@ -80,6 +80,14 @@ STAGE2_UNMARK_CONDITIONS: tuple[str, ...] = (
     "STRIP_ALL",
 )
 STAGE2_EXCLUDED_CONDITIONS: tuple[str, ...] = ("VARIANT",)
+STAGE2_FORWARD_TENSOR_KEYS: tuple[str, ...] = (
+    "input_ids",
+    "attention_mask",
+    "tone_ids",
+    "tone_mask",
+    "letter_ids",
+    "letter_mask",
+)
 STAGE2_FIRST_TOKEN_POOLING = "FIRST_TOKEN"
 STAGE2_REPRESENTATION_DTYPE = "torch.float32"
 STAGE2_DATASET = PRIMARY_DATASET
@@ -661,6 +669,77 @@ def _freeze_module(module: Any) -> None:
     module.eval()
 
 
+def _require_single_parameter_device(module: Any, module_name: str) -> Any:
+    devices: dict[str, list[str]] = {}
+    first_device = None
+    for name, parameter in module.named_parameters():
+        device = parameter.device
+        devices.setdefault(str(device), []).append(name)
+        if first_device is None:
+            first_device = device
+    if first_device is None:
+        raise EvaluationContractViolation(f"{module_name} exposes no parameters")
+    if len(devices) != 1:
+        detail = ", ".join(
+            f"{device}: {names[:5]}" for device, names in sorted(devices.items())
+        )
+        raise EvaluationContractViolation(
+            f"{module_name} parameters are on multiple devices: {detail}"
+        )
+    if getattr(first_device, "type", None) == "meta":
+        raise EvaluationContractViolation(
+            f"{module_name} parameters are on the meta device; a real CPU/GPU "
+            "device is required for Stage-2 representations"
+        )
+    return first_device
+
+
+def _require_pathway_device(pathway: FrozenUnmarkPathway) -> Any:
+    encoder_device = _require_single_parameter_device(pathway.encoder, "encoder")
+    adapter_device = _require_single_parameter_device(pathway.adapter, "adapter")
+    if adapter_device != encoder_device:
+        raise EvaluationContractViolation(
+            f"encoder and adapter devices differ: encoder={encoder_device}, "
+            f"adapter={adapter_device}"
+        )
+    return encoder_device
+
+
+def _stage2_forward_tensors_on_device(
+    batch: Mapping[str, Any],
+    *,
+    device: Any,
+) -> dict[str, Any]:
+    import torch
+
+    moved: dict[str, Any] = {}
+    for key in STAGE2_FORWARD_TENSOR_KEYS:
+        if key not in batch:
+            raise EvaluationContractViolation(f"Stage-2 batch is missing {key!r}")
+        value = batch[key]
+        if not torch.is_tensor(value):
+            raise EvaluationContractViolation(
+                f"Stage-2 batch field {key!r} is {type(value).__name__}, not a tensor"
+            )
+        moved_value = value.to(device=device)
+        if moved_value.dtype != value.dtype:
+            raise EvaluationContractViolation(
+                f"moving {key!r} to {device} changed dtype from {value.dtype} "
+                f"to {moved_value.dtype}"
+            )
+        if tuple(moved_value.shape) != tuple(value.shape):
+            raise EvaluationContractViolation(
+                f"moving {key!r} to {device} changed shape from "
+                f"{tuple(value.shape)} to {tuple(moved_value.shape)}"
+            )
+        if moved_value.device != device:
+            raise EvaluationContractViolation(
+                f"moving {key!r} to {device} produced tensor on {moved_value.device}"
+            )
+        moved[key] = moved_value
+    return moved
+
+
 def _observed_encoder_revision(encoder: Any) -> str | None:
     for holder in (encoder, getattr(encoder, "config", None)):
         for attribute in ("_commit_hash", "revision", "commit_hash", "_unmark_requested_revision"):
@@ -720,6 +799,7 @@ def load_frozen_unmark_pathway(
     if encoder is None:
         _, encoder = load_stage2_phobert_components(cache_dir=cache_dir)
     require_stage2_encoder_identity(encoder)
+    encoder_device = _require_single_parameter_device(encoder, "encoder")
 
     try:
         evidence = verify_finalist_checkpoint(
@@ -734,6 +814,7 @@ def load_frozen_unmark_pathway(
 
     adapter = OrthographyInputAdapter(AdapterConfig(hidden_size=HIDDEN_SIZE))
     adapter.load_state_dict(_load_adapter_state(checkpoint_path), strict=True)
+    adapter.to(device=encoder_device)
     _freeze_module(encoder)
     _freeze_module(adapter)
 
@@ -773,6 +854,7 @@ def require_frozen_unmark_pathway(
             f"Stage-2 UNMARK hidden size must be {HIDDEN_SIZE}, got encoder={hidden!r} "
             f"pathway={pathway.hidden_size!r}"
         )
+    _require_pathway_device(pathway)
 
     for module_name, module in (("encoder", pathway.encoder), ("adapter", pathway.adapter)):
         if getattr(module, "training", True):
@@ -833,18 +915,20 @@ def extract_stage2_unmark_representations(
     from unmark.modeling.adapter import authoritative_position_ids, base_word_embeddings
 
     pathway.require_frozen()
+    device = _require_pathway_device(pathway)
+    forward_batch = _stage2_forward_tensors_on_device(batch, device=device)
     with torch.no_grad():
-        input_ids = batch["input_ids"]
+        input_ids = forward_batch["input_ids"]
         z = pathway.adapter(
             base_word_embeddings(pathway.encoder, input_ids),
-            batch["tone_ids"],
-            batch["tone_mask"],
-            batch["letter_ids"],
-            batch["letter_mask"],
+            forward_batch["tone_ids"],
+            forward_batch["tone_mask"],
+            forward_batch["letter_ids"],
+            forward_batch["letter_mask"],
         )
         outputs = pathway.encoder(
             inputs_embeds=z,
-            attention_mask=batch["attention_mask"],
+            attention_mask=forward_batch["attention_mask"],
             position_ids=authoritative_position_ids(pathway.encoder, input_ids),
             **encoder_kwargs,
         )
