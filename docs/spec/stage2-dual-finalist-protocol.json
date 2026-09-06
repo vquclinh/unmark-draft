@@ -1,0 +1,598 @@
+{
+  "arms": {
+    "count": {
+      "classification": "scientific_identity",
+      "value": 2
+    },
+    "definitions": {
+      "classification": "scientific_identity",
+      "value": [
+        {
+          "arm": "UNMARK-A",
+          "checkpoint_sha256": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91",
+          "finalist": "A",
+          "run_seed": 36930,
+          "source_repository_head": "7773c77b1df92a6e685dac13c49765ce974f84d8",
+          "source_stage": "final_main",
+          "update": 3500
+        },
+        {
+          "arm": "UNMARK-B",
+          "checkpoint_sha256": "9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2",
+          "finalist": "B",
+          "run_seed": 21230,
+          "source_repository_head": "bca24ade208265a5a46a54fb2d2d9bd77d8f6703",
+          "source_stage": "lr_pilot",
+          "update": 14500
+        }
+      ]
+    },
+    "ensemble": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "parameter_reuse_between_arms": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  },
+  "dataset": {
+    "changed_from_preg1": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "label_mapping": {
+      "classification": "scientific_identity",
+      "value": {
+        "negative": 0,
+        "neutral": 1,
+        "positive": 2
+      }
+    },
+    "name": {
+      "classification": "scientific_identity",
+      "value": "UIT-VSFC"
+    },
+    "num_labels": {
+      "classification": "scientific_identity",
+      "value": 3
+    },
+    "task": {
+      "classification": "scientific_identity",
+      "value": "sentiment"
+    },
+    "version": {
+      "classification": "scientific_identity",
+      "value": "1.0"
+    }
+  },
+  "frozen_representation": {
+    "adapter_eval_mode": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "adapter_requires_grad": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "adapter_trainable_parameters": {
+      "classification": "scientific_identity",
+      "note": "frozen here; the count is the Stage-1 locked architecture",
+      "value": 3551232
+    },
+    "channel_semantics": {
+      "classification": "scientific_protocol",
+      "note": "base stream, tone channel and letter channel semantics are exactly the Stage-1 locked ones",
+      "value": "unchanged"
+    },
+    "encoder_checkpoint": {
+      "classification": "scientific_identity",
+      "value": "vinai/phobert-base"
+    },
+    "encoder_eval_mode": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "encoder_requires_grad": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "encoder_revision": {
+      "classification": "scientific_identity",
+      "value": "01daacda68afe13d83023d16ec647239e344a1e6"
+    },
+    "max_length": {
+      "classification": "scientific_protocol",
+      "value": 256
+    },
+    "mixed_precision": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "padding": {
+      "classification": "scientific_protocol",
+      "value": "max_length"
+    },
+    "precision": {
+      "classification": "scientific_protocol",
+      "value": "FP32"
+    },
+    "restoration": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "token_grid_invariance": {
+      "classification": "safety_gate",
+      "note": "corruption alters orthographic side-channel state, not token positions",
+      "value": "REQUIRED"
+    },
+    "tokenizer_change": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "trainable_parameters_in_stage2": {
+      "classification": "safety_gate",
+      "value": "classification head only"
+    },
+    "truncation": {
+      "classification": "scientific_protocol",
+      "value": true
+    },
+    "word_segmenter": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  },
+  "head": {
+    "activation": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "architecture": {
+      "classification": "scientific_protocol",
+      "value": "linear"
+    },
+    "dropout": {
+      "classification": "scientific_protocol",
+      "value": 0.0
+    },
+    "hidden_layers": {
+      "classification": "scientific_protocol",
+      "value": 0
+    },
+    "init_bias": {
+      "classification": "scientific_protocol",
+      "value": "torch.nn.init.zeros_"
+    },
+    "init_weight": {
+      "classification": "scientific_protocol",
+      "value": "torch.nn.init.xavier_uniform_"
+    },
+    "layernorm": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "loss": {
+      "classification": "scientific_protocol",
+      "value": "cross_entropy"
+    },
+    "loss_class_weights": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "loss_label_smoothing": {
+      "classification": "scientific_protocol",
+      "value": 0.0
+    },
+    "loss_reduction": {
+      "classification": "scientific_protocol",
+      "value": "mean"
+    },
+    "shape": {
+      "classification": "scientific_protocol",
+      "value": "Linear(768, 3, bias=True)"
+    }
+  },
+  "head_checkpoint_selection": {
+    "after_selection": {
+      "classification": "safety_gate",
+      "value": "head frozen"
+    },
+    "cadence": {
+      "classification": "scientific_protocol",
+      "value": "after each of the 30 epochs"
+    },
+    "corrupted_dev_may_influence_selection": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "evaluated_on": {
+      "classification": "safety_gate",
+      "value": "clean FULL protocol-dev"
+    },
+    "rule": {
+      "classification": "scientific_protocol",
+      "value": "highest macro_f1, then highest accuracy, then earliest epoch"
+    },
+    "scope": {
+      "classification": "scientific_protocol",
+      "value": "per arm and per seed, independently"
+    },
+    "training_data": {
+      "classification": "safety_gate",
+      "value": "CLEAN protocol-train only"
+    }
+  },
+  "measurement": {
+    "conditions": {
+      "classification": "scientific_protocol",
+      "value": [
+        "FULL",
+        "P25",
+        "P50",
+        "P75",
+        "P100",
+        "STRIP_ALL"
+      ]
+    },
+    "corruption_determinism": {
+      "classification": "scientific_protocol",
+      "note": "keyed by sample_id, never row order",
+      "value": "unmark.corruption.corrupt with purpose=SCIENTIFIC"
+    },
+    "excluded_conditions": {
+      "classification": "safety_gate",
+      "note": "unimplemented and fail-closed; implementing half of it would misrepresent the condition",
+      "value": [
+        "VARIANT"
+      ]
+    },
+    "occurs_only_after": {
+      "classification": "safety_gate",
+      "value": "head checkpoint selection is complete and the head is frozen"
+    },
+    "split": {
+      "classification": "safety_gate",
+      "value": "measurement-dev (official validation)"
+    }
+  },
+  "notes": [
+    "Stage-2 DUAL-FINALIST protocol. There is NO downstream selection between the two Stage-1 finalists: option (c) of the Audit 048 follow-up review. The word 'adjudication' is deliberately absent from the executable protocol's name because no winner is chosen.",
+    "classification marks each field: scientific_identity | scientific_protocol | scientific_input | operational_acceptance | operational_provenance | safety_gate.",
+    "Everything under 'inherited' is reused UNCHANGED from preg1-protocol-v4 and its decision records; this protocol adds no new tuning degree of freedom on labelled data.",
+    "D-S1B-001 remains intact and requires no exception: no UIT-VSFC score selects any Stage-1 quantity, including checkpoint selection."
+  ],
+  "optimization": {
+    "amsgrad": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "batch_size": {
+      "classification": "scientific_protocol",
+      "value": 128
+    },
+    "betas": {
+      "classification": "scientific_protocol",
+      "value": [
+        0.9,
+        0.999
+      ]
+    },
+    "drop_last": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "early_stopping": {
+      "classification": "safety_gate",
+      "note": "all 30 epochs must run; a truncated score list is what early stopping looks like downstream",
+      "value": false
+    },
+    "epochs": {
+      "classification": "scientific_protocol",
+      "value": 30
+    },
+    "eps": {
+      "classification": "scientific_protocol",
+      "value": 1e-08
+    },
+    "gradient_accumulation_steps": {
+      "classification": "scientific_protocol",
+      "value": 1
+    },
+    "gradient_clipping": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "learning_rate": {
+      "classification": "scientific_protocol",
+      "value": 0.01
+    },
+    "learning_rate_source": {
+      "classification": "operational_provenance",
+      "note": "inherited from the CLOSED pre-G1 diagnostic (D-PREG1-015), where the shared-LR protocol froze 0.01 and the precommitted own-LR sensitivity independently selected 0.01 for Base-only",
+      "value": "inherited_from_preg1_no_new_pilot"
+    },
+    "lr_schedule": {
+      "classification": "scientific_protocol",
+      "value": "CONSTANT"
+    },
+    "new_lr_pilot_permitted": {
+      "classification": "safety_gate",
+      "note": "removes a labelled-DEV tuning degree of freedom",
+      "value": false
+    },
+    "optimizer": {
+      "classification": "scientific_protocol",
+      "value": "AdamW"
+    },
+    "warmup_steps": {
+      "classification": "scientific_protocol",
+      "value": 0
+    },
+    "weight_decay_bias": {
+      "classification": "scientific_protocol",
+      "value": 0.0
+    },
+    "weight_decay_weight": {
+      "classification": "scientific_protocol",
+      "value": 0.01
+    }
+  },
+  "pooling": {
+    "pilot_permitted": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "scope": {
+      "classification": "scientific_protocol",
+      "note": "promoted from the PREG1-only scope of D-PREG1-005 to an explicit Stage-2 scope by D-S2-001",
+      "value": "stage2-dual-finalist"
+    },
+    "stage1_masked_mean_transfers": {
+      "classification": "safety_gate",
+      "note": "D-G1-005: the Stage-1 alignment pooling does not transfer downstream",
+      "value": false
+    },
+    "strategy": {
+      "classification": "scientific_protocol",
+      "value": "FIRST_TOKEN"
+    },
+    "token": {
+      "classification": "scientific_protocol",
+      "value": "<s>"
+    }
+  },
+  "post_measurement_lock": {
+    "change_pooling_lr_head_seeds_or_epoch_rule_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "drop_arm_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "future_test_rule": {
+      "classification": "safety_gate",
+      "note": "if official TEST is ever opened under a later fully frozen protocol, BOTH surviving UNMARK arms are evaluated",
+      "value": "both arms evaluated; measurement-dev may not pick one for TEST"
+    },
+    "measurement_dev_may_select_arm": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "promote_arm_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "replace_a_stage1_checkpoint": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "test_may_select_arm": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  },
+  "protocol": {
+    "adjudication": {
+      "classification": "safety_gate",
+      "value": "CLOSED_WITHOUT_SELECTION"
+    },
+    "d_s1b_001_exception_required": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "inherits": {
+      "classification": "scientific_identity",
+      "value": "preg1-protocol-v4"
+    },
+    "selection_between_finalists": {
+      "classification": "safety_gate",
+      "note": "no winner rule, no tie-break, no no-decision margin, no significance test, no p-value",
+      "value": "NONE"
+    },
+    "version": {
+      "classification": "scientific_identity",
+      "value": "stage2-dual-finalist-protocol-v1"
+    }
+  },
+  "reporting": {
+    "arms_reported": {
+      "classification": "scientific_protocol",
+      "value": "A and B separately"
+    },
+    "grr": {
+      "classification": "safety_gate",
+      "note": "not an A/B-selection metric; compute only later, once frozen UPPER/FLOOR anchors exist",
+      "value": "DEFERRED"
+    },
+    "no_decision_margin": {
+      "classification": "safety_gate",
+      "value": null
+    },
+    "p_value": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "paired_deltas": {
+      "classification": "scientific_protocol",
+      "note": "descriptive only",
+      "value": "per-seed B minus A"
+    },
+    "per_arm_per_condition": {
+      "classification": "scientific_protocol",
+      "value": [
+        "macro_f1",
+        "accuracy",
+        "per_class_f1_negative",
+        "per_class_f1_neutral",
+        "per_class_f1_positive",
+        "mean_over_seeds",
+        "std_over_seeds"
+      ]
+    },
+    "robustness_summaries": {
+      "classification": "scientific_protocol",
+      "note": "REPORTING ONLY; these must not choose A or B",
+      "value": [
+        "STRIP_ALL macro_f1",
+        "equal-weight mean macro_f1 over P25,P50,P75,P100,STRIP_ALL"
+      ]
+    },
+    "significance_test": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "summaries_may_select_arm": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "tie_break": {
+      "classification": "safety_gate",
+      "value": null
+    },
+    "winner_rule": {
+      "classification": "safety_gate",
+      "value": null
+    }
+  },
+  "schema_version": "stage2-dual-finalist-protocol-v1",
+  "seeds": {
+    "head_seed_tag": {
+      "classification": "scientific_identity",
+      "value": "UNMARK-PREG1-MEASURE-v1"
+    },
+    "head_seeds": {
+      "classification": "scientific_identity",
+      "value": [
+        53148,
+        59945,
+        42941,
+        720,
+        9428
+      ]
+    },
+    "minibatch_order": {
+      "classification": "scientific_protocol",
+      "note": "dedicated generator, not the ambient RNG",
+      "value": "existing deterministic seed contract"
+    },
+    "new_adjudication_seeds_created": {
+      "classification": "safety_gate",
+      "note": "none: no adjudication exists",
+      "value": false
+    },
+    "paired_initialisation_rule": {
+      "classification": "safety_gate",
+      "note": "build_head resets the RNG immediately before init, so both arms at the same seed get bit-identical parameters regardless of run order",
+      "value": "for every seed s, UNMARK-A and UNMARK-B each receive a freshly instantiated head initialised with s; initial tensors bit-identical across arms; no weights reused between arms"
+    }
+  },
+  "splits": {
+    "internal_split_fractions": {
+      "classification": "scientific_protocol",
+      "value": {
+        "protocol-dev": 0.2,
+        "protocol-train": 0.8
+      }
+    },
+    "official_test": {
+      "classification": "safety_gate",
+      "note": "structurally unreachable: Preg1Role has no OFFICIAL_TEST member",
+      "value": "SEALED"
+    },
+    "official_train_role": {
+      "classification": "scientific_protocol",
+      "value": "source of protocol-train and protocol-dev only"
+    },
+    "official_validation_role": {
+      "classification": "safety_gate",
+      "note": "reporting only; may never select A vs B, nor any head hyperparameter",
+      "value": "measurement-dev"
+    },
+    "protocol_dev_role": {
+      "classification": "safety_gate",
+      "note": "clean FULL only; no corrupted score may influence head checkpoint selection",
+      "value": "head checkpoint selection only"
+    },
+    "protocol_train_role": {
+      "classification": "scientific_protocol",
+      "value": "CLEAN head training only"
+    },
+    "split_seed": {
+      "classification": "scientific_identity",
+      "value": 17486
+    },
+    "split_seed_tag": {
+      "classification": "scientific_identity",
+      "value": "UNMARK-PREG1-SPLIT-UITVSFC-v1"
+    },
+    "splitter": {
+      "classification": "scientific_protocol",
+      "note": "unchanged: deterministic, label-stratified, group-aware by canonical text, keyed digest",
+      "value": "profiling.stratified_group_split"
+    }
+  },
+  "state": {
+    "adjudication": {
+      "classification": "safety_gate",
+      "value": "CLOSED_WITHOUT_SELECTION"
+    },
+    "downstream_may_select_a_vs_b": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "downstream_results_seen": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "downstream_test": {
+      "classification": "safety_gate",
+      "value": "SEALED"
+    },
+    "final_adapter_selected": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "finalist_count": {
+      "classification": "scientific_identity",
+      "value": 2
+    },
+    "stage1_candidate_generation": {
+      "classification": "safety_gate",
+      "value": "CLOSED"
+    },
+    "stage1_training": {
+      "classification": "safety_gate",
+      "value": "CLOSED"
+    },
+    "stage2_started": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "stage2_unmark_arm_count": {
+      "classification": "scientific_identity",
+      "value": 2
+    }
+  }
+}

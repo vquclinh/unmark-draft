@@ -5182,3 +5182,87 @@ equivalence is not established**.
 | **Audit** | [`docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md`](../audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md) §10.2 |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
 | **Proposal updated** | **NO** — the amendment chain of D-S1B-020 / D-S1B-022 / D-S1B-023 is recorded as deviations, not folded back. PDF stale: **YES** |
+
+## Stage-2 dual-finalist protocol
+
+### D-S2-001 — no downstream selection between Stage-1 finalists; both are carried
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — protocol freeze; **nothing is trained** |
+| **Owner** | Stage-2 |
+| **Date** | 2026-09-06 |
+| **Artifact** | `docs/spec/stage2-dual-finalist-protocol.json` |
+| **Inherits** | `preg1-protocol-v4` unchanged |
+
+**The decision.** There is **no downstream adjudication** between the two frozen
+Stage-1 finalists. Both are carried through Stage 2 as separately reported,
+frozen UNMARK arms:
+
+| Arm | Finalist | Source stage | Seed | Update | checkpoint sha256 |
+|---|---|---|---|---|---|
+| `UNMARK-A` | A | `final_main` | 36930 | 3500 | `6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91` |
+| `UNMARK-B` | B | `lr_pilot` | 21230 | 14500 | `9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2` |
+
+**Why this and not a DEV-only adjudication.**
+[D-S1B-001](#d-s1b-001--uit-vsfc-may-not-select-any-stage-1-value) forbids UIT-VSFC
+from selecting **any** Stage-1 quantity and names `checkpoint selection`
+explicitly. Choosing between A and B on labelled UIT-VSFC would be exactly that.
+Confining the choice to `protocol-dev` would answer the *leakage* half of
+D-S1B-001's reasoning but not the *circularity* half: a supervised choice over a
+labelled downstream task, however small, makes Stage-1 selection partly a search
+over that task. **D-S1B-001 therefore remains intact and no exception is
+created.** The cost is one extra Stage-2 arm; the alternative was a one-bit
+supervised selection the project's own rule prohibits.
+
+**The freeze.**
+
+| | |
+|---|---|
+| **Dataset / splits** | `preg1-protocol-v4` unchanged: UIT-VSFC v1.0 sentiment, 3 labels; official train → 80/20 `protocol-train`/`protocol-dev`, split seed `17486`, existing group-aware splitter |
+| **`protocol-train`** | CLEAN head training only |
+| **`protocol-dev`** | head-checkpoint selection only, on clean `FULL`; no corrupted score may influence it |
+| **official validation** | `measurement-dev` — reporting only |
+| **official TEST** | **SEALED**, structurally unreachable |
+| **Frozen** | encoder and Stage-1 adapter both `requires_grad=False` and `eval()`; only head parameters train; no ensemble; no A→B parameter reuse; no restoration, no tokenizer change, no word segmenter; token-grid invariance required |
+| **Pooling** | **first token `<s>`**, promoted from D-PREG1-005's PREG1-only scope to an explicit Stage-2 scope. **No pooling pilot permitted.** Stage-1 masked-mean does not transfer (D-G1-005) |
+| **Head** | `Linear(768, 3, bias=True)`, xavier-uniform weight, zero bias, no hidden layer / dropout / LayerNorm / activation; cross-entropy, no class weights, no label smoothing |
+| **Optimisation** | AdamW `(0.9, 0.999)`, eps `1e-8`, wd `0.01` weight / `0.0` bias, constant schedule, no warmup, no clipping, batch `128`, grad-accum `1`, `drop_last=false`, **30 epochs, no early stopping** |
+| **Head LR** | **`0.01`, inherited, no new pilot** — from the closed pre-G1 diagnostic ([D-PREG1-015](#d-preg1-015--the-pre-g1-burden-diagnostic-is-closed)), where the shared-LR protocol froze `0.01` and the precommitted own-LR sensitivity independently selected `0.01`. Inheriting removes a labelled-DEV tuning degree of freedom rather than adding one |
+| **Head seeds** | the five existing measurement seeds `53148, 59945, 42941, 720, 9428`. **No new "adjudication" seeds**, because no adjudication exists |
+| **Paired init** | for every seed `s`, each arm gets a freshly instantiated head initialised with `s`; initial tensors are bit-identical across arms; no weights reused between arms |
+| **Checkpoint selection** | per arm and per seed: highest macro-F1, then highest accuracy, then earliest epoch; then the head is frozen |
+| **Measurement** | only after the head is frozen, on `measurement-dev` at `FULL, P25, P50, P75, P100, STRIP_ALL`. `VARIANT` excluded — unimplemented and fail-closed |
+
+**Reporting, and what it may not do.** A and B are reported separately: macro-F1,
+accuracy and per-class F1 per condition, with mean and sd over the five seeds,
+plus descriptive per-seed paired `B − A` deltas. Two robustness summaries are
+reported — `STRIP_ALL` macro-F1, and the equal-weight mean macro-F1 over
+`P25, P50, P75, P100, STRIP_ALL`. **These are reporting summaries only and may
+not choose an arm.** There is **no winner rule, no tie-break, no no-decision
+margin, no significance test and no p-value.** GRR is **not** an A/B-selection
+metric and is deferred until frozen `UPPER`/`FLOOR` anchors exist.
+
+**Post-measurement lock.** Once any `measurement-dev` result from these arms is
+observed: neither arm may be dropped or promoted on the basis of it; no Stage-1
+checkpoint may replace either; and pooling, LR, head architecture, seeds and the
+epoch rule may not change in response. Neither `measurement-dev` nor TEST may
+select A vs B. If official TEST is ever opened under a later fully frozen
+protocol, **both** surviving UNMARK arms are evaluated.
+
+**Naming.** The executable protocol is deliberately **not** called
+"adjudication": no winner is selected, and a name implying one would misdescribe
+it.
+
+| | |
+|---|---|
+| **Adjudication** | **CLOSED_WITHOUT_SELECTION** |
+| **Final adapter selected** | **NO** |
+| **Stage-2 UNMARK arms** | **2** |
+| **Downstream may select A vs B** | **NO** |
+| **Downstream results seen** | **NO** |
+| **Stage 2 started** | **NO** |
+| **Affected spec** | `docs/spec/stage2-dual-finalist-protocol.json` |
+| **Audit** | [`docs/audits/049-stage2-dual-finalist-protocol-freeze.md`](../audits/049-stage2-dual-finalist-protocol-freeze.md) |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Proposal updated** | **NO** — §5.2/§8.3 already require one identical head protocol across systems; carrying two UNMARK arms is an instance of that, not a change to it. PDF stale: **YES** |
