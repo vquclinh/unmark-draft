@@ -13,11 +13,16 @@ adjudication protocol, and does not reopen any Stage-1 hyperparameter.
 
 ## 1. Executive verdict
 
-**PASS WITH ISSUES.**
+**PASS.**
 
-The finalist freeze is implemented, pinned in code, machine-readable and tested.
-One piece of external evidence is missing and is represented as a blocker rather
-than filled in:
+The finalist freeze is implemented, pinned in code, machine-readable, tested, and
+— since the authoritative verification of §10.2 — **complete**. Both finalists
+have been verified read-only against their frozen identities, and finalist B's
+digest is bound from that evidence.
+
+An earlier revision of this audit read PASS WITH ISSUES while B's digest was
+unbound. That blocker is now cleared; the entry is kept in the table below so the
+history of the verdict is visible rather than silently rewritten.
 
 | | |
 |---|---|
@@ -28,15 +33,19 @@ than filled in:
 | Official UIT-VSFC TEST sealed; TEST-based selection refused | **PASS** |
 | Read-only checkpoint verifier | **PASS** — real-torch run on Colab refused every malformed payload, §10.1 |
 | Real-torch test expectations | **REPAIRED** — 2 stale regexes, §10.1 |
-| Authoritative A/B checkpoint verification | **NOT PERFORMED** — §10.1 |
 | Structural prevention of finalist-set drift | **PASS** |
 | Training-core source equivalence of the two HEADs | **PASS** — established, §7.6 |
 | Checkpoint provenance verification vs the Stage-1 contract | **PASS** — delegates to `verify_checkpoint`, §9.1 |
-| **Finalist B exact checkpoint SHA256** | **BLOCKED** — §6 |
-| Full executable / runtime equivalence of the two runs | **NOT ESTABLISHED** — §7.6 |
+| **Finalist B exact checkpoint SHA256** | **CLEARED** — bound from authoritative evidence, §10.2 |
+| Authoritative A/B checkpoint verification | **PASS / PASS** — §10.2 |
+| Freeze completeness | **COMPLETE** — `freeze_complete = true`, no pending digests |
+| Runtime-environment comparison (execution fingerprints) | **CLOSED** — exactly equal, §10.2 |
+| Full executable equivalence of the two runs | **NOT CLAIMED** — §7.6, §10.2 |
 
-Because finalist B's digest is unbound, `evidence.freeze_complete` is `false` and
-`READY_FOR_STAGE2_PROTOCOL_REVIEW=NO`. The freeze is **not** claimed complete.
+`evidence.freeze_complete` is `true`, `pending_finalist_digests` is `[]`, and
+`READY_FOR_STAGE2_PROTOCOL_REVIEW=YES`. **A complete freeze does not select an
+adapter**: the final downstream adapter is still UNSELECTED and adjudication is
+still OPEN.
 
 ---
 
@@ -226,10 +235,16 @@ What was reopened is **only**:
 | `r` | `1.0` |
 | `validation/score` | `0.09000698585438581` |
 | `robust_score` | `0.106576028028` |
-| **checkpoint SHA256** | **`PENDING_AUTHORITATIVE_EVIDENCE` — BLOCKED** |
+| **checkpoint SHA256** | `9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2` — verified, §10.2 |
 | source repository HEAD | `bca24ade208265a5a46a54fb2d2d9bd77d8f6703` |
 
-### 6.1 The evidence blocker, and what was searched
+### 6.1 The evidence blocker — RESOLVED in §10.2
+
+> **Status:** this section records the blocker as it stood before the
+> authoritative verification. It is retained because the *reasoning* — why a
+> 16-character prefix was refused — is what the binding workflow rests on. The
+> digest is now bound; see §10.2.
+
 
 Finalist B's exact digest is **not obtainable from this machine**. Searched, all
 negative:
@@ -410,14 +425,16 @@ unreachable, operational-only, or a value-preserving refactor.
 * Three files on the executable path genuinely differ. Their irrelevance to
   numerics is an argument from reading the code and its guards — it is not a
   byte-identity proof, and it is not a measured numerical comparison.
-* Nothing here addresses the **runtime**: torch / CUDA / cuDNN versions, driver,
-  or GPU model. This project treats `gpu_name` as **resume-blocking** (D-S1B-015)
+* **[CLOSED in §10.2]** Nothing *in this section* addresses the **runtime**:
+  torch / CUDA / cuDNN versions, driver, or GPU model. The authoritative
+  verification later compared the two checkpoints' embedded execution
+  fingerprints and found them **exactly equal**, closing this gap at the
+  fingerprint level. The reasoning below is retained as written. This project treats `gpu_name` as **resume-blocking** (D-S1B-015)
   precisely because it declines to assume cross-device numerical identity. The
   two runs are known to span a period in which the campaign moved between GPUs.
 * Each checkpoint carries its own `execution` fingerprint, and those live in the
-  external `.pt` files, which **could not be read here**. Comparing them is the
-  concrete next check; the verifier now emits that fingerprint into the binding
-  evidence (§9.1) precisely so the comparison can be made without re-deriving it.
+  external `.pt` files, which could not be read *here*. That comparison has since
+  been performed on the authoritative host and is recorded in §10.2.
 * **Structural compatibility is not equivalence.** A and B sharing 8 tensors,
   identical shapes and 3,551,232 parameters is necessary, not sufficient.
 * The two runs differ **by design** in stage, `run_seed` and `init_seed` (51800
@@ -593,8 +610,20 @@ Tests added by this revision:
 
 ### 9.5 `docs/spec/decisions.md`
 
-**D-S1B-023** appended (79 insertions, 0 deletions — strictly append-only; no
-existing decision record was altered).
+**D-S1B-023** appended with the first change set (79 insertions, 0 deletions).
+**D-S1B-024** appended with the binding change set (63 insertions, 0 deletions),
+recording the authoritative verification, B's bound digest, the equal execution
+fingerprints, and that the completed freeze selects nothing.
+
+Both edits are **strictly append-only**; no existing decision record was altered.
+D-S1B-023 deliberately still reads `PENDING` for finalist B's digest: that was
+true when it was written and committed, and the decision log is a history, not a
+current-state view. D-S1B-024 supersedes that state rather than rewriting it.
+
+An earlier revision of this change set edited D-S1B-023 in place (18 insertions,
+12 deletions). That was wrong — it destroyed the append-only property of an
+already-committed record — and was reverted; `docs/spec/decisions.md` now differs
+from `054c6d8` by appended lines only.
 
 ---
 
@@ -701,22 +730,105 @@ Three further items were addressed while inspecting adjacent tests:
   was reverted byte-exactly.
 
 **What this run did NOT establish.** The gate stopped at the test failures, so
-**authoritative verification of the real A and B checkpoints was not performed**.
-No downstream data was read and no checkpoint was modified. Finalist B's digest
-remains `PENDING_AUTHORITATIVE_EVIDENCE`, `evidence.freeze_complete` remains
-`false`, and `READY_FOR_STAGE2_PROTOCOL_REVIEW` remains `NO`.
+**authoritative verification of the real A and B checkpoints was not performed in
+this run**. No downstream data was read and no checkpoint was modified. As of
+this run finalist B's digest was still `PENDING_AUTHORITATIVE_EVIDENCE`,
+`evidence.freeze_complete` was `false`, and `READY_FOR_STAGE2_PROTOCOL_REVIEW`
+was `NO`. **All three were superseded by §10.2**, which records the verification
+that followed once the repaired gate passed.
 
 Local suite after the repair: **92 passed, 1 skipped** (the two new torch-free
 guards; the skip is still the whole torch module).
+
+### 10.2 Authoritative checkpoint verification — COMPLETE
+
+After the §10.1 test repair the real-torch gate passed, and the authoritative
+read-only verification of both finalists was allowed to proceed.
+
+| | |
+|---|---|
+| Implementation commit | `054c6d8fa4c912f10a2bb4c21e272e5064e8f355` |
+| Environment | Python 3.13.15, torch 2.11.0+cu128, CUDA 12.8, NVIDIA RTX PRO 6000 Blackwell Server Edition |
+
+| | FINALIST A | FINALIST B |
+|---|---|---|
+| identity | `final_main` / seed 36930 / update 3500 | `lr_pilot` / seed 21230 / update 14500 |
+| checkpoint SHA256 | `6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91` | `9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2` |
+| verification | **PASS** | **PASS** |
+| adapter tensors | 8 | 8 |
+| adapter parameters | 3 551 232 | 3 551 232 |
+| dtype | fp32 | fp32 |
+| all finite | true | true |
+
+Evidence, retained externally:
+
+```
+B binding          .../stage1-finalist-verification/054c6d8fa4c9/20260906T120114Z/048-finalist-b-binding.json
+execution compare  .../stage1-finalist-verification/054c6d8fa4c9/20260906T120114Z/048-execution-comparison.json
+```
+(under `/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/`)
+
+**The §6.1 evidence blocker is CLEARED.** Finalist B's digest is bound from this
+verification, not from the 16-character prefix that had been visible throughout.
+The bound value does begin with that prefix, which is a consistency check on the
+evidence rather than its source. The four-field binding of `BINDING_FIELDS` was
+applied together; `evidence.freeze_complete` is now `true` and
+`evidence.pending_finalist_digests` is `[]`.
+
+**Execution fingerprints are exactly equal.** `EXECUTION_FINGERPRINTS_EQUAL=true`:
+
+| field | value (both checkpoints) |
+|---|---|
+| `backend` | cuda |
+| `device` | cuda |
+| `gpu_name` | NVIDIA RTX PRO 6000 Blackwell Server Edition |
+| `compute_capability` | 12.0 |
+| `torch_version` | 2.11.0+cu128 |
+| `cuda_version` | 12.8 |
+| `cudnn_version` | 91900 |
+| `deterministic_algorithms` | true |
+| `cudnn_deterministic` | true |
+| `cudnn_benchmark` | false |
+| `cublas_workspace_config` | `:4096:8` |
+| `float32_matmul_precision` | highest |
+| `cuda_matmul_allow_tf32` | false |
+| `cudnn_allow_tf32` | false |
+
+This is exactly the comparison §7.6 identified as missing, and it is the reason
+the verifier emits the fingerprint into the evidence record rather than enforcing
+it. **The previously identified runtime-equivalence gap is therefore closed at
+the checkpoint-embedded execution-fingerprint level.**
+
+**What this does NOT establish.** A and B are still **distinct runs**, not one
+run and not one campaign identity: different source stages (`final_main` vs
+`lr_pilot`), different run seeds (36930 vs 21230), different init seeds (51800 vs
+3203) and different source repository HEADs. Equality of execution fingerprints
+closes the runtime-environment comparison and nothing else; §7.6's training-core
+source equivalence is unchanged, and no claim of full executable equivalence is
+made.
+
+**A complete freeze does not select an adapter.** Both finalists are now fully
+verified and bound. The final downstream adapter remains **UNSELECTED**,
+adjudication remains **OPEN** and DEV-only under a protocol that does not yet
+exist, and the official UIT-VSFC TEST remains **SEALED**.
+
+No downstream data or result was read, no checkpoint was modified, no training
+occurred, and Stage 2 has not started.
+
+Local suite after binding: **94 passed, 1 skipped** — the six tests that encoded
+B's former pending state were rewritten to exercise the same generic guards
+against a synthetic unbound identity, so the `SHA256_PENDING` contract keeps its
+coverage while no longer asserting a superseded fact about B.
 
 Related existing suites, unaffected:
 
 ```
 .venv/bin/python -m pytest -q tests/test_stage1_final_freeze.py \
   tests/test_stage1_artifact_identity.py tests/test_stage1_r_phase1_amendment.py \
-  tests/test_stage1_torch_contracts.py
+  tests/test_stage1_torch_contracts.py tests/test_stage1_runner_contract.py \
+  tests/test_stage1_schedule.py
 
-90 passed, 7 skipped in 0.32s
+159 passed, 7 skipped in 0.49s
 ```
 
 Whole-repository regression suite:
@@ -724,7 +836,7 @@ Whole-repository regression suite:
 ```
 .venv/bin/python -m pytest -q
 
-4165 passed, 108 skipped in 159.97s (0:02:39)
+4169 passed, 108 skipped in 154.15s (0:02:34)
 ```
 
 Zero failures and zero errors (`grep -cE "^(FAILED|ERROR)"` returned `0`). One of
@@ -768,7 +880,9 @@ back to durable artifacts without treating a W&B screenshot as primary numeric
 evidence:
 
 * both finalists are named by `(source_stage, run_seed, update, LR, r)` plus
-  source repository HEAD, and A additionally by full checkpoint SHA256;
+  source repository HEAD **and a full authoritative checkpoint SHA256** — A
+  `6773fbb5…a2a91`, B `9405bd76…b9d2` — each verified read-only against its
+  frozen identity (§10.2);
 * `evidence.validation_trajectories` records that both runs have full 41-point
   `0..20000` histories reconstructed by the read-only closeout, and that update 0
   was recovered from checkpoint `points` history rather than from telemetry;
@@ -779,31 +893,37 @@ evidence:
 * `evidence.heavy_artifacts_location` states plainly that checkpoints, corpus,
   telemetry and W&B history are external and not committed.
 
-A future figure should cite the checkpoint SHA256 and run identity; W&B remains a
-convenience view over evidence whose authority is the checkpoint payload.
+A future figure should cite the checkpoint SHA256 and run identity — both are now
+authoritative for both finalists; W&B remains a convenience view over evidence
+whose authority is the checkpoint payload.
 
 ---
 
 ## 13. Deviations and limitations
 
-1. **Finalist B's checkpoint SHA256 is unbound.** §6.1. The freeze is
-   consequently **incomplete**, and this is enforced mechanically, not merely
-   noted.
-2. **The torch half of the verifier is not executed locally.** §10. It HAS now
-   been executed on the authoritative Colab host (§10.1): 127 passed, 2 failed,
-   both failures stale regexes since repaired. It has **not** been re-run there
-   since the repair, so the repaired expectations are verified only by the
-   torch-free reproduction of the same contract messages in this environment.
-3. **Authoritative A/B checkpoint verification has still not been performed.**
-   §10.1. The Colab gate stopped at the test failures before reaching it, so no
-   real checkpoint has been verified against its frozen identity.
-4. **Full executable / runtime equivalence between the two HEADs is not
-   established.** §7.6. Training-core source equivalence is established and citable; three executable
-   files differ on argued-irrelevant grounds, and the `execution` fingerprints in
-   the two checkpoints have not been compared.
-5. **Finalist A's checkpoint was not verified here either.** Its digest is
-   recorded from prior evidence; no local file was hashed to confirm it, because
-   no UNMARK checkpoint exists on this machine.
+1. **[RESOLVED]** Finalist B's checkpoint SHA256 was unbound; it is now bound
+   from the authoritative verification (§10.2) and the freeze is complete.
+2. **The torch half of the verifier is not executed locally.** §10. It has been
+   executed on the authoritative Colab host twice: the first run (§10.1, under
+   `a1bd857`) reported 127 passed / 2 failed, both failures stale regexes since
+   repaired; the **repaired gate was then re-run under
+   `054c6d8fa4c912f10a2bb4c21e272e5064e8f355` and PASSED**, which is what allowed
+   the A/B verification of §10.2 to proceed. No exact pass count for that second
+   run is present in the retained evidence, so none is stated here. The remaining
+   limitation is only that this repository's own environment cannot execute it.
+3. **[RESOLVED]** Authoritative A/B checkpoint verification has been performed:
+   both PASS (§10.2).
+4. **Full executable equivalence between the two HEADs is not established.**
+   §7.6. Training-core source equivalence is established and citable, and the
+   runtime-environment comparison is now **closed**: the two checkpoints'
+   embedded execution fingerprints were compared on the authoritative host and
+   are **exactly equal** (§10.2). What remains unestablished is narrower — three
+   executable files still differ, and their irrelevance to numerics is an argument
+   from reading the code and its guards rather than a byte-identity proof or a
+   measured numerical comparison.
+5. **[RESOLVED]** Finalist A's checkpoint has now been verified on the
+   authoritative host (§10.2). It still cannot be verified locally, because no
+   UNMARK checkpoint exists on this machine.
 6. **One of three final-main seeds ran.** §3. Seed 7309 produced no checkpoint and
    seed 5993 never started; the finalist set therefore draws on a single
    final-main run plus a historical LR-pilot run.
@@ -816,40 +936,21 @@ convenience view over evidence whose authority is the checkpoint payload.
 
 ---
 
-## 14. Final repository state
+## 14. Repository state
 
-```
-git status --short
- M docs/spec/decisions.md
-?? docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md
-?? docs/spec/stage1-adapter-finalists.json
-?? scripts/stage1_verify_finalist_checkpoint.py
-?? tests/test_stage1_finalist_checkpoint_torch.py
-?? tests/test_stage1_finalist_freeze.py
-?? unmark/stage1/finalists.py
-```
+This audit spans three change sets. **Only §14.4 is the current working-tree
+state**; §14.1-§14.3 are history and their `git status` output is quoted as it
+stood at the time, not now.
 
-Seven entries: **one modified file and six new**. Six of them are the change-set
-proper — one modified (`docs/spec/decisions.md`) plus five new implementation and
-test files — and the seventh is this audit document itself.
+### 14.1 Change set 1 — the finalist freeze. COMMITTED.
 
-| | File | State |
-|---|---|---|
-| 1 | `docs/spec/decisions.md` | modified — D-S1B-023 appended |
-| 2 | `unmark/stage1/finalists.py` | new |
-| 3 | `docs/spec/stage1-adapter-finalists.json` | new |
-| 4 | `scripts/stage1_verify_finalist_checkpoint.py` | new |
-| 5 | `tests/test_stage1_finalist_freeze.py` | new |
-| 6 | `tests/test_stage1_finalist_checkpoint_torch.py` | new |
-| — | `docs/audits/048-…md` | new — this audit |
-
-There were **no pre-existing modifications**: the tree was clean at the start, so
-every entry above was created by this audit. `docs/spec/decisions.md` is the only
-modified file and its diff is `79 insertions(+), 0 deletions(-)` — append-only.
-
-### 14.1 First change set — COMMITTED AND PUSHED
-
-The reviewed change set above is on `main` and on the remote as:
+Seven files: `docs/spec/decisions.md` modified (D-S1B-023 appended, 79
+insertions, 0 deletions) plus six new — `unmark/stage1/finalists.py`,
+`docs/spec/stage1-adapter-finalists.json`,
+`scripts/stage1_verify_finalist_checkpoint.py`,
+`tests/test_stage1_finalist_freeze.py`,
+`tests/test_stage1_finalist_checkpoint_torch.py`, and this audit. The tree was
+clean beforehand, so there were no pre-existing modifications.
 
 ```
 a1bd8573bbb6734348943c9dd713495c041d019a
@@ -858,60 +959,95 @@ parent 7773c77b1df92a6e685dac13c49765ce974f84d8
 7 files changed, 3216 insertions(+)
 ```
 
-`origin/main` is at this commit, so it is fetchable by Colab; this is the
-revision the real-torch run in §10.1 validated.
-
 An earlier commit object `8acb2ed5d2957cbfabdb5e9b423f331d9fc4af78` was created
 for the same change set and then reset away by the author, who re-committed it as
 `a1bd857` under their own authorship. `git diff 8acb2ed a1bd857` is empty — the
 two commits have **identical trees**; only the commit object and message differ.
 `8acb2ed` is not an ancestor of `HEAD` and should not be cited anywhere.
 
-### 14.2 Second change set — real-torch repair, UNCOMMITTED
-
-The authoritative Colab run (§10.1) then reported two stale test expectations.
-The repair touches **test files and this audit only** — no production code, no
-scientific behaviour, no change to the finalist set:
+### 14.2 Change set 2 — the real-torch test repair. COMMITTED.
 
 ```
-git status --short
+054c6d8fa4c912f10a2bb4c21e272e5064e8f355
+fix finalist freeze
+3 files changed, 228 insertions(+), 22 deletions(-)
+```
+
+This is also the implementation commit under which the repaired gate was re-run
+and the authoritative checkpoint verification of §10.2 was performed.
+
+### 14.3 Change set 3 — finalist B binding. UNCOMMITTED.
+
+The authoritative verification supplied B's digest. The four-field binding of
+`BINDING_FIELDS` was applied together, the tests that encoded B's former pending
+state were rewritten, and D-S1B-024 was appended.
+
+`unmark/stage1/finalists.py` changes only `FINALIST_B.checkpoint_sha256` and its
+docstring — 8 insertions, 5 deletions. No verification logic, no adapter
+contract, no finalist identity field and no scientific constant was altered. The
+`SHA256_PENDING` sentinel and every guard around it are preserved as the generic
+contract for any future unbound digest; only assertions about **B's** state were
+updated, and the six affected tests were rewritten to exercise the same guards
+against a synthetic unbound identity rather than deleted.
+
+### 14.4 Current state — UNCOMMITTED, awaiting author review
+
+```
+$ git rev-parse HEAD
+054c6d8fa4c912f10a2bb4c21e272e5064e8f355
+
+$ git rev-parse origin/main
+054c6d8fa4c912f10a2bb4c21e272e5064e8f355
+
+$ git status --short
  M docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md
- M tests/test_stage1_finalist_checkpoint_torch.py
+ M docs/spec/decisions.md
+ M docs/spec/stage1-adapter-finalists.json
  M tests/test_stage1_finalist_freeze.py
+ M unmark/stage1/finalists.py
 ```
 
 ```
- ...-finalist-freeze-pre-downstream-adjudication.md | 101 ++++++++++++++++++---
- tests/test_stage1_finalist_checkpoint_torch.py     |  38 +++++++-
- tests/test_stage1_finalist_freeze.py               |  63 +++++++++++++
- 3 files changed, 183 insertions(+), 19 deletions(-)
+$ git diff --stat
+ ...-finalist-freeze-pre-downstream-adjudication.md | 310 +++++++++++++++------
+ docs/spec/decisions.md                             |  63 +++++
+ docs/spec/stage1-adapter-finalists.json            |  22 +-
+ tests/test_stage1_finalist_freeze.py               | 121 +++++---
+ unmark/stage1/finalists.py                         |  13 +-
+ 5 files changed, 398 insertions(+), 131 deletions(-)
 ```
 
-**Nothing from this second change set was committed or pushed**, and nothing was
-staged. No destructive git command was used, and no prior scientific artifact was
-deleted or rewritten. Finalist B's digest is untouched at
-`PENDING_AUTHORITATIVE_EVIDENCE`, `evidence.freeze_complete` remains `false`, and
-the finalist universe remains exactly {A, B}.
+`HEAD` and `origin/main` are both at `054c6d8`, confirmed against the live remote
+with `git ls-remote`, so the two committed change sets are pushed and fetchable;
+this working tree is one uncommitted change set ahead of both.
+
+**Nothing in this change set was committed or pushed**, and nothing is staged. No
+destructive git command was used, no git history was mutated, no prior scientific
+artifact was deleted or rewritten, no checkpoint was modified, and the finalist
+universe remains exactly {A, B}.
 
 ## 15. Exact next allowed step
 
-**Not** "run Stage 2." In order:
+**Not** "run Stage 2." Steps 1-3 of the previous revision are complete: the audit
+was reviewed, the real-torch suite was repaired and passed, and the finalist-B
+blocker is cleared with both checkpoints verified and the execution-fingerprint
+gap closed (§10.2).
 
-1. **Independently review this audit** and the six files it adds or modifies
-   (one modified, five new — enumerated in §14).
-2. **Re-run the real-torch suite on the authoritative host** to confirm the two
-   repaired expectations pass there (§10.1). The previous run stopped at those
-   failures before reaching any real checkpoint.
-3. **Clear the finalist-B evidence blocker** by running the verifier against the
-   real seed-21230 update-14500 checkpoint (§6.1), reviewing the emitted binding
-   record, and updating the freeze artifact so `freeze_complete` becomes `true`.
-   While comparing, also compare the two checkpoints' `execution` fingerprints to
-   close the §7.6 gap.
-4. **Design and freeze the downstream DEV-only adjudication / Stage-2 protocol**
-   — dataset, head, seeds, pooling, DEV metric, winner criterion, tie-breaks —
-   and have it reviewed **before any downstream result is produced**.
+What remains, in order:
 
-Only after all four may a downstream experiment be run.
+1. **Independently review this revision** — the four-field binding, the rewritten
+   tests, §10.2, and the appended **D-S1B-024** — and commit it. The author
+   performs all commits and pushes. Note that `docs/spec/decisions.md` is
+   append-only here: D-S1B-023 is unchanged from `054c6d8` and still records the
+   pending state that was true when it was written.
+2. **Design and freeze the downstream DEV-only adjudication / Stage-2 protocol**
+   — dataset, head architecture, head LR, seeds, pooling, DEV metric, winner
+   criterion, tie-breaks — and have it independently reviewed **before any
+   downstream result is produced**. It is deliberately **not** defined here.
+3. Only then may a downstream DEV experiment be run, and only DEV: the official
+   UIT-VSFC TEST stays SEALED and may never adjudicate A vs B.
+
+A complete freeze is **not** a selection. Nothing about A or B has been chosen.
 
 ---
 
@@ -921,12 +1057,23 @@ STAGE1_CANDIDATE_GENERATION=CLOSED
 FINALIST_COUNT=2
 FINALIST_A=36930@3500
 FINALIST_B=21230@14500
+FINALIST_A_VERIFIED=PASS
+FINALIST_B_VERIFIED=PASS
+FINALIST_B_DIGEST_BLOCKER=CLEARED
+FREEZE_COMPLETE=YES
+PENDING_FINALIST_DIGESTS=[]
+EXECUTION_FINGERPRINTS_EQUAL=true
 FINAL_ADAPTER_SELECTED=NO
+ADJUDICATION=OPEN
 DOWNSTREAM_RESULTS_SEEN=NO
 DOWNSTREAM_TEST=SEALED
 STAGE2_STARTED=NO
-READY_FOR_STAGE2_PROTOCOL_REVIEW=NO
+READY_FOR_STAGE2_PROTOCOL_REVIEW=YES
 ```
 
-`READY_FOR_STAGE2_PROTOCOL_REVIEW=NO` because finalist B's exact checkpoint
-SHA256 has not been verified (§6.1) and `evidence.freeze_complete` is `false`.
+`READY_FOR_STAGE2_PROTOCOL_REVIEW=YES`: both finalists are verified against their
+frozen identities, B's digest is bound from authoritative evidence, and
+`evidence.freeze_complete` is `true`. This authorises **designing and reviewing
+the Stage-2 adjudication protocol** — not running it, and not selecting an
+adapter. `FINAL_ADAPTER_SELECTED=NO` and `ADJUDICATION=OPEN` are the operative
+facts for what happens next.

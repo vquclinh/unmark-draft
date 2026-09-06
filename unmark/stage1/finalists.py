@@ -255,14 +255,17 @@ FINALIST_B = FinalistIdentity(
     validation_score=0.09000698585438581,
     robust_score=0.106576028028,
     source_repository_head="bca24ade208265a5a46a54fb2d2d9bd77d8f6703",
-    checkpoint_sha256=SHA256_PENDING,
+    checkpoint_sha256=(
+        "9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2"
+    ),
 )
 """Update 14500 of 20000 in the historical LR pilot.
 
-`checkpoint_sha256` is PENDING: the digest is not present anywhere in this
-repository, and the checkpoint itself is external. Audit 048 records this as an
-evidence blocker rather than expanding the observed prefix, which would be a
-guess wearing the costume of a hash.
+`checkpoint_sha256` was `SHA256_PENDING` until the authoritative Colab
+verification under implementation commit
+`054c6d8fa4c912f10a2bb4c21e272e5064e8f355` hashed the real checkpoint and
+verified its full identity (Audit 048 s10.2). It is bound here from that
+evidence, never from the previously observed 16-character prefix.
 """
 
 FINALISTS: tuple[FinalistIdentity, ...] = (FINALIST_A, FINALIST_B)

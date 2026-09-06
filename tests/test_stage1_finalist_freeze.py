@@ -255,12 +255,28 @@ def test_a_pending_digest_is_refused_where_evidence_is_required():
         require_sha256(SHA256_PENDING, "x", allow_pending=False)
 
 
-def test_finalist_b_is_recorded_as_pending_not_guessed():
-    """The blocker is represented, not papered over."""
-    assert FINALIST_B.checkpoint_sha256 == SHA256_PENDING
-    assert not FINALIST_B.sha256_bound
-    assert pending_finalists() == ("B",)
-    assert freeze_is_complete() is False
+def test_finalist_b_digest_is_bound_to_authoritative_evidence():
+    """Bound from the real checkpoint, never from the observed 16-char prefix.
+
+    Until the authoritative Colab verification this was `SHA256_PENDING`. The
+    prefix `9405bd76c0493964` had been visible the whole time and was deliberately
+    not expanded; the bound value begins with it, which is a consistency check on
+    the evidence, not the source of it.
+    """
+    assert FINALIST_B.sha256_bound
+    assert FINALIST_B.checkpoint_sha256 == (
+        "9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2"
+    )
+    assert len(FINALIST_B.checkpoint_sha256) == 64
+    assert FINALIST_B.checkpoint_sha256.startswith("9405bd76c0493964")
+
+
+def test_both_finalist_digests_are_bound_and_the_freeze_is_complete():
+    for finalist in FINALISTS:
+        assert finalist.sha256_bound, finalist.key
+        assert len(finalist.checkpoint_sha256) == 64, finalist.key
+    assert pending_finalists() == ()
+    assert freeze_is_complete() is True
 
 
 def test_finalist_a_digest_is_bound():
@@ -274,10 +290,22 @@ def test_the_artifact_and_the_code_agree_about_what_is_pending():
     assert payload["evidence"]["freeze_complete"]["value"] is freeze_is_complete()
 
 
-def test_declaring_the_freeze_complete_while_a_digest_is_pending_is_refused():
-    payload = freeze()
-    payload["evidence"]["freeze_complete"]["value"] = True
+def test_declaring_the_freeze_complete_while_a_digest_is_pending_is_refused(monkeypatch):
+    """The generic guard, exercised by UN-binding B rather than by B's real state."""
+    set_b_digest_in_code(monkeypatch, SHA256_PENDING)
+    # The pending list is declared CORRECTLY, so the freeze_complete guard is the
+    # one that must speak; declaring it wrongly would trip the earlier check.
+    payload = set_b_digest_in_artifact(
+        freeze(), SHA256_PENDING, complete=True, pending=["B"]
+    )
     with pytest.raises(FinalistFreezeViolation, match="disagrees with the pending digests"):
+        validate_freeze_payload(payload)
+
+
+def test_a_pending_digest_must_be_declared_pending(monkeypatch):
+    set_b_digest_in_code(monkeypatch, SHA256_PENDING)
+    payload = set_b_digest_in_artifact(freeze(), SHA256_PENDING, complete=False, pending=[])
+    with pytest.raises(FinalistFreezeViolation, match="pending digests"):
         validate_freeze_payload(payload)
 
 
@@ -488,16 +516,23 @@ def test_a_sha_mismatch_is_refused_before_torch_is_needed(tmp_path):
 
 
 def test_a_pending_finalist_cannot_be_verified_without_its_digest(tmp_path):
+    """The generic rule survives B's binding: an unbound finalist has nothing to
+    verify against. Exercised on a synthetic unbound identity, because both real
+    finalists are now bound."""
+    unbound = FinalistIdentity(
+        **{**FINALIST_B.__dict__, "checkpoint_sha256": SHA256_PENDING}
+    )
     path = tmp_path / "b.pt"
     path.write_bytes(b"anything")
     with pytest.raises(FinalistFreezeViolation, match="no bound sha256"):
-        verify_finalist_checkpoint(path, FINALIST_B)
+        verify_finalist_checkpoint(path, unbound)
 
 
-def test_verifying_finalist_b_is_blocked_today():
-    """Documents the live evidence blocker as an executable fact."""
-    assert not FINALIST_B.sha256_bound
-    assert "B" in pending_finalists()
+def test_finalist_b_is_no_longer_blocked():
+    """Replaces the former `blocked today` fact after authoritative verification."""
+    assert FINALIST_B.sha256_bound
+    assert pending_finalists() == ()
+    load_freeze()          # the committed freeze validates in its bound state
 
 
 # ==========================================================================================
@@ -622,19 +657,19 @@ def test_the_artifact_may_not_advertise_a_different_verified_field_set():
 # Binding finalist B is a FOUR-field edit; partial binding is refused
 # ==========================================================================================
 
-REAL_B_DIGEST = "b" * 64   # stands in for the authoritative digest, which is not known here
+OTHER_DIGEST = "b" * 64   # a well-formed digest that is not either finalist's
 
 
-def bind_code(monkeypatch, digest=REAL_B_DIGEST):
-    """Bind the digest in the code constant only."""
+def set_b_digest_in_code(monkeypatch, digest):
+    """Point the code constant for B at `digest` (bound or the pending sentinel)."""
     import unmark.stage1.finalists as module
 
-    bound = FinalistIdentity(**{**FINALIST_B.__dict__, "checkpoint_sha256": digest})
-    monkeypatch.setattr(module, "FINALIST_B", bound)
-    return bound
+    replaced = FinalistIdentity(**{**FINALIST_B.__dict__, "checkpoint_sha256": digest})
+    monkeypatch.setattr(module, "FINALIST_B", replaced)
+    return replaced
 
 
-def bind_artifact(payload, *, digest=REAL_B_DIGEST, pending=None, complete=None):
+def set_b_digest_in_artifact(payload, digest, *, pending=None, complete=None):
     for entry in finalists_from(payload):
         if entry["key"] == "B":
             entry["checkpoint_sha256"] = digest
@@ -645,10 +680,9 @@ def bind_artifact(payload, *, digest=REAL_B_DIGEST, pending=None, complete=None)
     return payload
 
 
-def test_binding_all_four_fields_together_validates(monkeypatch):
-    bind_code(monkeypatch)
-    payload = bind_artifact(freeze(), pending=[], complete=True)
-    validate_freeze_payload(payload)          # must not raise
+def test_the_fully_bound_freeze_validates():
+    """The committed artifact is now bound in all four places."""
+    validate_freeze_payload(freeze())         # must not raise
 
 
 def test_the_binding_workflow_is_enumerated_in_code_and_artifact():
@@ -656,41 +690,44 @@ def test_the_binding_workflow_is_enumerated_in_code_and_artifact():
     assert freeze()["evidence"]["binding_workflow"]["value"] == list(BINDING_FIELDS)
 
 
-def test_binding_the_artifact_but_not_the_code_is_refused():
-    payload = bind_artifact(freeze(), pending=[], complete=True)
+def test_a_digest_present_in_the_artifact_but_not_the_code_is_refused():
+    payload = set_b_digest_in_artifact(freeze(), OTHER_DIGEST)
     with pytest.raises(FinalistFreezeViolation, match="field edit"):
         validate_freeze_payload(payload)
 
 
-def test_binding_the_code_but_not_the_artifact_is_refused(monkeypatch):
-    bind_code(monkeypatch)
+def test_a_digest_present_in_the_code_but_not_the_artifact_is_refused(monkeypatch):
+    set_b_digest_in_code(monkeypatch, OTHER_DIGEST)
     with pytest.raises(FinalistFreezeViolation, match="field edit"):
         validate_freeze_payload(freeze())
 
 
-def test_binding_without_clearing_the_pending_list_is_refused(monkeypatch):
-    bind_code(monkeypatch)
-    payload = bind_artifact(freeze(), complete=True)   # pending still ["B"]
+def test_a_stale_pending_entry_beside_a_bound_digest_is_refused():
+    """Every digest is bound, but the artifact still declares B pending."""
+    payload = freeze()
+    payload["evidence"]["pending_finalist_digests"]["value"] = ["B"]
     with pytest.raises(FinalistFreezeViolation, match="pending digests"):
         validate_freeze_payload(payload)
 
 
-def test_binding_without_setting_freeze_complete_is_refused(monkeypatch):
-    bind_code(monkeypatch)
-    payload = bind_artifact(freeze(), pending=[])      # freeze_complete still False
+def test_a_bound_freeze_that_denies_being_complete_is_refused():
+    payload = freeze()
+    payload["evidence"]["freeze_complete"]["value"] = False
     with pytest.raises(FinalistFreezeViolation, match="disagrees with the pending digests"):
         validate_freeze_payload(payload)
 
 
-def test_a_bound_freeze_reports_itself_complete(monkeypatch):
-    bound = bind_code(monkeypatch)
-    assert freeze_is_complete([FINALIST_A, bound]) is True
-    assert pending_finalists([FINALIST_A, bound]) == ()
+def test_a_bound_freeze_reports_itself_complete():
+    assert freeze_is_complete(list(FINALISTS)) is True
+    assert pending_finalists(list(FINALISTS)) == ()
 
 
-def test_binding_a_truncated_digest_is_refused(monkeypatch):
-    bind_code(monkeypatch, digest="9405bd76c0493964")
-    payload = bind_artifact(freeze(), digest="9405bd76c0493964", pending=[], complete=True)
+def test_a_truncated_digest_is_refused_even_when_consistent(monkeypatch):
+    """The exact prefix that was visible before the authoritative digest existed."""
+    set_b_digest_in_code(monkeypatch, "9405bd76c0493964")
+    payload = set_b_digest_in_artifact(
+        freeze(), "9405bd76c0493964", pending=[], complete=True
+    )
     with pytest.raises(FinalistFreezeViolation, match="64 lowercase hex"):
         validate_freeze_payload(payload)
 

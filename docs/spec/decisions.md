@@ -5119,3 +5119,66 @@ or runtime equivalence.
 | **Audit** | [`docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md`](../audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md) |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
 | **Proposal updated** | **NO** — recorded as an explicit post-hoc amendment made before any downstream result existed, not folded back into the original v1.5 plan. PDF stale: **YES** |
+
+### D-S1B-024 — Stage-1 finalist binding completed from authoritative checkpoint evidence
+
+| | |
+|---|---|
+| **Status** | **CLOSED / FINALIST FREEZE COMPLETE** |
+| **Owner** | Stage-1B |
+| **Date** | 2026-09-06 |
+| **Artifact** | `docs/spec/stage1-adapter-finalists.json` |
+| **Supersedes** | the pending-digest state recorded by [D-S1B-023](#d-s1b-023--exactly-two-stage-1-finalist-adapters-final-adjudication-deferred), which stands unaltered as history |
+
+**What changed.** D-S1B-023 froze exactly two finalists and carried finalist B's
+checkpoint sha256 as the explicit sentinel `PENDING_AUTHORITATIVE_EVIDENCE`,
+because the digest was absent from this repository and the checkpoint is
+external. That blocker is now **cleared**. Both finalists were verified
+read-only on the authoritative environment under implementation commit
+`054c6d8fa4c912f10a2bb4c21e272e5064e8f355`, and B's digest is bound from that
+evidence — never from the 16-character prefix that had been visible throughout.
+
+| | FINALIST A | FINALIST B |
+|---|---|---|
+| **Identity** | `final_main` / seed 36930 / update 3500 | `lr_pilot` / seed 21230 / update 14500 |
+| **checkpoint sha256** | `6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91` | `9405bd76c04939641170cb71507ce8eb669eb2987016b86b495a403ceafcb9d2` |
+| **Verification** | **PASS** | **PASS** |
+| **Adapter tensors** | 8 | 8 |
+| **Adapter parameters** | 3 551 232 | 3 551 232 |
+| **dtype / finite** | fp32 / true | fp32 / true |
+
+**Binding.** The four-field edit enumerated in `finalists.BINDING_FIELDS` was
+applied together, so no partial binding exists: `evidence.freeze_complete` is
+`true` and `evidence.pending_finalist_digests` is `[]`. The `SHA256_PENDING`
+sentinel and every guard around it remain in force as the generic contract for
+any future unbound digest.
+
+**Execution fingerprints.** The two checkpoints' embedded execution fingerprints
+are **exactly equal** across all fourteen recorded fields (`backend`, `device`,
+`gpu_name`, `compute_capability`, `torch_version`, `cuda_version`,
+`cudnn_version`, `deterministic_algorithms`, `cudnn_deterministic`,
+`cudnn_benchmark`, `cublas_workspace_config`, `float32_matmul_precision`,
+`cuda_matmul_allow_tf32`, `cudnn_allow_tf32`).
+
+**Scope of that equality.** It closes the runtime-environment comparison gap
+Audit 048 §7.6 identified, **and nothing more**. A and B remain **distinct runs**
+with different source stages, run seeds, init seeds and source repository HEADs;
+they are still not asserted to share one campaign identity, and **full executable
+equivalence is not established**.
+
+**What this does NOT decide.** A complete freeze is not a selection.
+
+| | |
+|---|---|
+| **Freeze complete** | **YES** |
+| **Pending finalist digests** | none |
+| **Finalist count** | 2, unchanged |
+| **Final adapter selected** | **NO** — still UNSELECTED |
+| **Adjudication** | **OPEN** — downstream DEV only, under a protocol frozen separately **before** it is run |
+| **Downstream results seen** | **NO** |
+| **Stage 2 started** | **NO** |
+| **Affected code** | `unmark/stage1/finalists.py` (`FINALIST_B.checkpoint_sha256` only) |
+| **Affected tests** | `tests/test_stage1_finalist_freeze.py` |
+| **Audit** | [`docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md`](../audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md) §10.2 |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Proposal updated** | **NO** — the amendment chain of D-S1B-020 / D-S1B-022 / D-S1B-023 is recorded as deviations, not folded back. PDF stale: **YES** |
