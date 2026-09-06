@@ -693,3 +693,66 @@ def test_binding_a_truncated_digest_is_refused(monkeypatch):
     payload = bind_artifact(freeze(), digest="9405bd76c0493964", pending=[], complete=True)
     with pytest.raises(FinalistFreezeViolation, match="64 lowercase hex"):
         validate_freeze_payload(payload)
+
+
+# ==========================================================================================
+# Torch-free guard on the AUTHORITATIVE failure messages
+#
+# The real-torch Colab run of Audit 048 failed two tests whose regexes still
+# named the pre-delegation wording ("no provenance" / "no adapter_state"). The
+# verifier was correct; the expectations were stale. `verify_checkpoint` and
+# `require_match` need no torch, so that drift was locally detectable and simply
+# was not checked. These tests close that gap: if the contract's message shape
+# changes, it fails here rather than on the authoritative host.
+# ==========================================================================================
+
+def test_a_missing_required_key_is_reported_by_the_authoritative_contract():
+    from unmark.stage1.trainer import (
+        CHECKPOINT_SCHEMA_VERSION,
+        REQUIRED_CHECKPOINT_KEYS,
+        TrainerContractViolation,
+        verify_checkpoint,
+    )
+
+    expected = expected_run_provenance(FINALIST_A, inventory=resolve_inventory())
+
+    def payload():
+        return {
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "provenance": expected.to_dict(),
+            "adapter_state": {"tone_embedding.weight": 1},
+            "optimizer_state": {}, "global_update": FINALIST_A.update,
+            "sampler_state": {}, "cap": 20000, "points": [], "execution": {},
+        }
+
+    for key in REQUIRED_CHECKPOINT_KEYS:
+        broken = payload()
+        del broken[key]
+        with pytest.raises(TrainerContractViolation) as excinfo:
+            verify_checkpoint(broken, expected)
+        message = str(excinfo.value)
+        assert "checkpoint is missing" in message, (key, message)
+        assert key in message, (key, message)
+
+
+def test_the_torch_tests_assert_the_contract_wording_not_the_old_local_wording():
+    """Guards against reintroducing the exact regexes the Colab run rejected."""
+    import ast
+
+    path = pathlib.Path(__file__).resolve().parents[1] / (
+        "tests/test_stage1_finalist_checkpoint_torch.py"
+    )
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    patterns = {
+        kw.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "match" and isinstance(kw.value, ast.Constant)
+        and isinstance(kw.value.value, str)
+    }
+    for retired in ("no provenance", "no adapter_state"):
+        assert retired not in patterns, (
+            f"{retired!r} is the pre-delegation wording; the authoritative gate now "
+            "reports 'checkpoint is missing [...]'"
+        )

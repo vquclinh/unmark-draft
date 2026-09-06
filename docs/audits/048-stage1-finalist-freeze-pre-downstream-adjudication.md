@@ -26,7 +26,9 @@ than filled in:
 | Stage-1 training / LR / `r` / candidate generation recorded CLOSED | **PASS** |
 | Adjudication recorded OPEN, final adapter UNSELECTED | **PASS** |
 | Official UIT-VSFC TEST sealed; TEST-based selection refused | **PASS** |
-| Read-only checkpoint verifier | **PASS** (tensor half unexecuted locally, §10) |
+| Read-only checkpoint verifier | **PASS** — real-torch run on Colab refused every malformed payload, §10.1 |
+| Real-torch test expectations | **REPAIRED** — 2 stale regexes, §10.1 |
+| Authoritative A/B checkpoint verification | **NOT PERFORMED** — §10.1 |
 | Structural prevention of finalist-set drift | **PASS** |
 | Training-core source equivalence of the two HEADs | **PASS** — established, §7.6 |
 | Checkpoint provenance verification vs the Stage-1 contract | **PASS** — delegates to `verify_checkpoint`, §9.1 |
@@ -641,6 +643,72 @@ The binding-consistency guard was additionally mutation-checked: with the guard
 in place, artifact-bound-only, un-cleared pending list, unset `freeze_complete`
 and a truncated digest are each refused, while all four bound together validates.
 
+### 10.1 Authoritative real-torch validation on Colab
+
+The torch half was subsequently executed on the authoritative environment, against
+commit `a1bd8573bbb6734348943c9dd713495c041d019a`.
+
+| | |
+|---|---|
+| Python | 3.13.15 |
+| torch | 2.11.0+cu128 |
+| CUDA | 12.8 |
+| GPU | NVIDIA RTX PRO 6000 Blackwell Server Edition |
+
+```
+129 collected
+127 passed, 2 failed
+```
+
+**Both failures were stale test expectations, not verifier defects.** The
+verifier behaved correctly and failed closed in both cases:
+
+| Test | Expected regex | Actual `FinalistFreezeViolation` |
+|---|---|---|
+| `test_a_missing_provenance_block_is_refused` | `no provenance` | `checkpoint is missing ['provenance']; cannot resume exactly` |
+| `test_a_missing_adapter_state_is_refused` | `no adapter_state` | `checkpoint is missing ['adapter_state']; cannot resume exactly` |
+
+`no provenance` and `no adapter_state` were the wording of the **local guards
+this verifier used before verification was delegated** to
+`trainer.verify_checkpoint` (§9.1). The authoritative gate checks
+`REQUIRED_CHECKPOINT_KEYS` **first**, so for an absent key those local guards are
+now unreachable and the message comes from the contract. The two regexes were
+left behind by the delegation change; the production code is right and was **not**
+altered to satisfy them.
+
+**Repair — test expectations only.** Both tests now assert the contract's two
+invariants through a shared `_assert_missing_required_key` helper: the exception
+is a `FinalistFreezeViolation`, its message says `checkpoint is missing`, and it
+names the absent key. They no longer pin an exact sentence, and they do not match
+the temporary path that also appears in the message.
+
+Three further items were addressed while inspecting adjacent tests:
+
+* `execution` was missing from the parametrized `REQUIRED_CHECKPOINT_KEYS` sweep
+  — a real gap in the same contract. Added, and that test now uses the same
+  helper. The torch file goes from 39 to **40 cases**.
+* `test_a_wrong_inventory_pin_in_the_checkpoint_is_refused` carried a docstring
+  claiming the operator is told *which* inventory field is wrong. That is not
+  true after delegation: `require_match` compares `inventory` as a whole block
+  and fires first, naming `inventory`. The test already asserted only the
+  exception type, so no assertion changed; the docstring was corrected.
+* **Two torch-free regression guards were added**, because this drift was
+  locally detectable and simply was not checked — `verify_checkpoint` and
+  `require_match` need no torch. One walks every `REQUIRED_CHECKPOINT_KEYS` entry
+  and asserts the `checkpoint is missing <key>` shape; the other parses the torch
+  file with the AST and fails if either retired regex is reintroduced. The second
+  was verified to bite: restoring `match="no provenance"` fails it, and the probe
+  was reverted byte-exactly.
+
+**What this run did NOT establish.** The gate stopped at the test failures, so
+**authoritative verification of the real A and B checkpoints was not performed**.
+No downstream data was read and no checkpoint was modified. Finalist B's digest
+remains `PENDING_AUTHORITATIVE_EVIDENCE`, `evidence.freeze_complete` remains
+`false`, and `READY_FOR_STAGE2_PROTOCOL_REVIEW` remains `NO`.
+
+Local suite after the repair: **92 passed, 1 skipped** (the two new torch-free
+guards; the skip is still the whole torch module).
+
 Related existing suites, unaffected:
 
 ```
@@ -721,25 +789,28 @@ convenience view over evidence whose authority is the checkpoint payload.
 1. **Finalist B's checkpoint SHA256 is unbound.** §6.1. The freeze is
    consequently **incomplete**, and this is enforced mechanically, not merely
    noted.
-2. **The torch half of the verifier was not executed.** §10. Real-tensor refusal
-   behaviour is untested on this machine. Mitigated but not removed: all sixteen
-   `require_match` refusal messages that those tests assert on were verified
-   directly against the real contract in this environment (`require_match` is
-   torch-free), and the adapter fixture's shapes were checked arithmetically.
-3. **Full executable / runtime equivalence between the two HEADs is not
+2. **The torch half of the verifier is not executed locally.** §10. It HAS now
+   been executed on the authoritative Colab host (§10.1): 127 passed, 2 failed,
+   both failures stale regexes since repaired. It has **not** been re-run there
+   since the repair, so the repaired expectations are verified only by the
+   torch-free reproduction of the same contract messages in this environment.
+3. **Authoritative A/B checkpoint verification has still not been performed.**
+   §10.1. The Colab gate stopped at the test failures before reaching it, so no
+   real checkpoint has been verified against its frozen identity.
+4. **Full executable / runtime equivalence between the two HEADs is not
    established.** §7.6. Training-core source equivalence is established and citable; three executable
    files differ on argued-irrelevant grounds, and the `execution` fingerprints in
    the two checkpoints have not been compared.
-4. **Finalist A's checkpoint was not verified here either.** Its digest is
+5. **Finalist A's checkpoint was not verified here either.** Its digest is
    recorded from prior evidence; no local file was hashed to confirm it, because
    no UNMARK checkpoint exists on this machine.
-5. **One of three final-main seeds ran.** §3. Seed 7309 produced no checkpoint and
+6. **One of three final-main seeds ran.** §3. Seed 7309 produced no checkpoint and
    seed 5993 never started; the finalist set therefore draws on a single
    final-main run plus a historical LR-pilot run.
-6. **The stability rule and the whole-run statistics disagree** about which
+7. **The stability rule and the whole-run statistics disagree** about which
    finalist is preferable. §4. That is why both are frozen and neither is
    selected.
-7. **`unmark-proposal.md` is not updated** and the PDF is stale, consistent with
+8. **`unmark-proposal.md` is not updated** and the PDF is stale, consistent with
    how D-S1B-020 and D-S1B-022 were handled: this is recorded as an explicit
    amendment, not folded back into the original plan.
 
@@ -776,10 +847,51 @@ There were **no pre-existing modifications**: the tree was clean at the start, s
 every entry above was created by this audit. `docs/spec/decisions.md` is the only
 modified file and its diff is `79 insertions(+), 0 deletions(-)` — append-only.
 
-**Nothing was committed. Nothing was pushed. Nothing was staged. No destructive
-git command was used, and no prior scientific artifact was deleted or rewritten.**
+### 14.1 First change set — COMMITTED AND PUSHED
 
----
+The reviewed change set above is on `main` and on the remote as:
+
+```
+a1bd8573bbb6734348943c9dd713495c041d019a
+Freeze Stage-1 adapter finalists for downstream adjudication
+parent 7773c77b1df92a6e685dac13c49765ce974f84d8
+7 files changed, 3216 insertions(+)
+```
+
+`origin/main` is at this commit, so it is fetchable by Colab; this is the
+revision the real-torch run in §10.1 validated.
+
+An earlier commit object `8acb2ed5d2957cbfabdb5e9b423f331d9fc4af78` was created
+for the same change set and then reset away by the author, who re-committed it as
+`a1bd857` under their own authorship. `git diff 8acb2ed a1bd857` is empty — the
+two commits have **identical trees**; only the commit object and message differ.
+`8acb2ed` is not an ancestor of `HEAD` and should not be cited anywhere.
+
+### 14.2 Second change set — real-torch repair, UNCOMMITTED
+
+The authoritative Colab run (§10.1) then reported two stale test expectations.
+The repair touches **test files and this audit only** — no production code, no
+scientific behaviour, no change to the finalist set:
+
+```
+git status --short
+ M docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md
+ M tests/test_stage1_finalist_checkpoint_torch.py
+ M tests/test_stage1_finalist_freeze.py
+```
+
+```
+ ...-finalist-freeze-pre-downstream-adjudication.md | 101 ++++++++++++++++++---
+ tests/test_stage1_finalist_checkpoint_torch.py     |  38 +++++++-
+ tests/test_stage1_finalist_freeze.py               |  63 +++++++++++++
+ 3 files changed, 183 insertions(+), 19 deletions(-)
+```
+
+**Nothing from this second change set was committed or pushed**, and nothing was
+staged. No destructive git command was used, and no prior scientific artifact was
+deleted or rewritten. Finalist B's digest is untouched at
+`PENDING_AUTHORITATIVE_EVIDENCE`, `evidence.freeze_complete` remains `false`, and
+the finalist universe remains exactly {A, B}.
 
 ## 15. Exact next allowed step
 
@@ -787,16 +899,19 @@ git command was used, and no prior scientific artifact was deleted or rewritten.
 
 1. **Independently review this audit** and the six files it adds or modifies
    (one modified, five new — enumerated in §14).
-2. **Clear the finalist-B evidence blocker** by running the verifier against the
+2. **Re-run the real-torch suite on the authoritative host** to confirm the two
+   repaired expectations pass there (§10.1). The previous run stopped at those
+   failures before reaching any real checkpoint.
+3. **Clear the finalist-B evidence blocker** by running the verifier against the
    real seed-21230 update-14500 checkpoint (§6.1), reviewing the emitted binding
    record, and updating the freeze artifact so `freeze_complete` becomes `true`.
    While comparing, also compare the two checkpoints' `execution` fingerprints to
    close the §7.6 gap.
-3. **Design and freeze the downstream DEV-only adjudication / Stage-2 protocol**
+4. **Design and freeze the downstream DEV-only adjudication / Stage-2 protocol**
    — dataset, head, seeds, pooling, DEV metric, winner criterion, tie-breaks —
    and have it reviewed **before any downstream result is produced**.
 
-Only after all three may a downstream experiment be run.
+Only after all four may a downstream experiment be run.
 
 ---
 

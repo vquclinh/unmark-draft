@@ -192,7 +192,14 @@ def test_a_missing_derived_weight_is_refused(tmp_path, field):
     ],
 )
 def test_a_wrong_inventory_pin_in_the_checkpoint_is_refused(tmp_path, field, value):
-    """Named individually so the operator is told which inventory field is wrong."""
+    """D-S1A-008: a different inventory is a different experiment.
+
+    Deliberately asserts only the exception type. `require_match` compares
+    `inventory` as a whole block and fires first, naming `inventory` rather than
+    the sub-field; the per-field check in `verify_finalist_checkpoint` is the
+    backstop for a payload that somehow passes that comparison. Asserting a
+    sub-field name here would encode which of the two spoke first.
+    """
     finalist = _unbound(FINALIST_A)
     payload = _payload(torch, finalist)
     inventory = dict(payload["provenance"]["inventory"])
@@ -203,15 +210,18 @@ def test_a_wrong_inventory_pin_in_the_checkpoint_is_refused(tmp_path, field, val
         verify_finalist_checkpoint(path, finalist, require_bound_digest=False, inventory=INVENTORY)
 
 
-@pytest.mark.parametrize("missing", ["cap", "sampler_state", "optimizer_state", "points"])
+@pytest.mark.parametrize(
+    "missing", ["cap", "sampler_state", "optimizer_state", "points", "execution"]
+)
 def test_a_checkpoint_missing_a_required_key_is_refused(tmp_path, missing):
     """`verify_checkpoint` enforces the whole REQUIRED_CHECKPOINT_KEYS set."""
     finalist = _unbound(FINALIST_A)
     payload = _payload(torch, finalist)
     del payload[missing]
     path = _write(torch, tmp_path, payload)
-    with pytest.raises(FinalistFreezeViolation, match="missing"):
+    with pytest.raises(FinalistFreezeViolation) as excinfo:
         verify_finalist_checkpoint(path, finalist, require_bound_digest=False, inventory=INVENTORY)
+    _assert_missing_required_key(excinfo, missing)
 
 
 def test_the_evidence_record_carries_the_execution_fingerprint(tmp_path):
@@ -236,13 +246,30 @@ def test_the_evidence_record_carries_the_execution_fingerprint(tmp_path):
     )["execution_fingerprint"]["gpu_name"] == "Tesla T4"
 
 
+def _assert_missing_required_key(excinfo, key):
+    """Assert the AUTHORITATIVE fail-closed shape, not one module's wording.
+
+    Both of these were caught by the local `no provenance` / `no adapter_state`
+    guards before verification was delegated to `trainer.verify_checkpoint`. The
+    authoritative gate checks `REQUIRED_CHECKPOINT_KEYS` first, so those guards
+    are now unreachable for an absent key and the message comes from the contract.
+    Asserting the contract's two invariants -- that it says a key is missing, and
+    which key -- keeps this stable if the sentence is ever reworded, without
+    overfitting to the temporary path that also appears in the message.
+    """
+    message = str(excinfo.value)
+    assert "checkpoint is missing" in message, message
+    assert key in message, message
+
+
 def test_a_missing_provenance_block_is_refused(tmp_path):
     finalist = _unbound(FINALIST_A)
     payload = _payload(torch, finalist)
     del payload["provenance"]
     path = _write(torch, tmp_path, payload)
-    with pytest.raises(FinalistFreezeViolation, match="no provenance"):
+    with pytest.raises(FinalistFreezeViolation) as excinfo:
         verify_finalist_checkpoint(path, finalist, require_bound_digest=False, inventory=INVENTORY)
+    _assert_missing_required_key(excinfo, "provenance")
 
 
 def test_a_missing_adapter_state_is_refused(tmp_path):
@@ -250,8 +277,9 @@ def test_a_missing_adapter_state_is_refused(tmp_path):
     payload = _payload(torch, finalist)
     del payload["adapter_state"]
     path = _write(torch, tmp_path, payload)
-    with pytest.raises(FinalistFreezeViolation, match="no adapter_state"):
+    with pytest.raises(FinalistFreezeViolation) as excinfo:
         verify_finalist_checkpoint(path, finalist, require_bound_digest=False, inventory=INVENTORY)
+    _assert_missing_required_key(excinfo, "adapter_state")
 
 
 def test_a_dropped_adapter_tensor_is_refused(tmp_path):
