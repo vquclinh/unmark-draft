@@ -7,21 +7,34 @@ path.
 **Date:** 2026-09-07
 **Type:** **implementation audit, not a protocol amendment.** No scientific
 decision is appended.
+**Runtime closeout:** 2026-09-08. §14 and §15 were appended after the
+authoritative A100 acceptance (2026-09-07) of the committed implementation at
+`6693e728ccaebc987e4786bd5cd5e0f5c16143f7`. That closeout is documentation-only:
+no implementation file, test, protocol constant or scientific decision was
+changed by it, and the pre-acceptance record in §12 is preserved rather than
+rewritten.
 
 ---
 
 ## 1. Executive verdict
 
-**PASS WITH REAL-TORCH ACCEPTANCE PENDING.**
+**PASS.**
 
 The static implementation is complete and its identity, role and selection-safety
-contracts are fully exercised. **Runtime acceptance of the runner is not claimed
-here**: all 39 torch-level tests were skipped locally, and they carry the
-runtime-critical guarantees — matched A/B initialisation, optimiser isolation,
-30-epoch execution, cache tensor round trip, artifact and run-store lifecycle,
-deterministic rerun, campaign execution, and the Stage-2/pre-G1 anti-drift
-equivalence. Until those run on a machine with torch, the runner has a verified
-*contract* and an unverified *runtime*.
+contracts are fully exercised. **Runtime acceptance is now proved as well.** When
+§12 was written the 39 torch-level tests were collected and skipped, and this
+audit declined to claim their guarantees; they have since been executed on an
+authoritative NVIDIA A100 runtime at the exact tested commit
+`6693e728ccaebc987e4786bd5cd5e0f5c16143f7`, where the four Stage-2 files reported
+`144 passed, 0 failed, 0 errors, 0 skipped` — §15. The runtime-critical
+guarantees are therefore evidenced rather than contracted: matched A/B
+initialisation, optimiser isolation, 30-epoch execution, cache tensor round trip,
+artifact and run-store lifecycle, deterministic rerun, campaign execution, and
+the Stage-2/pre-G1 anti-drift equivalence.
+
+That acceptance was executed against **synthetic fixtures only**. It proves the
+runner runs; it does not begin Stage 2. No UIT-VSFC row was read, no real
+representation was extracted, and no real head was trained — §15.
 
 | | |
 |---|---|
@@ -29,7 +42,7 @@ equivalence. Until those run on a machine with torch, the runner has a verified
 | Audit 050 accepted the frozen UNMARK runtime path | **YES** — reused, never duplicated |
 | Runner code implemented now | **YES** |
 | Static implementation acceptance | **PASS** |
-| **Authoritative runner torch acceptance** | **PENDING** — §12 |
+| **Authoritative runner torch acceptance** | **PASS** — §15, A100, `144 passed, 0 skipped` |
 | Real Stage-2 campaign run | **NO** |
 | Downstream metric observed | **NO** — no UIT-VSFC row was read |
 | Official TEST | **SEALED** — structurally unnameable |
@@ -342,9 +355,9 @@ It requires an author decision before the degraded measurement phase.
 | `unmark/evaluation/stage2_head_campaign.py` | **new** | cache, extraction driver, head runner, selection, artifact, run store, campaign plan, measurement, aggregation |
 | `unmark/evaluation/stage2_campaign.py` | **new** | campaign manifest, registry and entry point (§9a) |
 | `tests/test_stage2_head_campaign.py` | **new** | torch-free contract tests (74) |
-| `tests/test_stage2_head_campaign_torch.py` | **new** | tensor-level tests (29), skipped locally |
+| `tests/test_stage2_head_campaign_torch.py` | **new** | tensor-level tests (29), skipped locally, executed and passed in §15 |
 | `tests/test_stage2_campaign.py` | **new** | torch-free orchestration tests (31) |
-| `tests/test_stage2_campaign_torch.py` | **new** | campaign-execution tests over synthetic caches (10), skipped locally |
+| `tests/test_stage2_campaign_torch.py` | **new** | campaign-execution tests over synthetic caches (10), skipped locally, executed and passed in §15 |
 | `tests/test_preg1_import_contract.py` | modified, 1 line | `stage2_head_campaign` is a protocol importer; the pinned `IMPORTERS` list must name it or the contract silently narrows |
 
 `stage2_campaign.py` deliberately imports its protocol constants **through**
@@ -428,6 +441,10 @@ Whole repository:
 Zero failures and zero errors. The 169 skips are the repository's pre-existing
 torch/CUDA-gated tests plus this audit's 39.
 
+Those 39 were subsequently executed and passed on the authoritative A100 runtime;
+this local section is preserved as the static-acceptance record, and §15 is the
+runtime one.
+
 ```
 git diff --check
 ```
@@ -450,41 +467,223 @@ produced no output.
 
 ---
 
-## 14. Final state
+## 14. Authoritative runtime — preflight prerequisite on the first invocation
+
+Commit tested:
 
 ```
-git status --short
- M tests/test_preg1_import_contract.py
-?? docs/audits/051-stage2-head-campaign-runner-implementation.md
-?? tests/test_stage2_campaign.py
-?? tests/test_stage2_campaign_torch.py
-?? tests/test_stage2_head_campaign.py
-?? tests/test_stage2_head_campaign_torch.py
-?? unmark/evaluation/stage2_campaign.py
-?? unmark/evaluation/stage2_head_campaign.py
+6693e728ccaebc987e4786bd5cd5e0f5c16143f7
 ```
 
-HEAD unchanged at `6ca3d0f90215ca0e49ad14d5f9dc43c2e23418d4`; nothing staged,
-nothing committed, nothing pushed, no git history mutated.
+The **first** invocation of the authoritative runtime cell stopped inside the
+**Stage-1 finalist verifier**, before any Stage-2 module was reached: the fresh
+clone did not carry the pinned Vietnamese syllable inventory.
+
+**This is an environment/preflight prerequisite, not a Stage-2 runner defect.**
+The raw inventory is deliberately not committed. The manifest
+`configs/linguistics/vietnamese_syllables.yaml` records that the upstream gist
+carries no license statement, so redistribution permission is not established,
+and the fetch cache `.resources-cache/` is git-ignored. A fresh clone therefore
+*never* has it. `resolve_inventory()` in `unmark/stage1/finalists.py` fails
+closed on exactly this condition and names the remedy itself:
+
+> the pinned Vietnamese syllable inventory is not available, so a finalist's
+> inventory identity cannot be checked. Provision it with
+> `scripts/fetch_vietnamese_syllable_inventory.py` and re-run.
+
+The guard exists because D-S1A-008 makes the `inventory` half of the provenance
+comparison load-bearing; degrading instead of stopping would silently skip that
+half. The stop is the repository's own designed behaviour, in Stage-1 provenance
+code that this audit does not touch.
+
+**Provisioning changed no pin.** The inventory was obtained only through the
+repository's authoritative fetch-and-verify script, at the already-pinned
+identity:
+
+| | |
+|---|---|
+| Provisioned by | `scripts/fetch_vietnamese_syllable_inventory.py` |
+| sha256 | `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2` |
+| size | `116290` bytes |
+| Pin changed | **NO** — byte-identical to `configs/linguistics/vietnamese_syllables.yaml`, to `unmark/stage1/finalists.INVENTORY_SHA256` / `INVENTORY_SIZE_BYTES`, and to the Audit-048 freeze |
+
+The script never advances the pin: a changed upstream fails its checksum and it
+refuses, because changing the inventory revision would change which spans are
+eligible and therefore every corruption denominator. The complete runtime
+acceptance cell was then **rerun unchanged** and passed — §15.
 
 ---
 
-## 15. Limitations
+## 15. Authoritative runner runtime acceptance — PASS
 
-1. **The torch half was not executed here.** §12. It is collected and skipped;
-   the tensor-level guarantees (pairing, optimiser isolation, 30-epoch schedule,
-   cache round trip) are unverified in this environment and must run where torch
-   exists.
-2. **The measurement corruption seed is unresolved.** §10. Required before
-   measurement; does not block head training.
+Exact tested repository SHA:
+
+```
+6693e728ccaebc987e4786bd5cd5e0f5c16143f7
+```
+
+Authoritative runtime:
+
+| | |
+|---|---|
+| GPU | NVIDIA A100-SXM4-40GB |
+
+### Audit-051 suite
+
+```
+tests/test_stage2_head_campaign.py  tests/test_stage2_head_campaign_torch.py
+tests/test_stage2_campaign.py       tests/test_stage2_campaign_torch.py
+
+144 passed, 0 failed, 0 errors, 0 skipped
+```
+
+`144 = 105 + 39`: the tests that passed locally plus **every one of the 39 that
+§12 could only collect and skip**. Zero skips is the load-bearing figure — it is
+what distinguishes "the torch tests ran" from "the torch file was absent". The
+runtime acceptance §1 originally declined to claim is now claimed on evidence.
+
+### Critical regression suites
+
+| Suite | Result | Meaning |
+|---|---|---|
+| `tests/test_stage2_dual_finalist_infra.py` | **37 passed, 0 skipped** | the accepted Audit-050 runtime path is unbroken by this audit's additions — the same 37 Audit 050 recorded |
+| `tests/test_preg1_import_contract.py` | **18 passed, 0 skipped** | the pre-G1 protocol-importer contract holds with `stage2_head_campaign` in the pinned list |
+| `tests/test_stage1_finalist_checkpoint_torch.py` | **40 passed, 0 skipped** | the Stage-1 finalist verifier is unchanged — the same 40 Audit 050 recorded |
+
+The importer contract moved from Audit 050's **16** to **18**. That delta is
+exactly this audit's change and not drift: `IMPORTERS` grew from seven entries to
+eight (§11), and two tests are parametrised over it, so one new importer adds two
+cases.
+
+### Runtime acceptance proved
+
+| Guarantee | Result |
+|---|---|
+| Full synthetic 2-arm × 5-seed = 10-run campaign | **PASS** |
+| Matched A/B same-seed head initialisation | **PASS** |
+| Head-only optimiser isolation | **PASS** |
+| Exact full 30-epoch execution contract | **PASS** |
+| Checkpoint-selection runtime | **PASS** |
+| Representation-cache tensor runtime | **PASS** |
+| Artifact / run-store lifecycle | **PASS** |
+| Deterministic rerun | **PASS** |
+| PREG1 anti-drift equivalence | **PASS** |
+| Audit-050 infrastructure regression | **PASS** |
+| A/B-selection implementation | **NONE** |
+
+The anti-drift equivalence is the one §15 result that Limitation 3 was written
+against: the Stage-2 epoch loop reproduces the closed pre-G1 `train_head` scores
+exactly on identical inputs. That mitigation is now executed rather than assumed.
+
+### Campaign plan observed exactly
+
+```
+UNMARK-A / 53148
+UNMARK-B / 53148
+UNMARK-A / 59945
+UNMARK-B / 59945
+UNMARK-A / 42941
+UNMARK-B / 42941
+UNMARK-A / 720
+UNMARK-B / 720
+UNMARK-A / 9428
+UNMARK-B / 9428
+```
+
+Ten runs: exactly the two frozen arms across exactly the five frozen measurement
+seeds `(53148, 59945, 42941, 720, 9428)`, paired at every seed, in plan order. No
+eleventh run, no unpaired seed, no third arm.
+
+### Durable evidence
+
+```
+/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/stage2-runner-runtime-acceptance/6693e728ccae/20260907T103607Z/051-authoritative-runner-runtime-final.json
+```
+
+### Negative evidence preserved
+
+* UIT-VSFC rows read: **NO**;
+* real `protocol-train` read: **NO**;
+* real `protocol-dev` read: **NO**;
+* `measurement-dev` read: **NO**;
+* official TEST read: **NO**;
+* real representation extraction: **NO**;
+* real Stage-2 head training: **NO**;
+* real Stage-2 campaign run: **NO**;
+* training performed: **synthetic test fixtures only**.
+
+Every campaign, head-training and cache execution above ran on tensors and label
+vectors constructed inside the tests. §15 proves the runner *executes* the frozen
+protocol correctly. It does not start Stage 2, and no downstream number exists.
+
+---
+
+## 16. Final state
+
+Two states, deliberately kept apart: the **committed implementation** that the
+A100 accepted, and the **uncommitted documentation closeout** that records the
+acceptance. Conflating them would let a reader read §15's evidence as covering
+this file's own text.
+
+### A. Committed implementation state — the state tested on A100
+
+```
+6693e728ccaebc987e4786bd5cd5e0f5c16143f7  Implement Stage-2 head campaign runner
+```
+
+The Audit-051 change set of §11 was reviewed and committed by the author as that
+commit, on `main`, whose parent is `6ca3d0f90215ca0e49ad14d5f9dc43c2e23418d4` —
+the HEAD §2 recorded as this audit's starting state. That is the exact
+implementation commit the authoritative runtime tested (§14, §15), and the
+working tree was **clean** when it was tested: the acceptance ran against
+committed code and nothing else.
+
+### B. Current documentation-closeout working state — NOT clean
+
+```
+git status --short
+ M docs/audits/051-stage2-head-campaign-runner-implementation.md
+```
+
+`git diff --check` produced no output. `HEAD` is still
+`6693e728ccaebc987e4786bd5cd5e0f5c16143f7`.
+
+This closeout is **uncommitted and awaiting author review**. It modifies exactly
+one path — this audit file — and nothing else: no implementation file, no test,
+no spec, no protocol constant, no decision record. Nothing has been staged,
+committed, pushed or history-mutated by the closeout.
+
+State B therefore does **not** carry the §15 acceptance: the evidence in §14 and
+§15 is about state A. When the author commits this file, state B becomes a
+documentation commit on top of the tested commit, and the tested implementation
+bytes are unchanged by it.
+
+---
+
+## 17. Limitations
+
+1. **[RESOLVED]** The torch half was unexecuted when §12 was written. It has since
+   been executed on the authoritative A100 runtime — §15, which reported
+   `144 passed, 0 failed, 0 errors, 0 skipped`. The tensor-level guarantees
+   (pairing, optimiser isolation, 30-epoch schedule, cache round trip) are
+   verified.
+2. **The measurement corruption seed is unresolved.** §10.
+   `STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED` remains `False`. It blocks
+   **degraded measurement-dev extraction** only — the
+   `P25, P50, P75, P100, STRIP_ALL` caches, which cannot be keyed without it. It
+   does **not** block clean `protocol-train` extraction, clean `protocol-dev`
+   extraction, head training, or `FULL` measurement extraction. It requires an
+   author decision before the degraded measurement phase, and it was not
+   invented here.
 3. **The epoch loop is written once in this module** rather than shared with
    `preg1_head.train_head`, because the Stage-2 role types are arm-bound and
-   cannot be expressed by the pre-G1 `RepresentationKey`. Mitigated by an
-   anti-drift test asserting identical scores on identical inputs — but that test
-   needs torch, so the mitigation is currently unexecuted here too.
-4. **[RESOLVED]** An orchestrator now exists (§9a): `run_stage2_campaign` walks
-   the pending runs over already-materialised caches and reads no dataset. Its
-   execution path is torch-gated and unexecuted here.
+   cannot be expressed by the pre-G1 `RepresentationKey`. The mitigation — an
+   anti-drift test asserting identical scores on identical inputs — **executed and
+   passed** in §15, so the duplication is now empirically bounded rather than
+   argued.
+4. **[RESOLVED]** An orchestrator exists (§9a): `run_stage2_campaign` walks the
+   pending runs over already-materialised caches and reads no dataset. Its
+   execution path passed in §15.
 5. **[RESOLVED]** `Stage2CampaignRegistry` supplies the cross-run registry: one
    manifest binds the commit, protocol, both arms, the five seeds, the four cache
    identities and the ten expected runs, and re-entry requires a byte-identical
@@ -493,27 +692,64 @@ nothing committed, nothing pushed, no git history mutated.
    keys but does not extract them; extraction remains the separate driver in
    `stage2_head_campaign`. That split is deliberate — the campaign runner should
    not be able to trigger a forward pass — but it means an operator must run
-   extraction first and the two steps are not yet chained by a script.
+   extraction first and the two steps are not yet chained by a script. §18 step 2
+   is that extraction.
 7. **No script under `scripts/` exposes any of this on a CLI.** Everything is
    importable API. Adding a CLI invites running it, so it is left for the task
    that actually authorises the campaign.
+8. **Runtime acceptance is synthetic-only.** §15 proves execution, not science.
+   No UIT-VSFC row has been read, no real representation cache exists, no real
+   head has been trained, and no downstream result has been observed. The frozen
+   UIT-VSFC protocol split has not been materialised yet — that is §18 step 1.
+9. **A fresh clone needs the inventory preflight.** §14. Any future authoritative
+   runtime on a new machine must provision the pinned inventory through
+   `scripts/fetch_vietnamese_syllable_inventory.py` before the Stage-1 finalist
+   verifier will run. This is a documented prerequisite of the environment, not a
+   defect of any runner.
 
 ---
 
-## 16. Exact next allowed step
+## 18. Exact next allowed step
 
-**Not** "run Stage 2." In order:
+**Not** "run Stage 2." In order, after the author commits this closeout:
 
-1. **Independently review this audit** and the seven files, and commit them.
-2. **Execute the torch suite** on a machine with torch and confirm all **39**
-   skipped tests pass — including the anti-drift equivalence test and the ten
-   campaign-execution tests. This is the *authoritative runner acceptance* this
-   audit does not claim, and it is the blocker for Stage-2 training.
-3. **Decide the measurement corruption seed** (§10) and record it — a spec
-   amendment plus a decision record. It blocks **degraded** measurement
-   extraction only, not head training.
-4. Only then may representation extraction run — clean `protocol-train` and
-   `protocol-dev` first, which need no corruption seed at all.
+1. **Materialise and verify the frozen UIT-VSFC protocol split.** The deterministic,
+   label-stratified, group-aware split already pinned by the protocol: seed
+   `17486`, tag `UNMARK-PREG1-SPLIT-UITVSFC-v1`, `protocol-train` 0.8 /
+   `protocol-dev` 0.2, drawn from the **official train split only**. Verify its
+   digests before anything consumes it.
+2. **Extract exactly four clean representation caches** — precisely
+   `stage2_training_extraction_plan()`, no more:
+   * `UNMARK-A` · `protocol-train` · `FULL`
+   * `UNMARK-A` · `protocol-dev` · `FULL`
+   * `UNMARK-B` · `protocol-train` · `FULL`
+   * `UNMARK-B` · `protocol-dev` · `FULL`
+3. **Verify cache identities and digests** — every `Stage2RepresentationKey` field,
+   both the `ordered_id_digest` and the order-sensitive `label_digest`, and the
+   four cache slots of the campaign manifest, before any head is built.
+
+**Only after step 3 passes** may `READY_FOR_STAGE2_TRAINING` transition from `NO`
+to `YES`. That transition is the authorisation boundary of this audit: steps 1–3
+are execution on frozen inputs and produce no trained parameter, while step 4 is
+real Stage-2 head training. The gate is what keeps a verified-cache failure from
+silently becoming a training run.
+
+4. **Only then launch the frozen 10-head campaign** — `run_stage2_campaign` over
+   those four verified caches: 2 arms × 5 seeds, exactly the plan in §15. Not
+   before `READY_FOR_STAGE2_TRAINING=YES`.
+
+All four caches are clean `FULL`, which binds **no** corruption seed by
+construction. Steps 1–3 are therefore *not* blocked by the unresolved value in
+§10; they are blocked only by their own verification.
+
+Explicitly not permitted yet:
+
+* **no measurement-dev degraded conditions** — `P25`, `P50`, `P75`, `P100` and
+  `STRIP_ALL` stay blocked until the corruption seed is decided and recorded
+  (§10); do not touch them at this step;
+* **no official TEST** — SEALED, and structurally unnameable because `Preg1Role`
+  has no `OFFICIAL_TEST` member;
+* **no A-vs-B selection**, at any point, under Audit 049 / D-S2-001 option (c).
 
 ---
 
@@ -528,16 +764,35 @@ STAGE2_MEASUREMENT_RUNNER_IMPLEMENTED=YES
 STAGE2_CAMPAIGN_ORCHESTRATION_IMPLEMENTED=YES
 STAGE2_CAMPAIGN_REGISTRY_IMPLEMENTED=YES
 STAGE2_RUNNER_STATIC_IMPLEMENTATION=PASS
-AUTHORITATIVE_RUNNER_TORCH_ACCEPTANCE=PENDING
+AUTHORITATIVE_RUNNER_TORCH_ACCEPTANCE=PASS
 STAGE2_AB_SELECTION_IMPLEMENTED=NO
 STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED=False
 DOWNSTREAM_RESULTS_SEEN=NO
 DOWNSTREAM_TEST=SEALED
 STAGE2_TRAINING_STARTED=NO
-READY_FOR_STAGE2_RUNTIME_ACCEPTANCE=YES
+READY_FOR_CLEAN_REPRESENTATION_EXTRACTION=YES
 READY_FOR_STAGE2_TRAINING=NO
 ```
 
-`READY_FOR_STAGE2_RUNTIME_ACCEPTANCE=YES`: the implementation and its 39
-torch-gated tests are complete and collected, so the acceptance run can proceed
-on a machine with torch. `READY_FOR_STAGE2_TRAINING=NO` until that run passes.
+`AUTHORITATIVE_RUNNER_TORCH_ACCEPTANCE=PASS` is the state change this closeout
+records, on the §15 evidence. `STAGE2_TRAINING_STARTED=NO` is unchanged and
+remains true: the §15 campaign was synthetic.
+
+The two readiness flags are a deliberate pair, and they are not the same gate.
+
+`READY_FOR_CLEAN_REPRESENTATION_EXTRACTION=YES` is scoped to §18 **steps 1–3**:
+materialise and verify the frozen split, extract the four clean `FULL` caches,
+verify their identities and digests. Runner runtime acceptance is complete, so
+that execution may begin. It does **not** authorise degraded measurement-dev
+extraction, which stays blocked while
+`STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED=False`, and it does not touch TEST.
+
+`READY_FOR_STAGE2_TRAINING=NO` still holds, and step 4 — the frozen 10-head
+campaign — is not authorised. Real head training becomes permissible only once
+the frozen split is materialised and the four clean `FULL` caches are extracted
+**and verified**; at that point, and not before, this flag transitions to `YES`.
+An accepted runner is a runner that executes correctly, not a licence to train on
+inputs whose identity nobody has checked.
+
+`READY_FOR_STAGE2_RUNTIME_ACCEPTANCE` is deliberately absent: that gate is spent,
+discharged by §15, and reintroducing it would imply an acceptance still owed.
