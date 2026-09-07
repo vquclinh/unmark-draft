@@ -35,6 +35,7 @@ IMPORTERS = (
     "unmark/evaluation/preg1_head.py",
     "unmark/evaluation/preg1_split.py",
     "unmark/evaluation/stage2_dual_finalist.py",
+    "unmark/evaluation/stage2_head_campaign.py",
     "unmark/evaluation/__init__.py",
     "scripts/preg1_head_diagnostic.py",
     "scripts/preg1_dataset_profile.py",
