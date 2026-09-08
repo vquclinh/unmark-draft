@@ -240,6 +240,16 @@
       "note": "keyed by sample_id, never row order",
       "value": "unmark.corruption.corrupt with purpose=SCIENTIFIC"
     },
+    "corruption_seed": {
+      "classification": "scientific_identity",
+      "note": "D-S2-002: frozen prospectively, before any measurement-dev read and before any degraded score existed. Inherited from the pre-existing Stage-1 validation-corruption seed (D-S1B-005), so it predates Stage-2 measurement. Applies identically to UNMARK-A and UNMARK-B, and only to the degraded conditions -- FULL is clean and binds no seed",
+      "value": 19225
+    },
+    "corruption_seed_pinned": {
+      "classification": "safety_gate",
+      "note": "resolved by D-S2-002; the runner refuses any other integer, so a caller may not substitute a different degradation realisation",
+      "value": true
+    },
     "excluded_conditions": {
       "classification": "safety_gate",
       "note": "unimplemented and fail-closed; implementing half of it would misrepresent the condition",

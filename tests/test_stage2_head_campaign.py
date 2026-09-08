@@ -13,6 +13,7 @@ Nothing here trains, reads a downstream row, or names official TEST.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import pathlib
 import sys
@@ -51,6 +52,7 @@ from unmark.evaluation.stage2_head_campaign import (  # noqa: E402
     STAGE2_HEAD_ARTIFACT_FIELDS,
     STAGE2_HEAD_CAMPAIGN_SCHEMA_VERSION,
     STAGE2_HEAD_LEARNING_RATE,
+    STAGE2_MEASUREMENT_CORRUPTION_SEED,
     STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED,
     STAGE2_MEASUREMENT_ROLE,
     STAGE2_PROTOCOL_VERSION,
@@ -64,6 +66,7 @@ from unmark.evaluation.stage2_head_campaign import (  # noqa: E402
     Stage2RepresentationKey,
     aggregate_stage2_campaign,
     label_digest,
+    require_batch_provenance,
     require_clean_condition,
     require_frozen_protocol_spec,
     require_paired_campaign_plan,
@@ -255,22 +258,311 @@ def test_the_training_plan_is_clean_full_for_both_arms():
 
 
 def test_the_measurement_plan_covers_two_arms_by_six_conditions():
-    plan = stage2_measurement_extraction_plan(corruption_seed=4242)
+    plan = stage2_measurement_extraction_plan(
+        corruption_seed=STAGE2_MEASUREMENT_CORRUPTION_SEED)
     assert len(plan) == 12
     assert {r.role for r in plan} == {STAGE2_MEASUREMENT_ROLE.value}
     assert {r.condition for r in plan} == set(STAGE2_UNMARK_CONDITIONS)
     for r in plan:
-        expected = None if r.condition == STAGE2_CLEAN_CONDITION else 4242
+        expected = (None if r.condition == STAGE2_CLEAN_CONDITION
+                    else STAGE2_MEASUREMENT_CORRUPTION_SEED)
         assert r.corruption_seed == expected
 
 
-def test_the_measurement_corruption_seed_has_no_default():
-    """It is not pinned by the frozen protocol, so it must not acquire a default."""
-    assert STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED is False
+def test_the_measurement_plan_is_two_arms_by_six_frozen_conditions_each():
+    """Twelve requests is 2 x 6, not 12 of anything else."""
+    plan = stage2_measurement_extraction_plan(
+        corruption_seed=STAGE2_MEASUREMENT_CORRUPTION_SEED)
+    assert len(plan) == 12
+    arms = {r.arm for r in plan}
+    assert arms == {"UNMARK-A", "UNMARK-B"}
+    assert len(arms) == 2
+    for arm in arms:
+        conditions = [r.condition for r in plan if r.arm == arm]
+        assert len(conditions) == 6
+        assert set(conditions) == set(STAGE2_UNMARK_CONDITIONS)
+        assert len(set(conditions)) == 6
+
+
+def test_the_measurement_corruption_seed_is_frozen_to_the_inherited_value():
+    """D-S2-002 pinned it prospectively; it is 19225 and nothing else."""
+    assert STAGE2_MEASUREMENT_CORRUPTION_SEED == 19225
+    assert STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED is True
+    assert isinstance(STAGE2_MEASUREMENT_CORRUPTION_SEED, int)
+    assert not isinstance(STAGE2_MEASUREMENT_CORRUPTION_SEED, bool)
+
+
+def test_the_measurement_corruption_seed_still_has_no_python_default():
+    """Frozen is not the same as defaulted: a caller must still name the seed."""
+    parameter = inspect.signature(
+        stage2_measurement_extraction_plan).parameters["corruption_seed"]
+    assert parameter.default is inspect.Parameter.empty
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
     with pytest.raises(TypeError):
         stage2_measurement_extraction_plan()
-    with pytest.raises(EvaluationContractViolation, match="must not acquire a default"):
-        stage2_measurement_extraction_plan(corruption_seed="7")
+
+
+@pytest.mark.parametrize("bad", [True, False, "19225", 19225.0, None, [19225]])
+def test_a_non_integer_measurement_seed_is_refused(bad):
+    with pytest.raises(EvaluationContractViolation, match="must be an explicit integer"):
+        stage2_measurement_extraction_plan(corruption_seed=bad)
+
+
+@pytest.mark.parametrize("wrong", [19224, 19226, 0, -19225, 4242, 1])
+def test_a_wrong_integer_measurement_seed_is_refused(wrong):
+    """No caller may silently substitute another degradation realisation."""
+    with pytest.raises(EvaluationContractViolation, match="frozen to 19225"):
+        stage2_measurement_extraction_plan(corruption_seed=wrong)
+
+
+def test_the_frozen_measurement_seed_is_accepted_and_bound_correctly():
+    plan = stage2_measurement_extraction_plan(corruption_seed=19225)
+    assert len(plan) == 12
+    clean = [r for r in plan if r.condition == STAGE2_CLEAN_CONDITION]
+    degraded = [r for r in plan if r.condition != STAGE2_CLEAN_CONDITION]
+    assert len(clean) == 2 and {r.arm for r in clean} == {"UNMARK-A", "UNMARK-B"}
+    assert {r.corruption_seed for r in clean} == {None}
+    assert len(degraded) == 10
+    assert {r.corruption_seed for r in degraded} == {19225}
+    assert {r.condition for r in degraded} == set(STAGE2_DEGRADED_CONDITIONS)
+    for arm in ("UNMARK-A", "UNMARK-B"):
+        seeds = {r.corruption_seed for r in degraded if r.arm == arm}
+        assert seeds == {19225}
+
+
+def test_both_arms_receive_the_identical_frozen_realisation():
+    """The seed may not differ per arm: that would confound the contrast."""
+    plan = stage2_measurement_extraction_plan(
+        corruption_seed=STAGE2_MEASUREMENT_CORRUPTION_SEED)
+    per_condition = {}
+    for r in plan:
+        per_condition.setdefault(r.condition, set()).add(r.corruption_seed)
+    for condition, seeds in per_condition.items():
+        assert len(seeds) == 1, f"{condition} bound different seeds across arms"
+
+
+def test_the_protocol_artifact_and_the_implementation_agree_on_the_seed():
+    payload = require_frozen_protocol_spec()
+    measurement = payload["measurement"]
+    assert measurement["corruption_seed"]["value"] == STAGE2_MEASUREMENT_CORRUPTION_SEED
+    assert measurement["corruption_seed"]["classification"] == "scientific_identity"
+    assert measurement["corruption_seed_pinned"]["value"] is True
+    assert measurement["corruption_determinism"]["value"] == (
+        "unmark.corruption.corrupt with purpose=SCIENTIFIC")
+
+
+def _spec_with(monkeypatch, tmp_path, mutate):
+    """Point the single existing loader at a mutated copy. No loader is duplicated."""
+    import unmark.evaluation.stage2_head_campaign as mod
+    payload = json.loads(mod.STAGE2_PROTOCOL_SPEC_PATH.read_text(encoding="utf-8"))
+    mutate(payload)
+    path = tmp_path / "stage2-dual-finalist-protocol.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    monkeypatch.setattr(mod, "STAGE2_PROTOCOL_SPEC_PATH", path)
+    return mod
+
+
+def test_the_real_amended_artifact_passes_the_validator():
+    payload = require_frozen_protocol_spec()
+    assert payload["measurement"]["corruption_seed"]["value"] == 19225
+    assert payload["measurement"]["corruption_seed_pinned"]["value"] is True
+
+
+def test_a_drifted_protocol_seed_value_is_refused(monkeypatch, tmp_path):
+    def mutate(payload):
+        payload["measurement"]["corruption_seed"]["value"] = 19224
+    mod = _spec_with(monkeypatch, tmp_path, mutate)
+    with pytest.raises(EvaluationContractViolation, match="must agree"):
+        mod.require_frozen_protocol_spec()
+
+
+def test_a_non_integer_protocol_seed_value_is_refused(monkeypatch, tmp_path):
+    def mutate(payload):
+        payload["measurement"]["corruption_seed"]["value"] = "19225"
+    mod = _spec_with(monkeypatch, tmp_path, mutate)
+    with pytest.raises(EvaluationContractViolation, match="not an integer seed"):
+        mod.require_frozen_protocol_spec()
+
+
+def test_a_missing_protocol_seed_field_is_refused(monkeypatch, tmp_path):
+    def mutate(payload):
+        del payload["measurement"]["corruption_seed"]
+    mod = _spec_with(monkeypatch, tmp_path, mutate)
+    with pytest.raises(EvaluationContractViolation, match="does not pin"):
+        mod.require_frozen_protocol_spec()
+
+
+def test_corruption_seed_pinned_false_is_refused(monkeypatch, tmp_path):
+    """A seed value beside an unresolved declaration is a half-applied amendment."""
+    def mutate(payload):
+        payload["measurement"]["corruption_seed_pinned"]["value"] = False
+    mod = _spec_with(monkeypatch, tmp_path, mutate)
+    with pytest.raises(EvaluationContractViolation, match="not True"):
+        mod.require_frozen_protocol_spec()
+
+
+def test_a_missing_corruption_seed_pinned_field_is_refused(monkeypatch, tmp_path):
+    def mutate(payload):
+        del payload["measurement"]["corruption_seed_pinned"]
+    mod = _spec_with(monkeypatch, tmp_path, mutate)
+    with pytest.raises(EvaluationContractViolation, match="does not declare"):
+        mod.require_frozen_protocol_spec()
+
+
+def test_a_missing_measurement_section_is_refused(monkeypatch, tmp_path):
+    def mutate(payload):
+        del payload["measurement"]
+    mod = _spec_with(monkeypatch, tmp_path, mutate)
+    with pytest.raises(EvaluationContractViolation, match="no `measurement` section"):
+        mod.require_frozen_protocol_spec()
+
+
+# ==========================================================================================
+# D-S2-002 end-to-end provenance: the key must be a property of the tensor
+# ==========================================================================================
+
+MEASUREMENT = STAGE2_MEASUREMENT_ROLE.value
+
+
+def test_a_measurement_degraded_key_must_bind_the_frozen_seed():
+    k = key(role=MEASUREMENT, condition="P50",
+            corruption_seed=STAGE2_MEASUREMENT_CORRUPTION_SEED)
+    assert k.corruption_seed == 19225
+
+
+@pytest.mark.parametrize("wrong", [19224, 19226, 0, 4242])
+def test_a_measurement_degraded_key_refuses_another_realisation(wrong):
+    with pytest.raises(EvaluationContractViolation, match="must bind the frozen seed"):
+        key(role=MEASUREMENT, condition="P50", corruption_seed=wrong)
+
+
+@pytest.mark.parametrize("condition", list(STAGE2_DEGRADED_CONDITIONS))
+def test_every_measurement_degraded_condition_is_covered(condition):
+    key(role=MEASUREMENT, condition=condition,
+        corruption_seed=STAGE2_MEASUREMENT_CORRUPTION_SEED)
+    with pytest.raises(EvaluationContractViolation, match="must bind the frozen seed"):
+        key(role=MEASUREMENT, condition=condition, corruption_seed=19224)
+
+
+def test_a_measurement_full_key_still_binds_no_seed():
+    k = key(role=MEASUREMENT, condition=STAGE2_CLEAN_CONDITION, corruption_seed=None)
+    assert k.corruption_seed is None
+    with pytest.raises(EvaluationContractViolation, match="must carry no corruption seed"):
+        key(role=MEASUREMENT, condition=STAGE2_CLEAN_CONDITION, corruption_seed=19225)
+
+
+@pytest.mark.parametrize("role", ["protocol-train", "protocol-dev"])
+def test_non_measurement_roles_are_not_subjected_to_the_measurement_seed(role):
+    """Historical synthetic fixtures must not be retro-fitted with D-S2-002."""
+    assert key(role=role, condition="P50", corruption_seed=11).corruption_seed == 11
+    assert key(role=role, condition="P75", corruption_seed=19224).corruption_seed == 19224
+
+
+def _batch(conditions, seeds=...):
+    out = {"conditions": list(conditions)}
+    if seeds is not ...:
+        out["corruption_seeds"] = list(seeds)
+    return out
+
+
+def test_a_degraded_batch_matching_its_key_passes_provenance():
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    require_batch_provenance([_batch(["P50", "P50"], [19225, 19225])], k)
+
+
+def test_a_degraded_batch_prepared_under_another_seed_is_refused():
+    """The exact hole this repair closes: key 19225, batch actually 19224."""
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="falsely claims"):
+        require_batch_provenance([_batch(["P50", "P50"], [19224, 19224])], k)
+
+
+def test_a_mixed_seed_batch_is_refused():
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="mixes corruption seeds"):
+        require_batch_provenance([_batch(["P50", "P50"], [19225, 19224])], k)
+
+
+def test_a_mixed_condition_batch_is_refused():
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="mixes conditions"):
+        require_batch_provenance([_batch(["P50", "P25"], [19225, 19225])], k)
+
+
+def test_a_batch_condition_that_is_not_the_keys_is_refused():
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="cache key declares"):
+        require_batch_provenance([_batch(["P25", "P25"], [19225, 19225])], k)
+
+
+def test_missing_degraded_seed_provenance_fails_closed():
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="no `corruption_seeds`"):
+        require_batch_provenance([_batch(["P50", "P50"])], k)
+    with pytest.raises(EvaluationContractViolation, match="no recorded corruption seed"):
+        require_batch_provenance([_batch(["P50", "P50"], [19225, None])], k)
+    with pytest.raises(EvaluationContractViolation, match="cover every row"):
+        require_batch_provenance([_batch(["P50", "P50"], [19225])], k)
+
+
+def test_missing_condition_provenance_fails_closed():
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="no `conditions` provenance"):
+        require_batch_provenance([{}], k)
+
+
+def test_full_provenance_ignores_an_api_only_placeholder_seed():
+    """FULL binds None; a placeholder integer in the batch is not scientific identity."""
+    k = key(condition=STAGE2_CLEAN_CONDITION, corruption_seed=None)
+    assert k.corruption_seed is None
+    require_batch_provenance([_batch(["FULL", "FULL"], [0, 0])], k)
+    require_batch_provenance([_batch(["FULL", "FULL"], [19224, 19224])], k)
+    require_batch_provenance([_batch(["FULL", "FULL"])], k)
+    assert k.corruption_seed is None
+
+
+def test_the_four_historical_clean_cache_shapes_remain_valid():
+    """Audit 052's caches are FULL with corruption_seed=None and stay constructible."""
+    for arm in ("UNMARK-A", "UNMARK-B"):
+        for role in (STAGE2_TRAINING_ROLE.value, STAGE2_SELECTION_ROLE.value):
+            k = key(arm=arm,
+                    finalist_checkpoint_sha256=finalist_for_arm(arm).checkpoint_sha256,
+                    role=role, condition=STAGE2_CLEAN_CONDITION, corruption_seed=None)
+            assert k.corruption_seed is None
+            assert k.condition == "FULL"
+            require_batch_provenance([_batch(["FULL"] * 2)], k)
+
+
+def test_the_driver_refuses_a_mislabelled_batch_before_any_write(tmp_path):
+    """Provenance runs before the torch import, so no artifact is left behind."""
+    from unmark.evaluation.stage2_head_campaign import (
+        Stage2RepresentationCache,
+        extract_and_cache_stage2_representations,
+    )
+
+    class FakePathway:
+        binding = None
+
+    directory = tmp_path / "cache"
+    k = key(role=MEASUREMENT, condition="P50", corruption_seed=19225)
+    with pytest.raises(EvaluationContractViolation, match="falsely claims"):
+        extract_and_cache_stage2_representations(
+            FakePathway(), [_batch(["P50", "P50"], [19224, 19224])], k,
+            Stage2RepresentationCache(directory))
+    assert not directory.exists() or not any(directory.iterdir())
+
+
+def test_a_drifted_protocol_seed_is_refused_by_the_protocol_validator():
+    """The artifact may not quietly pin a realisation the runner does not use."""
+    import unmark.evaluation.stage2_head_campaign as mod
+    original = mod.STAGE2_MEASUREMENT_CORRUPTION_SEED
+    try:
+        mod.STAGE2_MEASUREMENT_CORRUPTION_SEED = original + 1
+        with pytest.raises(EvaluationContractViolation, match="must agree"):
+            mod.require_frozen_protocol_spec()
+    finally:
+        mod.STAGE2_MEASUREMENT_CORRUPTION_SEED = original
+    assert require_frozen_protocol_spec()["schema_version"] == STAGE2_PROTOCOL_VERSION
 
 
 def test_a_key_built_from_a_request_binds_the_arms_own_checkpoint():

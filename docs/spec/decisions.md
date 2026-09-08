@@ -5266,3 +5266,103 @@ it.
 | **Audit** | [`docs/audits/049-stage2-dual-finalist-protocol-freeze.md`](../audits/049-stage2-dual-finalist-protocol-freeze.md) |
 | **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
 | **Proposal updated** | **NO** — §5.2/§8.3 already require one identical head protocol across systems; carrying two UNMARK arms is an instance of that, not a change to it. PDF stale: **YES** |
+
+---
+
+### D-S2-002 — the Stage-2 measurement corruption seed is frozen prospectively to 19225
+
+| | |
+|---|---|
+| **Status** | **RESOLVED DECISION** — prospective freeze; **nothing is measured** |
+| **Owner** | Stage-2 |
+| **Date** | 2026-09-08 |
+| **Artifact** | `docs/spec/stage2-dual-finalist-protocol.json` :: `measurement.corruption_seed` |
+| **Supersedes** | the open item surfaced in Audit 051 §10 |
+
+**The decision.** The one Stage-2 degradation-realisation seed is frozen to:
+
+```
+STAGE2_MEASUREMENT_CORRUPTION_SEED = 19225
+```
+
+**Why this needed a decision at all.** D-S2-001 froze the corruption
+*mechanism* — `unmark.corruption.corrupt` with `purpose=SCIENTIFIC`, keyed by
+`sample_id` and never by row order — but pinned **no seed value**. The seed
+selects which corruption realisation each sample receives and therefore moves the
+absolute reported robustness numbers. Audit 051 surfaced this and refused to
+invent one: `stage2_measurement_extraction_plan` was given no default, and
+`STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED = False` recorded the gap rather than
+papering over it.
+
+**Why 19225, and why it is not a choice made on results.** The value is
+**inherited**, not created. It is the pre-existing Stage-1 validation-corruption
+seed pinned by
+[D-S1B-005](#d-s1b-005--two-additional-pre-use-determinism-pins) under the tag
+`UNMARK-STAGE1-v1|validation-corruption`, and it is *derived* from that tag by
+`derive_seeds` rather than picked — anyone can recompute it from the string. It
+therefore predates every Stage-2 artifact. Minting a fresh integer would have
+created a realisation with no prior commitment behind it, and the honest reader's
+question about any fresh seed — "how many were tried?" — has no good answer.
+Inheriting one that was already precommitted for a different corpus removes that
+question entirely.
+
+**This is prospective, and that is the load-bearing property.** At the moment of
+this decision:
+
+| | |
+|---|---|
+| `measurement-dev` read | **NO** |
+| Degraded Stage-2 representation cache | **none exists** |
+| Degraded measurement score | **none exists** |
+| Official UIT-VSFC TEST | **SEALED**, not read |
+| A/B selection | **NONE** |
+
+No degraded Stage-2 result was inspected when this value was fixed, so it cannot
+have been chosen to favour any outcome.
+
+**Scope, stated narrowly.**
+
+* The seed applies **identically to UNMARK-A and UNMARK-B**, so it cannot bias
+  the A-vs-B contrast.
+* It applies **only to the degraded conditions** — `P25`, `P50`, `P75`, `P100`,
+  `STRIP_ALL`. `FULL` is the clean condition and binds `corruption_seed=None` by
+  construction; `Stage2RepresentationKey` refuses a clean key that carries any
+  seed.
+* It authorises **no** selection, ranking, promotion or dropping of an arm.
+  [D-S2-001](#d-s2-001--no-downstream-selection-between-stage-1-finalists-both-are-carried)
+  option (c) and
+  [D-S1B-001](#d-s1b-001--uit-vsfc-may-not-select-any-stage-1-value) both stand
+  with no exception.
+* It **does not execute measurement.** Freezing the realisation and reading
+  `measurement-dev` are separate steps, and only the first has happened.
+
+**Not a Stage-1 seed-role collision.** D-S1B-005 requires the *seven Stage-1 role
+seeds* to be distinct, and asserts that at import time in
+`unmark/stage1/protocol.py`. This decision adds no Stage-1 role and changes no
+Stage-1 seed, so that assertion is untouched. The Stage-2 measurement corruption
+runs over a different corpus and is keyed per `sample_id`, so sharing the integer
+couples no two realisations over the same samples.
+
+**Implementation.** `unmark/evaluation/stage2_head_campaign.py` exports
+`STAGE2_MEASUREMENT_CORRUPTION_SEED = 19225` and sets
+`STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED = True`.
+`stage2_measurement_extraction_plan(*, corruption_seed: int)` keeps **no Python
+default** — a caller must still name the seed — and now additionally refuses any
+integer that is not the frozen one, so no execution can substitute a different
+degradation realisation and report it as this protocol's.
+`require_frozen_protocol_spec()` checks that the artifact and the implementation
+constant agree.
+
+| | |
+|---|---|
+| **Measurement corruption seed** | **19225** |
+| **Pinned** | **YES** — prospectively |
+| **Applies to** | `P25`, `P50`, `P75`, `P100`, `STRIP_ALL` — both arms, identically |
+| **`FULL`** | binds **no** seed, by construction |
+| **measurement-dev read** | **NO** |
+| **Degraded result seen** | **NO** |
+| **A/B selection** | **NO** — unchanged |
+| **Official UIT-VSFC TEST** | **SEALED / UNUSED** |
+| **Affected spec** | `docs/spec/stage2-dual-finalist-protocol.json` |
+| **Audit** | [`docs/audits/054-stage2-measurement-corruption-seed-freeze.md`](../audits/054-stage2-measurement-corruption-seed-freeze.md) |
+| **Proposal updated** | **NO** — the proposal specifies a keyed deterministic corruption, not a seed value. PDF stale: **NO** |

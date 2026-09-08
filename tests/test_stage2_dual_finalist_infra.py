@@ -762,6 +762,64 @@ def test_extract_representations_are_fp32_detached_and_not_masked_mean():
     assert "masked_mean" not in ast.unparse(function)
 
 
+def test_the_seed_provenance_field_is_not_a_forward_tensor():
+    """Torch-free: `corruption_seeds` is provenance, never model input (D-S2-002)."""
+    assert "corruption_seeds" not in s2.STAGE2_FORWARD_TENSOR_KEYS
+    assert "sample_ids" not in s2.STAGE2_FORWARD_TENSOR_KEYS
+    assert "conditions" not in s2.STAGE2_FORWARD_TENSOR_KEYS
+
+
+@requires_torch
+def test_the_collator_preserves_each_inputs_raw_corruption_seed():
+    """The batch must carry the realisation that actually produced it."""
+    inputs = s2.prepare_stage2_unmark_condition_grid(
+        text="Tôi học",
+        sample_id="seed-provenance-sample",
+        tokenizer=StubTokenizer(),
+        corruption_seed=4242,
+        classifier=vi_classifier,
+        corruption_purpose=CorruptionPurpose.SELF_CHECK,
+        eligibility_policy=EligibilityPolicy.UNRESOLVED,
+        max_length=16,
+    )
+    batch = s2.collate_stage2_unmark_batch(
+        inputs, pad_token_id=StubTokenizer.pad_token_id, max_length=16
+    )
+    assert batch["corruption_seeds"] == [
+        item.corruption_metadata["corruption_seed"] for item in inputs
+    ]
+    assert set(batch["corruption_seeds"]) == {4242}
+    assert len(batch["corruption_seeds"]) == len(batch["sample_ids"]) == len(inputs)
+
+
+@requires_torch
+def test_the_added_seed_metadata_never_reaches_the_forward_pass():
+    """Numerics are unchanged: the mover uses an allowlist and drops provenance."""
+    import torch
+
+    inputs = s2.prepare_stage2_unmark_condition_grid(
+        text="Tôi học",
+        sample_id="seed-metadata-ignored",
+        tokenizer=StubTokenizer(),
+        corruption_seed=7,
+        classifier=vi_classifier,
+        corruption_purpose=CorruptionPurpose.SELF_CHECK,
+        eligibility_policy=EligibilityPolicy.UNRESOLVED,
+        max_length=16,
+    )[:2]
+    batch = s2.collate_stage2_unmark_batch(
+        inputs, pad_token_id=StubTokenizer.pad_token_id, max_length=16
+    )
+    moved = s2._stage2_forward_tensors_on_device(batch, device=torch.device("cpu"))
+    assert set(moved) == set(s2.STAGE2_FORWARD_TENSOR_KEYS)
+    assert "corruption_seeds" not in moved
+
+    stripped = {k: v for k, v in batch.items() if k in s2.STAGE2_FORWARD_TENSOR_KEYS}
+    also_moved = s2._stage2_forward_tensors_on_device(stripped, device=torch.device("cpu"))
+    for name in s2.STAGE2_FORWARD_TENSOR_KEYS:
+        assert torch.equal(moved[name], also_moved[name])
+
+
 @requires_torch
 def test_forward_tensor_device_transfer_preserves_dtype_shape_and_values():
     import torch

@@ -25,12 +25,17 @@ from the closed pre-G1 protocol: :func:`build_head`, :func:`build_optimizer`,
 either. The frozen forward pass comes from
 :func:`extract_stage2_unmark_representations` (Audit 050) and is never duplicated.
 
-**One value is deliberately not defaulted.** The Stage-2 measurement corruption
-seed is *not* pinned by `docs/spec/stage2-dual-finalist-protocol.json`, which
-fixes the determinism mechanism but no seed value. It is therefore a required
-argument with no default: :func:`stage2_measurement_extraction_plan` fails closed
-without it. Choosing it is a scientific decision for the author, not an
-implementation detail to be invented here.
+**One value was deliberately not defaulted, and is now frozen.** The Stage-2
+measurement corruption seed was left unresolved by the original freeze, which
+fixed the determinism mechanism but no seed value. **D-S2-002** resolved it
+*prospectively* -- before any measurement-dev row was read and before any
+degraded score existed -- to :data:`STAGE2_MEASUREMENT_CORRUPTION_SEED`,
+inherited from the pre-existing Stage-1 validation-corruption seed (D-S1B-005).
+
+It is still **not** a Python default. :func:`stage2_measurement_extraction_plan`
+keeps its keyword-only ``corruption_seed`` with no default, and now additionally
+refuses any integer that is not the frozen one. An execution must therefore state
+the realisation it is using, and cannot silently substitute another.
 """
 
 from __future__ import annotations
@@ -105,6 +110,45 @@ def require_frozen_protocol_spec() -> dict[str, Any]:
             f"frozen protocol spec is {payload.get('schema_version')!r} but this runner "
             f"implements {STAGE2_PROTOCOL_VERSION!r}"
         )
+    measurement = payload.get("measurement")
+    if not isinstance(measurement, dict):
+        raise EvaluationContractViolation(
+            "frozen protocol spec has no `measurement` section; the Stage-2 measurement "
+            "corruption seed cannot be verified"
+        )
+    seed_field = measurement.get("corruption_seed")
+    if not isinstance(seed_field, dict) or "value" not in seed_field:
+        raise EvaluationContractViolation(
+            "frozen protocol spec does not pin `measurement.corruption_seed` (D-S2-002); "
+            "a missing frozen field is a drifted artifact, not an unset default"
+        )
+    pinned_value = seed_field["value"]
+    if isinstance(pinned_value, bool) or not isinstance(pinned_value, int):
+        raise EvaluationContractViolation(
+            f"frozen protocol spec pins `measurement.corruption_seed` as "
+            f"{pinned_value!r}, which is not an integer seed (D-S2-002)"
+        )
+    if pinned_value != STAGE2_MEASUREMENT_CORRUPTION_SEED:
+        raise EvaluationContractViolation(
+            f"frozen protocol spec pins the Stage-2 measurement corruption seed as "
+            f"{pinned_value!r} but this runner implements "
+            f"{STAGE2_MEASUREMENT_CORRUPTION_SEED!r} (D-S2-002). The artifact and the "
+            "implementation must agree, or a cache key would bind a degradation "
+            "realisation the protocol never froze."
+        )
+    pinned_flag = measurement.get("corruption_seed_pinned")
+    if not isinstance(pinned_flag, dict) or "value" not in pinned_flag:
+        raise EvaluationContractViolation(
+            "frozen protocol spec does not declare `measurement.corruption_seed_pinned` "
+            "(D-S2-002); a seed value without its resolved-state declaration is a "
+            "half-applied amendment"
+        )
+    if pinned_flag["value"] is not True:
+        raise EvaluationContractViolation(
+            f"frozen protocol spec declares `measurement.corruption_seed_pinned` as "
+            f"{pinned_flag['value']!r}, not True. D-S2-002 resolved the seed; an "
+            "artifact that still reports it unresolved contradicts the value it pins."
+        )
     return payload
 
 
@@ -129,10 +173,25 @@ STAGE2_AB_TIE_BREAK = None
 STAGE2_AB_SELECTION_IMPLEMENTED = False
 STAGE2_MEASUREMENT_MAY_SELECT = False
 STAGE2_OFFICIAL_TEST_ROLE_EXISTS = False
-STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED = False
-"""The measurement corruption seed is NOT pinned by the frozen protocol.
+STAGE2_MEASUREMENT_CORRUPTION_SEED = 19225
+"""The one frozen Stage-2 degradation-realisation seed (**D-S2-002**).
 
-Recorded as a fact rather than resolved by a default: see the module docstring.
+Inherited from the pre-existing Stage-1 validation-corruption seed
+(`UNMARK-STAGE1-v1|validation-corruption`, D-S1B-005), which is derived from its
+namespace tag rather than chosen, and which predates every Stage-2 measurement.
+Reusing it means no new arbitrary realisation was created -- and therefore none
+could have been cherry-picked.
+
+It applies **identically to both arms**, so it cannot bias the A-vs-B contrast,
+and only to the degraded conditions: `FULL` is clean and binds no seed at all.
+Pinning it authorises no selection, ranking, promotion or dropping of an arm.
+"""
+
+STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED = True
+"""Resolved by D-S2-002, prospectively.
+
+The frozen protocol now pins the value as well as the mechanism, and
+`require_frozen_protocol_spec` checks that the artifact and this module agree.
 """
 
 
@@ -225,6 +284,18 @@ class Stage2RepresentationKey:
             raise EvaluationContractViolation(
                 f"condition {self.condition!r} is corrupted and must bind the corruption "
                 "seed that produced it; the seed is not defaulted anywhere"
+            )
+        if (
+            self.role == STAGE2_MEASUREMENT_ROLE.value
+            and self.condition != STAGE2_CLEAN_CONDITION
+            and self.corruption_seed != STAGE2_MEASUREMENT_CORRUPTION_SEED
+        ):
+            raise EvaluationContractViolation(
+                f"a Stage-2 measurement cache for degraded condition {self.condition!r} "
+                f"must bind the frozen seed {STAGE2_MEASUREMENT_CORRUPTION_SEED} "
+                f"(D-S2-002), got {self.corruption_seed!r}. Measurement reports the one "
+                "frozen degradation realisation; another one may not be cached under "
+                "this role."
             )
         if self.pooling != STAGE2_FIRST_TOKEN_POOLING:
             raise EvaluationContractViolation(
@@ -507,16 +578,28 @@ def stage2_measurement_extraction_plan(
 ) -> tuple[Stage2ExtractionRequest, ...]:
     """measurement-dev x six conditions x two arms. Twelve items.
 
-    `corruption_seed` has **no default**. The frozen protocol
-    (`docs/spec/stage2-dual-finalist-protocol.json`) pins the determinism
-    mechanism -- keyed by `sample_id` through `unmark.corruption.corrupt` -- but
-    pins no seed value. Inventing one here would be an unrecorded scientific
-    choice, so the caller must supply it and it is bound into every cache key.
+    `corruption_seed` still has **no default**, and now has exactly one accepted
+    value: :data:`STAGE2_MEASUREMENT_CORRUPTION_SEED`, frozen by **D-S2-002**.
+
+    Keeping the argument required *and* checking it is deliberate. A default
+    would let an execution use the frozen realisation without ever naming it, so
+    a later reader could not tell from the call whether the seed was considered;
+    accepting any integer would let a caller substitute a different degradation
+    realisation and report it as the protocol's. The caller must therefore state
+    the seed, and may state only the frozen one. It is bound into every degraded
+    cache key; `FULL` is clean and binds `None`.
     """
     if isinstance(corruption_seed, bool) or not isinstance(corruption_seed, int):
         raise EvaluationContractViolation(
             "the Stage-2 measurement corruption seed must be an explicit integer; it is "
-            "not pinned by the frozen protocol and must not acquire a default"
+            "frozen by D-S2-002 and must not acquire a default"
+        )
+    if corruption_seed != STAGE2_MEASUREMENT_CORRUPTION_SEED:
+        raise EvaluationContractViolation(
+            f"the Stage-2 measurement corruption seed is frozen to "
+            f"{STAGE2_MEASUREMENT_CORRUPTION_SEED} (D-S2-002) and may not be overridden; "
+            f"got {corruption_seed!r}. Substituting another integer would produce a "
+            "different degradation realisation and report it as the frozen protocol's."
         )
     require_frozen_protocol_spec()
     require_dual_finalist_state()
@@ -566,6 +649,81 @@ def stage2_representation_key_for(
     )
 
 
+def require_batch_provenance(
+    batches: Sequence[Mapping[str, Any]],
+    key: Stage2RepresentationKey,
+) -> None:
+    """The batches must actually carry the condition and seed the key claims.
+
+    Without this, the key is a *claim* about a tensor rather than a property of
+    it: a caller could prepare degraded examples under one seed, build a cache
+    key declaring another, and store a tensor whose identity is false. Refusing
+    at the plan level is not enough, because the lower-level APIs can be called
+    directly. This runs **before** the torch import and **before** any write, so
+    a mislabelled extraction is refused on any machine and leaves no artifact.
+
+    `FULL` is deliberately exempt from the seed half. `prepare_stage2_unmark_input`
+    requires an integer seed even for the clean condition, where corruption is a
+    structural no-op (`CorruptionScope.NONE`, probability `0.0`), so a clean batch
+    may legitimately carry an API-only placeholder. That placeholder is *not*
+    scientific identity and must never reach a cache key: a clean key binds
+    `corruption_seed=None`, which `Stage2RepresentationKey` enforces separately.
+    Condition `FULL` plus those frozen no-op semantics is what matters.
+    """
+    degraded = key.condition != STAGE2_CLEAN_CONDITION
+    for index, batch in enumerate(batches):
+        conditions = batch.get("conditions")
+        if conditions is None:
+            raise EvaluationContractViolation(
+                f"batch {index} carries no `conditions` provenance, so the tensor it "
+                f"produces cannot be shown to belong to condition {key.condition!r}"
+            )
+        distinct_conditions = set(conditions)
+        if len(distinct_conditions) != 1:
+            raise EvaluationContractViolation(
+                f"batch {index} mixes conditions {sorted(distinct_conditions)!r}; one "
+                "cache holds exactly one condition"
+            )
+        if distinct_conditions != {key.condition}:
+            raise EvaluationContractViolation(
+                f"batch {index} was prepared for condition "
+                f"{distinct_conditions.pop()!r} but the cache key declares "
+                f"{key.condition!r}"
+            )
+        if not degraded:
+            continue
+        seeds = batch.get("corruption_seeds")
+        if seeds is None:
+            raise EvaluationContractViolation(
+                f"batch {index} is degraded ({key.condition!r}) but carries no "
+                "`corruption_seeds` provenance; the realisation that produced it cannot "
+                "be verified against the key"
+            )
+        if len(seeds) != len(conditions):
+            raise EvaluationContractViolation(
+                f"batch {index} has {len(seeds)} corruption seeds for "
+                f"{len(conditions)} rows; provenance must cover every row"
+            )
+        if any(seed is None for seed in seeds):
+            raise EvaluationContractViolation(
+                f"batch {index} is degraded ({key.condition!r}) but at least one row has "
+                "no recorded corruption seed; missing provenance fails closed"
+            )
+        distinct_seeds = set(seeds)
+        if len(distinct_seeds) != 1:
+            raise EvaluationContractViolation(
+                f"batch {index} mixes corruption seeds {sorted(distinct_seeds)!r}; one "
+                "cache holds exactly one degradation realisation"
+            )
+        actual = distinct_seeds.pop()
+        if actual != key.corruption_seed:
+            raise EvaluationContractViolation(
+                f"batch {index} was prepared with corruption seed {actual!r} but the "
+                f"cache key declares {key.corruption_seed!r}. Saving it would store a "
+                "tensor whose key falsely claims a realisation it was not produced under."
+            )
+
+
 def extract_and_cache_stage2_representations(
     pathway: Any,
     batches: Sequence[Mapping[str, Any]],
@@ -598,6 +756,8 @@ def extract_and_cache_stage2_representations(
             )
     if not batches:
         raise EvaluationContractViolation("no batches supplied for extraction")
+
+    require_batch_provenance(batches, key)
 
     import torch
 
@@ -1196,6 +1356,7 @@ __all__ = [
     "STAGE2_HEAD_ARTIFACT_FIELDS",
     "STAGE2_HEAD_CAMPAIGN_SCHEMA_VERSION",
     "STAGE2_HEAD_LEARNING_RATE",
+    "STAGE2_MEASUREMENT_CORRUPTION_SEED",
     "STAGE2_MEASUREMENT_CORRUPTION_SEED_PINNED",
     "STAGE2_MEASUREMENT_MAY_SELECT",
     "STAGE2_MEASUREMENT_ROLE",
@@ -1219,6 +1380,7 @@ __all__ = [
     "history_digest",
     "label_digest",
     "measure_stage2_head",
+    "require_batch_provenance",
     "require_clean_condition",
     "require_head_only_optimizer",
     "require_paired_campaign_plan",

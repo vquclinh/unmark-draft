@@ -585,7 +585,15 @@ def collate_stage2_unmark_batch(
 ) -> dict[str, Any]:
     """Pad Stage-2 UNMARK inputs to the frozen downstream max length.
 
-    Returns tensors plus sample/condition metadata. Imports torch lazily.
+    Returns tensors plus sample/condition/seed metadata. Imports torch lazily.
+
+    `corruption_seeds` carries each input's **actual** raw corruption seed, taken
+    verbatim from `corruption_metadata["corruption_seed"]`. It is non-tensor
+    provenance only: it never enters the forward pass, because
+    `_stage2_forward_tensors_on_device` moves an allowlist
+    (`STAGE2_FORWARD_TENSOR_KEYS`) and ignores everything else. It exists so a
+    later cache write can be checked against the realisation that actually
+    produced the batch rather than the one its key claims.
     """
 
     if not inputs:
@@ -614,6 +622,9 @@ def collate_stage2_unmark_batch(
     }
     batch["sample_ids"] = [item.sample_id for item in inputs]
     batch["conditions"] = [item.condition for item in inputs]
+    batch["corruption_seeds"] = [
+        item.corruption_metadata.get("corruption_seed") for item in inputs
+    ]
     return batch
 
 
