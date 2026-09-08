@@ -34,6 +34,7 @@ from unmark.evaluation.stage2_head_campaign import (  # noqa: E402
     STAGE2_CAMPAIGN_SEEDS,
     STAGE2_CLEAN_CONDITION,
     STAGE2_HEAD_LEARNING_RATE,
+    STAGE2_MEASUREMENT_CORRUPTION_SEED,
     STAGE2_MEASUREMENT_ROLE,
     STAGE2_PROTOCOL_VERSION,
     STAGE2_SELECTION_ROLE,
@@ -422,7 +423,9 @@ def test_measurement_scores_a_frozen_head_and_refuses_a_selection_split():
     head.load_state_dict(dict(run.selected_head_state))
 
     meas, meas_y = synthetic(N_DEV, seed=34, role=STAGE2_MEASUREMENT_ROLE,
-                             condition="P50", corruption_seed=99)
+                             condition="P50",
+                             corruption_seed=STAGE2_MEASUREMENT_CORRUPTION_SEED)
+    assert meas.key.corruption_seed == STAGE2_MEASUREMENT_CORRUPTION_SEED
     score = measure_stage2_head(head, meas, meas_y, seed=seed)
     assert score.condition == "P50"
     assert score.arm == "UNMARK-A"
