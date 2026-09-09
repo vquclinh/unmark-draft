@@ -25,6 +25,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
+from unmark.alignment import ToneOwnership
 from unmark.corruption import (
     CorruptionCondition,
     CorruptionPurpose,
@@ -407,6 +408,45 @@ def _truncate_content_to_max_length(
     return list(content_ids[:keep]), list(projections[:keep]), True
 
 
+def require_resolved_tone_channel(
+    projections: Sequence[Any], *, sample_id: str, what: str
+) -> None:
+    """Fail closed when the tone channel could not be resolved for any token.
+
+    `ToneOwnership.UNRESOLVED` means a contributing orthographic region carried
+    `Eligibility.UNDECIDED`, which is what every syllable span gets when no
+    syllable-inventory classifier reached :func:`decompose`. Each such token's
+    tone label collapses to `TokenToneLabel.NA`, so `tone_ids` becomes uniformly
+    the NA sentinel.
+
+    **That failure is silent, and it is why this guard exists.** With a dead tone
+    channel the base grid still matches, the letter channel still works,
+    `b(C(x)) == b(x)` still holds and every downstream invariant still passes --
+    but tone-only corruption (`P25`..`P100`) can no longer change `tone_ids` at
+    all, so degraded conditions produce representations identical to `FULL`. The
+    condition is invisible at every other layer; refusing here is the only place
+    it surfaces.
+
+    The check reads the projection of the **observable input string** only. It
+    never consults the clean text, never special-cases a condition name, and does
+    not change what a tone state means.
+    """
+    unresolved = [
+        p.token_index for p in projections
+        if p.tone.ownership is ToneOwnership.UNRESOLVED
+    ]
+    if unresolved:
+        raise EvaluationContractViolation(
+            f"{what} for sample {sample_id!r} has an unresolved tone channel at "
+            f"{len(unresolved)} token position(s) (first: {unresolved[0]}). A "
+            "contributing region has UNDECIDED eligibility, so every affected "
+            "tone label is NA and tone-only corruption cannot change tone_ids. "
+            "Supply the pinned Vietnamese syllable inventory classifier -- "
+            "`make_classifier(load_inventory())` -- as `classifier`; running "
+            "without it silently disables the tone channel in every condition."
+        )
+
+
 def prepare_stage2_unmark_input(
     *,
     text: str,
@@ -460,6 +500,14 @@ def prepare_stage2_unmark_input(
             f"projection counts differ after {corruption.condition.name} for sample {sample_id!r}: "
             f"{len(corrupt_projections)} vs {len(clean_projections)}"
         )
+    require_resolved_tone_channel(
+        clean_projections, sample_id=sample_id, what="the clean projection"
+    )
+    require_resolved_tone_channel(
+        corrupt_projections,
+        sample_id=sample_id,
+        what=f"the {corruption.condition.name} projection",
+    )
 
     content_ids, projections, truncated = _truncate_content_to_max_length(
         tokenizer, clean_content_ids, corrupt_projections, max_length=max_length
