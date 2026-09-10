@@ -40,6 +40,8 @@ IMPORTERS = (
     "scripts/preg1_head_diagnostic.py",
     "scripts/preg1_dataset_profile.py",
     "scripts/materialize_preg1_split.py",
+    "unmark/baselines/restore/config.py",
+    "unmark/baselines/restore/stage2.py",
 )
 
 

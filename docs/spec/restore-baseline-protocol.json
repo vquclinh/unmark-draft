@@ -1,0 +1,335 @@
+{
+  "schema_version": "restore-baseline-protocol-v1",
+  "audit": "064-stage2-restore-baseline-implementation",
+  "created_utc_date": "2026-09-10",
+  "implementation_base_head": "966cbfa280f7576c5418f850c4e641a1fb8a85d8",
+  "scientific_purpose": {
+    "pathway": "observed Vietnamese text -> frozen external Vietnamese diacritic-restoration model -> restored text -> frozen PhoBERT-base -> RESTORE-specific linear head -> UIT-VSFC sentiment prediction",
+    "baseline_question": "repair the damaged string first, then use the pretrained encoder normally"
+  },
+  "restore_model": {
+    "model_id": "nrl-ai/vn-diacritic-vit5-base",
+    "revision": "7ec0710193721ac3321b3bb3741ec92d8b43cad3",
+    "revision_kind": "immutable_full_huggingface_commit_sha",
+    "hub_metadata_verified_by_audit064": true,
+    "hub_metadata_endpoint": "https://huggingface.co/api/models/nrl-ai/vn-diacritic-vit5-base/revision/7ec0710193721ac3321b3bb3741ec92d8b43cad3",
+    "license": "apache-2.0",
+    "architecture": "T5ForConditionalGeneration",
+    "auto_model": "AutoModelForSeq2SeqLM",
+    "tokenizer_api": "AutoTokenizer",
+    "parameter_count": 225950976,
+    "tensor_type": "F32",
+    "config_sha256": "ffd95f81f1665bd7dba68bccb1cc88f10787f9abe355af8a373f2d0f2eac5430",
+    "generation_config_sha256": "eaaf16b98e47131e3ce155054140429e36c4ed6a23c6ff32c2946ef66ce121ff",
+    "tokenizer_artifact_sha256s": {
+      "special_tokens_map.json": "1bf246679a41f9204ef9085d6ebe314cb3ec1c916db54e2a3be6e49c9c839453",
+      "spiece.model": "59986b62f9f0b90edafb9b073ea7b93d21114a5841219a1ea2399ade73f729c6",
+      "tokenizer.json": "637fb80d3a85ec307efea089e10a42e1fa22fdbd19abe612e38cb771b78de8fd",
+      "tokenizer_config.json": "10fe5aebb65886903db4ddb439d2192e28fc44db7cd87f988377a5d3f913cb97"
+    },
+    "model_weight_file": "model.safetensors",
+    "model_weight_sha256": "0dc3361b608903048dfd00fd8dcb3d6174a6cfd4025394504c722ca2487bf52d",
+    "weights_committed_to_git": false
+  },
+  "restorer_contract": {
+    "restore_uses_unmark_adapter": false,
+    "restore_uses_base_tone_letter_channels": false,
+    "restore_uses_unmark_stage1_checkpoint": false,
+    "restore_trains_restorer": false,
+    "restore_restorer_frozen": true,
+    "direct_model_only": true,
+    "pipeline_used": false,
+    "rule_based_fallback": false,
+    "llm_fallback": false,
+    "spell_correction_fallback": false,
+    "quantized_onnx": false,
+    "fp16": false,
+    "bf16": false,
+    "int8": false,
+    "runtime_dtype": "FP32",
+    "model_mode": "eval",
+    "torch_context": "torch.inference_mode",
+    "trainable_parameters": 0,
+    "api": [
+      "restore_text(text: str)",
+      "restore_batch(texts: Sequence[str])"
+    ],
+    "forbidden_api_inputs": [
+      "condition",
+      "corruption probability",
+      "gold clean text",
+      "sentiment label",
+      "validation label",
+      "sample score"
+    ],
+    "tokenizer_contract": {
+      "load": {
+        "use_fast": true,
+        "legacy": true
+      },
+      "input": {
+        "return_tensors": "pt",
+        "padding": true,
+        "truncation": true,
+        "max_length": 256,
+        "add_special_tokens": true,
+        "return_attention_mask": true
+      },
+      "decode": {
+        "skip_special_tokens": true,
+        "clean_up_tokenization_spaces": false
+      },
+      "transformers_version": "4.57.6",
+      "version_sensitive_defaults_overridden": true,
+      "restored_text_cache_identity_bound": true
+    }
+  },
+  "generation": {
+    "explicit_overrides": {
+      "max_length": 256,
+      "do_sample": false,
+      "num_beams": 1
+    },
+    "temperature": null,
+    "top_k": null,
+    "top_p": null,
+    "random_decoding": false,
+    "model_generation_config_fields": {
+      "_from_model_config": true,
+      "decoder_start_token_id": 0,
+      "eos_token_id": [
+        1
+      ],
+      "pad_token_id": 0,
+      "transformers_version": "4.57.6"
+    },
+    "model_config_generation_fields": {
+      "decoder_start_token_id": 0,
+      "eos_token_id": 1,
+      "pad_token_id": 0,
+      "use_cache": true
+    },
+    "batch_size_default": 8,
+    "batch_size_role": "operational only; provenance-recorded; not tuned on downstream results",
+    "single_vs_batch_smoke_required_before_scientific_dataset_read": true
+  },
+  "condition_routing": {
+    "condition_aware_routing": false,
+    "full_bypass": false,
+    "one_restore_pathway": true,
+    "all_conditions_pass_through_restorer": [
+      "FULL",
+      "P25",
+      "P50",
+      "P75",
+      "P100",
+      "STRIP_ALL"
+    ]
+  },
+  "phobert_backbone": {
+    "checkpoint": "vinai/phobert-base",
+    "revision": "01daacda68afe13d83023d16ec647239e344a1e6",
+    "frozen": true,
+    "eval": true,
+    "dtype": "FP32",
+    "tokenization": {
+      "max_length": 256,
+      "truncation": true,
+      "padding": "max_length",
+      "pooling": "FIRST_TOKEN",
+      "hidden_size": 768
+    },
+    "unmark_embedding_path": false
+  },
+  "preg1_uit_vsfc": {
+    "dataset": "UIT-VSFC",
+    "dataset_version": "1.0",
+    "task": "sentiment",
+    "num_labels": 3,
+    "derived_train": {
+      "raw_sha256": "a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301",
+      "rows": 11424
+    },
+    "protocol_train": {
+      "rows": 9139,
+      "ordered_id_digest": "2cad022dd4aabbc875e388030e453ba2479f1046bea884309398b79f7d878cbd",
+      "label_digest": "1c1377b2cd8c8016765229079fb469c2ead5c6ec85229d986f4344fa817f6128"
+    },
+    "protocol_dev": {
+      "rows": 2285,
+      "ordered_id_digest": "63192edf811f8249404597103dc5ba4f48bb7843d242a592d13764013c095860",
+      "label_digest": "546817741453edcb968c4d5de3530e435c5de9374995c1665260e92aea07ca1c"
+    },
+    "new_split_created": false
+  },
+  "head_training": {
+    "heads": 5,
+    "seeds": [
+      53148,
+      59945,
+      42941,
+      720,
+      9428
+    ],
+    "architecture": "Linear(768, 3, bias=True)",
+    "optimizer": "AdamW",
+    "learning_rate": 0.01,
+    "batch_size": 128,
+    "epochs": 30,
+    "early_stopping": false,
+    "selection": [
+      "highest clean protocol-dev Macro-F1",
+      "highest Accuracy",
+      "earliest epoch"
+    ],
+    "all_30_epochs_run": true,
+    "best_seed_selection": false,
+    "cross_seed_selection": false,
+    "corrupted_label_training": false,
+    "train_inputs": "clean protocol-train text passed through RESTORE first",
+    "dev_inputs": "clean protocol-dev text passed through RESTORE first"
+  },
+  "official_validation_boundary": {
+    "official_validation_previously_seen_by_authors": true,
+    "restore_protocol_frozen_before_validation_scoring": true,
+    "official_validation_read_after_heads_freeze_only": true,
+    "raw_sha256": "9c475c8998871c0c7317ee200b3e7db827128cd2dfec9de5c689aca299acc8d0",
+    "rows": 1583,
+    "class_counts": {
+      "0": 705,
+      "1": 73,
+      "2": 805
+    },
+    "ordered_id_digest": "825714672bcf27543825b85ac72c3fea2875647f55a117c41cc42ecc8e305d1a",
+    "label_digest": "70d5ed20e31dea2cacddc7cdb737ef3d0d1f980699b7e3c6d6aff0806711852b",
+    "may_select_model_revision": false,
+    "may_select_decoding": false,
+    "may_select_head_hyperparameters": false,
+    "may_select_seed": false
+  },
+  "corruption": {
+    "implementation": "unmark.corruption.corrupt",
+    "reimplemented": false,
+    "seed": 19225,
+    "conditions": [
+      "FULL",
+      "P25",
+      "P50",
+      "P75",
+      "P100",
+      "STRIP_ALL"
+    ],
+    "expected_changed_row_counts": {
+      "FULL": 0,
+      "P25": 1268,
+      "P50": 1513,
+      "P75": 1564,
+      "P100": 1576,
+      "STRIP_ALL": 1579
+    },
+    "mismatch_policy": "FAIL_CLOSED"
+  },
+  "validation_scoring": {
+    "score_units": "5 seeds x 6 conditions = 30",
+    "reported_per_unit": [
+      "Macro-F1",
+      "Accuracy",
+      "per-class F1"
+    ],
+    "aggregation": {
+      "mean": true,
+      "sample_standard_deviation": true,
+      "primary_metric": "Macro-F1",
+      "secondary_metric": "Accuracy",
+      "significance_test": false
+    }
+  },
+  "diagnostics": {
+    "descriptive_only": true,
+    "used_for_selection": false,
+    "normalization": "NFC",
+    "metrics": [
+      "sentence exact-match rate to clean gold",
+      "character error rate to clean gold",
+      "word error rate to clean gold",
+      "fraction of outputs differing from observed input",
+      "fraction of outputs whose stripped/base form differs from observed input",
+      "FULL unchanged fraction",
+      "FULL changed fraction"
+    ]
+  },
+  "grr": {
+    "vanilla_anchor_evidence": "stage2-vanilla-anchor/a1aa9365ad6d/audit062-upper-floor-v2/evidence/vanilla-upper-floor-final-v1.json",
+    "vanilla_anchor_expected_sha256": "d4d6914b8cbe440698a125c6e7299f42431beb707e4c7c54e110ee6ccfa8a862",
+    "formula": "(S_RESTORE - S_FLOOR) / (S_UPPER - S_FLOOR)",
+    "zero_denominator": "UNDEFINED",
+    "epsilon": false,
+    "clipping": false,
+    "conditions": [
+      "P25",
+      "P50",
+      "P75",
+      "P100",
+      "STRIP_ALL"
+    ],
+    "headline_rule": "average RESTORE scores over degraded conditions, average Vanilla FLOOR scores over degraded conditions, use Vanilla FULL UPPER, then apply GRR once",
+    "condition_grrs_averaged_for_headline": false,
+    "metrics": [
+      "Macro-F1 GRR",
+      "Accuracy GRR"
+    ]
+  },
+  "contextual_comparison": {
+    "allowed": true,
+    "unmark_a_evidence_expected_sha256": "8d9fbd4396f88334b12606e0194123e7009e902f8e7b3e4bd1b94f35b77edff2",
+    "unmark_adapter_loaded": false,
+    "unmark_artifacts_mutated": false,
+    "unmark_recomputed": false,
+    "used_for_restore_selection": false
+  },
+  "artifact_namespace": {
+    "root_template": "/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/stage2-baselines/restore/<execution-head-prefix>/audit064-restore-v1/",
+    "required_subdirectories": [
+      "model",
+      "clean-restored-text",
+      "clean-representations",
+      "heads",
+      "validation-restored-text",
+      "validation-representations",
+      "measurement",
+      "diagnostics",
+      "comparison",
+      "evidence"
+    ],
+    "forbidden_write_namespaces": [
+      "stage2-measurement",
+      "stage2-training",
+      "stage2-vanilla-anchor"
+    ]
+  },
+  "resume": {
+    "phase_level_resume": true,
+    "phases": [
+      "RESTORE_MODEL_PREFLIGHT",
+      "RESTORE_CLEAN_TEXT",
+      "RESTORE_CLEAN_REPRESENTATIONS",
+      "RESTORE_FIVE_HEADS",
+      "VALIDATION_IDENTITY_CHECK",
+      "RESTORE_VALIDATION_TEXT",
+      "RESTORE_VALIDATION_REPRESENTATIONS",
+      "RESTORE_MEASUREMENT",
+      "RESTORE_DIAGNOSTICS",
+      "RESTORE_GRR",
+      "RESTORE_FINAL_CLOSEOUT"
+    ],
+    "completed_artifact_policy": "verify exact identity and reuse",
+    "incompatible_artifact_policy": "FAIL_CLOSED",
+    "inprogress_marker_policy": "visible refusal; never silent overwrite"
+  },
+  "official_test_seal": {
+    "official_test_read": false,
+    "test_role_exists": false,
+    "test_cli_argument_exists": false,
+    "hard_stop": true
+  }
+}

@@ -1,0 +1,318 @@
+# Audit 064: Stage-2 RESTORE Baseline Implementation
+
+## Scope
+
+This audit implements the separate RESTORE baseline executor for the UNMARK
+paper evaluation. It does not run scientific scoring, does not generate RESTORE
+results, and does not modify historical Audit 063 evidence.
+
+RESTORE tests the string-level repair strategy:
+
+```text
+observed Vietnamese text
+  -> frozen external diacritic-restoration model
+  -> restored text
+  -> frozen PhoBERT-base
+  -> RESTORE-specific linear classification head
+  -> UIT-VSFC sentiment prediction
+```
+
+## Implementation Base
+
+```text
+RESTORE_IMPLEMENTATION_BASE_HEAD=966cbfa280f7576c5418f850c4e641a1fb8a85d8
+```
+
+The starting repository state was checked with:
+
+```bash
+git rev-parse HEAD
+git status --short
+git log -5 --oneline
+```
+
+The working tree was clean before RESTORE implementation began.
+
+## External RESTORE Model
+
+```text
+MODEL_ID=nrl-ai/vn-diacritic-vit5-base
+REVISION=7ec0710193721ac3321b3bb3741ec92d8b43cad3
+LICENSE=apache-2.0
+ARCHITECTURE=T5ForConditionalGeneration
+PARAMETER_COUNT=225950976
+```
+
+The revision was verified through Hugging Face Hub metadata for the exact model
+ID and immutable SHA. The implementation fails closed if the revision is `main`,
+`latest`, `master`, short, or otherwise non-immutable.
+
+The executor uses only:
+
+```text
+AutoTokenizer
+AutoModelForSeq2SeqLM
+```
+
+RESTORE does not use package pipelines, rule fallbacks, LLM fallbacks, spell
+correction, ensembles, ONNX quantization, or alternate checkpoints.
+
+Generation is frozen as:
+
+```text
+max_length=256
+do_sample=False
+num_beams=1
+temperature=None
+top_k=None
+top_p=None
+```
+
+Tokenizer input/decode behavior is explicit and recorded in restored-text cache
+identity:
+
+```text
+AutoTokenizer.from_pretrained(use_fast=True, legacy=True)
+tokenizer(..., return_tensors="pt", padding=True, truncation=True, max_length=256,
+          add_special_tokens=True, return_attention_mask=True)
+batch_decode(..., skip_special_tokens=True, clean_up_tokenization_spaces=False)
+transformers==4.57.6
+```
+
+The restorer is required to run in eval mode with all model parameters frozen.
+
+## Source-Code Isolation
+
+RESTORE code lives under:
+
+```text
+unmark/baselines/restore/
+scripts/baselines/restore_stage2.py
+tests/baselines/restore/
+```
+
+RESTORE does not import or execute:
+
+```text
+unmark/modeling/adapter.py
+unmark/stage1/
+```
+
+It reuses only neutral project infrastructure where appropriate:
+
+```text
+PREG1 split identities
+PhoBERT representation extraction semantics
+head training and metrics helpers
+corruption implementation
+hash and provenance helpers
+```
+
+## Artifact Isolation
+
+All runtime artifacts are placed under the RESTORE-only namespace:
+
+```text
+/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/
+  stage2-baselines/
+    restore/
+      <execution-head-prefix>/
+        audit064-restore-v1/
+```
+
+The executor never writes to historical namespaces:
+
+```text
+stage2-measurement/
+stage2-training/
+stage2-vanilla-anchor/
+```
+
+Previously closed Vanilla and corrected UNMARK evidence are authenticated
+read-only for GRR and optional contextual comparison.
+
+## Stage-2 Fairness Protocol
+
+RESTORE uses the frozen PREG1 TRAIN source and protocol-train/dev membership.
+The clean head-training pathway is:
+
+```text
+clean protocol-train text
+  -> RESTORE
+  -> PhoBERT
+  -> RESTORE clean train representations
+  -> RESTORE head
+```
+
+The clean protocol-dev pathway is analogous and controls only within-head epoch
+selection. Five independent RESTORE heads are trained with seeds:
+
+```text
+53148
+59945
+42941
+720
+9428
+```
+
+Each head must run exactly 30 complete epochs with:
+
+```text
+Linear(768, 3, bias=True)
+AdamW
+LR=0.01
+batch=128
+early_stopping=NO
+```
+
+## Validation Boundary
+
+The official validation set is opened only after all five RESTORE heads have
+durable closeouts: each expected seed directory must contain a valid head
+artifact and selected-state file whose SHA-256 matches the artifact. The
+implementation records truthfully:
+
+```text
+OFFICIAL_VALIDATION_PREVIOUSLY_SEEN_BY_AUTHORS=YES
+```
+
+RESTORE validation scores cannot select a model, restorer revision, decoding
+setting, preprocessing rule, head hyperparameter, or seed.
+
+There is no official TEST path, role, CLI argument, hidden branch, or production
+mock closeout path.
+
+## Corruption and RESTORE Pathway
+
+The corruption seed is frozen:
+
+```text
+corruption_seed=19225
+```
+
+The six validation conditions are:
+
+```text
+FULL
+P25
+P50
+P75
+P100
+STRIP_ALL
+```
+
+Expected changed-row counts are:
+
+```text
+FULL=0
+P25=1268
+P50=1513
+P75=1564
+P100=1576
+STRIP_ALL=1579
+```
+
+Every condition, including FULL, passes through the same RESTORE pathway:
+
+```text
+CONDITION_AWARE_ROUTING=NO
+FULL_BYPASS=NO
+ONE_RESTORE_PATHWAY=YES
+```
+
+## Scoring
+
+Five frozen heads are evaluated across six conditions:
+
+```text
+5 seeds x 6 conditions = 30 score units
+```
+
+Each score unit records Macro-F1, Accuracy, and per-class F1. Aggregates use
+mean and sample standard deviation across the five heads. Macro-F1 is the
+primary downstream metric.
+
+## GRR
+
+Previously closed Vanilla anchor evidence is authenticated at:
+
+```text
+/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/stage2-vanilla-anchor/a1aa9365ad6d/audit062-upper-floor-v2/evidence/vanilla-upper-floor-final-v1.json
+SHA256=d4d6914b8cbe440698a125c6e7299f42431beb707e4c7c54e110ee6ccfa8a862
+```
+
+GRR is:
+
+```text
+GRR = (S_RESTORE - S_FLOOR) / (S_UPPER - S_FLOOR)
+```
+
+The denominator is not adjusted:
+
+```text
+zero denominator -> UNDEFINED
+no epsilon
+no clipping
+```
+
+Headline degraded GRR averages the five degraded RESTORE scores first, averages
+the five degraded Vanilla FLOOR scores first, then applies the ratio once.
+Condition GRRs are not averaged into the headline.
+
+## Diagnostics
+
+Restoration diagnostics are descriptive only and cannot influence any model,
+decoding, seed, or epoch decision. They report, per condition:
+
+```text
+sentence exact-match rate to clean gold after NFC normalization
+character error rate to clean gold after NFC normalization
+word error rate to clean gold after NFC normalization
+fraction of outputs differing from observed input
+fraction of outputs whose stripped/base form differs from observed input
+```
+
+For FULL they also report:
+
+```text
+fraction_restore_leaves_clean_sentence_unchanged
+fraction_restore_changes_clean_sentence
+```
+
+## TEST Sealing
+
+RESTORE has no TEST enum role, no TEST path, no `--test-*` CLI argument, and no
+method that can open official TEST data.
+
+The final runtime must end with:
+
+```text
+OFFICIAL_TEST_READ=NO
+HARD_STOP=YES
+```
+
+## Local Verification
+
+This audit adds static and synthetic tests only. No real RESTORE model weights,
+PhoBERT weights, Drive data, UIT-VSFC data, official validation rows, or
+official TEST rows were loaded during this Codex implementation task.
+
+The required local verification commands are recorded in the final Codex
+response for this task.
+
+## Closeout Flags
+
+```text
+AUDIT064_RESTORE_IMPLEMENTATION=PASS
+
+RESTORE_EXECUTOR_IMPLEMENTED=YES
+RESTORE_REAL_RESULTS_GENERATED=NO
+
+RESTORE_MODEL_DOWNLOADED_BY_THIS_AUDIT=NO
+PHOBERT_LOADED_BY_THIS_AUDIT=NO
+UIT_VSFC_READ_BY_THIS_AUDIT=NO
+OFFICIAL_VALIDATION_READ_BY_THIS_AUDIT=NO
+OFFICIAL_TEST_READ=NO
+
+COLAB_RUNNER_READY=YES
+```
