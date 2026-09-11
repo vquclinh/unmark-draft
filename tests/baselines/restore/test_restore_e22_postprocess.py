@@ -129,18 +129,21 @@ def _unmark_a_evidence(values: dict[str, tuple[float, float]] | None = None) -> 
     values = values or UNMARK_A_VALUES
     return {
         "schema_version": "stage2-corrected-measurement-v3-final",
-        "arms": {
-            "UNMARK-A": {
-                "conditions": {
-                    condition: {
-                        "macro_f1_mean": macro,
-                        "macro_f1_std": 0.0,
-                        "accuracy_mean": accuracy,
-                        "accuracy_std": 0.0,
+        "aggregate_report": {
+            "schema_version": "stage2-head-campaign-v1",
+            "arms": {
+                "UNMARK-A": {
+                    "conditions": {
+                        condition: {
+                            "macro_f1_mean": macro,
+                            "macro_f1_std": 0.0,
+                            "accuracy_mean": accuracy,
+                            "accuracy_std": 0.0,
+                        }
+                        for condition, (macro, accuracy) in values.items()
                     }
-                    for condition, (macro, accuracy) in values.items()
-                },
-            }
+                }
+            },
         },
         "ab_selection_performed": False,
         "winner": None,

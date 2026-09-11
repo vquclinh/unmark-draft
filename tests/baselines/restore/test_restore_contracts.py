@@ -322,27 +322,30 @@ def _unmark_a_final_evidence_fixture() -> dict[str, object]:
     }
     return {
         "schema_version": "stage2-corrected-measurement-v3-final",
-        "arms": {
-            "UNMARK-A": {
-                "conditions": {
-                    condition: {
-                        "macro_f1_mean": macro,
-                        "macro_f1_std": 0.01,
-                        "accuracy_mean": accuracy,
-                        "accuracy_std": 0.02,
-                        "per_class_f1_mean": [macro / 3, macro / 3, macro / 3],
-                    }
-                    for condition, (macro, accuracy) in UNMARK_A_FIXTURE_MEANS.items()
+        "aggregate_report": {
+            "schema_version": "stage2-head-campaign-v1",
+            "arms": {
+                "UNMARK-A": {
+                    "conditions": {
+                        condition: {
+                            "macro_f1_mean": macro,
+                            "macro_f1_std": 0.01,
+                            "accuracy_mean": accuracy,
+                            "accuracy_std": 0.02,
+                            "per_class_f1_mean": [macro / 3, macro / 3, macro / 3],
+                        }
+                        for condition, (macro, accuracy) in UNMARK_A_FIXTURE_MEANS.items()
+                    },
+                    "robustness_summaries": {
+                        "degraded_equal_weight_macro_f1_mean": statistics.fmean(
+                            UNMARK_A_FIXTURE_MEANS[c][0] for c in RESTORE_DEGRADED_CONDITIONS
+                        )
+                    },
                 },
-                "robustness_summaries": {
-                    "degraded_equal_weight_macro_f1_mean": statistics.fmean(
-                        UNMARK_A_FIXTURE_MEANS[c][0] for c in RESTORE_DEGRADED_CONDITIONS
-                    )
+                "UNMARK-B": {
+                    "conditions": unmark_b,
+                    "robustness_summaries": {},
                 },
-            },
-            "UNMARK-B": {
-                "conditions": unmark_b,
-                "robustness_summaries": {},
             },
         },
         "ab_selection_performed": False,
@@ -927,7 +930,10 @@ def test_24c_evidence_parser_supports_closed_unmark_a_final_schema():
     payload = _unmark_a_final_evidence_fixture()
     metrics = extract_condition_metrics(payload)
     assert metrics == _expected_metrics(UNMARK_A_FIXTURE_MEANS)
-    assert payload["arms"]["UNMARK-A"]["conditions"]["P25"]["macro_f1_mean"] == metrics["P25"]["macro_f1"]
+    assert (
+        payload["aggregate_report"]["arms"]["UNMARK-A"]["conditions"]["P25"]["macro_f1_mean"]
+        == metrics["P25"]["macro_f1"]
+    )
 
 
 def test_24d_evidence_parser_extracts_only_nested_means():
@@ -982,6 +988,40 @@ def test_24h_evidence_parser_refuses_extra_condition_in_aggregate_mapping():
         "macro_f1": {"mean": 0.5, "sample_sd": 0.1},
         "accuracy": {"mean": 0.6, "sample_sd": 0.1},
     }
+    with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
+        extract_condition_metrics(payload)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["aggregate_report"].pop("arms"),
+        lambda payload: payload["aggregate_report"]["arms"].pop("UNMARK-A"),
+        lambda payload: payload["aggregate_report"]["arms"]["UNMARK-A"].pop("conditions"),
+        lambda payload: payload["aggregate_report"]["arms"]["UNMARK-A"]["conditions"].pop("P100"),
+        lambda payload: payload["aggregate_report"]["arms"]["UNMARK-A"]["conditions"].__setitem__(
+            "P10",
+            {"macro_f1_mean": 0.5, "accuracy_mean": 0.6},
+        ),
+        lambda payload: payload["aggregate_report"]["arms"]["UNMARK-A"]["conditions"]["P25"].update(
+            {"macro_f1_mean": "0.6"}
+        ),
+        lambda payload: payload["aggregate_report"]["arms"]["UNMARK-A"]["conditions"]["P25"].update(
+            {"accuracy_mean": True}
+        ),
+    ],
+)
+def test_24i_evidence_parser_refuses_malformed_unmark_a_final_wrapper_shapes(mutate):
+    payload = _json_clone(_unmark_a_final_evidence_fixture())
+    mutate(payload)
+    with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
+        extract_condition_metrics(payload)
+
+
+def test_24j_evidence_parser_does_not_accept_unwrapped_unmark_a_aggregate():
+    payload = _json_clone(_unmark_a_final_evidence_fixture())
+    inner_aggregate = payload.pop("aggregate_report")
+    payload["arms"] = inner_aggregate["arms"]
     with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
         extract_condition_metrics(payload)
 

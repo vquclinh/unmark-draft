@@ -381,6 +381,27 @@ Allowed post-processing outputs are GRR JSON, contextual comparison JSON, and a
 post-processing closeout evidence JSON. No model, head, representation,
 restored-text, or measurement directories are produced by this recovery path.
 
+A read-only Colab diagnostic at committed repair head
+`188eab016eb4357f68c63c8c6233a0bdf1af6a4c` authenticated the e22 RESTORE
+measurement, closed Vanilla evidence, and closed corrected UNMARK-A evidence by
+SHA. It proved RESTORE native parsing, closed Vanilla parsing, and GRR
+computation were correct, but contextual UNMARK-A parsing still failed because
+the real final evidence wraps the Stage-2 aggregate under:
+
+```text
+aggregate_report.arms.UNMARK-A.conditions
+```
+
+The inner Stage-2 aggregate producer returns `arms.UNMARK-A.conditions`; the
+corrected final evidence stores that aggregate as `aggregate_report`. This
+wrapper repair is another post-processing schema-integration fix only. The e22
+scientific measurement remains valid, and no e22 artifacts are rewritten.
+
+`extract_condition_metrics` intentionally supports only the real enumerated
+schemas: RESTORE native `conditions`, closed Vanilla `aggregate`, and corrected
+UNMARK final `aggregate_report.arms.UNMARK-A.conditions`. It does not perform a
+generic recursive search through arbitrary JSON.
+
 ## Diagnostics
 
 Restoration diagnostics are descriptive only and cannot influence any model,

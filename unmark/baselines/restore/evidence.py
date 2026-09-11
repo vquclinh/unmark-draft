@@ -68,48 +68,43 @@ def _condition_metrics_from_mapping(payload: Mapping[str, Any]) -> dict[str, dic
     return result
 
 
-def _condition_metrics_from_table(table: Any) -> dict[str, dict[str, float]] | None:
-    if not isinstance(table, list) or len(table) != len(RESTORE_CONDITIONS):
-        return None
-    by_condition = {}
-    for row in table:
-        if not isinstance(row, Mapping):
-            return None
-        condition = row.get("condition")
-        if condition not in RESTORE_CONDITIONS or condition in by_condition:
-            return None
-        metrics = _condition_row_metrics(row)
-        if metrics is None:
-            return None
-        by_condition[condition] = metrics
-    if set(by_condition) != set(RESTORE_CONDITIONS):
-        return None
-    return {condition: by_condition[condition] for condition in RESTORE_CONDITIONS}
-
-
 def extract_condition_metrics(payload: Mapping[str, Any]) -> dict[str, dict[str, float]]:
-    """Find a six-condition aggregate table in RESTORE/Vanilla/UNMARK evidence."""
+    """Find one of the explicitly supported six-condition evidence schemas."""
 
-    aggregate = payload.get("aggregate") if isinstance(payload.get("aggregate"), Mapping) else None
-    arms = payload.get("arms") if isinstance(payload.get("arms"), Mapping) else None
-    unmark_a = arms.get("UNMARK-A") if isinstance(arms, Mapping) else None
-    candidates = [
-        payload.get("conditions"),
-        aggregate,
-        aggregate.get("conditions") if isinstance(aggregate, Mapping) else None,
-        (payload.get("results") or {}).get("conditions") if isinstance(payload.get("results"), Mapping) else None,
-        (payload.get("vanilla") or {}).get("conditions") if isinstance(payload.get("vanilla"), Mapping) else None,
-        (payload.get("restore") or {}).get("conditions") if isinstance(payload.get("restore"), Mapping) else None,
-        unmark_a.get("conditions") if isinstance(unmark_a, Mapping) else None,
-    ]
-    for candidate in candidates:
-        metrics = _condition_metrics_from_mapping(candidate)
-        if metrics is not None:
-            return metrics
-
-    metrics = _condition_metrics_from_table(payload.get("aggregate_table"))
+    metrics = _condition_metrics_from_mapping(payload.get("conditions"))
     if metrics is not None:
         return metrics
+
+    aggregate = (
+        payload.get("aggregate")
+        if isinstance(payload.get("aggregate"), Mapping)
+        else None
+    )
+    metrics = _condition_metrics_from_mapping(aggregate)
+    if metrics is not None:
+        return metrics
+
+    aggregate_report = (
+        payload.get("aggregate_report")
+        if isinstance(payload.get("aggregate_report"), Mapping)
+        else None
+    )
+    aggregate_report_arms = (
+        aggregate_report.get("arms") if isinstance(aggregate_report, Mapping) else None
+    )
+    aggregate_report_unmark_a = (
+        aggregate_report_arms.get("UNMARK-A")
+        if isinstance(aggregate_report_arms, Mapping)
+        else None
+    )
+    metrics = _condition_metrics_from_mapping(
+        aggregate_report_unmark_a.get("conditions")
+        if isinstance(aggregate_report_unmark_a, Mapping)
+        else None
+    )
+    if metrics is not None:
+        return metrics
+
     raise EvaluationContractViolation(
         "could not find six-condition aggregate metrics in evidence"
     )
