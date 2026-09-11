@@ -95,6 +95,7 @@ from unmark.stage1.protocol import (  # noqa: E402
     ENCODER_CHECKPOINT,
     ENCODER_REVISION,
     EVAL_EVERY_UPDATES,
+    EXTENDED_MAX_UPDATES,
     INITIAL_MAX_UPDATES,
     LR_PILOT_GRID,
     LR_PILOT_R,
@@ -772,6 +773,47 @@ def _corpus_consumer(parser: argparse.ArgumentParser) -> None:
                              "across unmark/, scripts/, configs/ and requirements/")
 
 
+def banner_stage(args) -> str | None:
+    """The registered stage this command will execute, if any. **DISPLAY ONLY.**
+
+    CLI commands are hyphenated (`v2-scf`) and stages are underscored
+    (`v2_scf`); `smoke` names its candidate with `--candidate`. Returns `None`
+    for a command that executes no registered stage -- `prepare-corpus` -- so the
+    banner can stay generic there rather than inventing a budget for it.
+
+    Nothing scientific reads this. It selects a line of text.
+    """
+    if args.command == "smoke":
+        return getattr(args, "candidate", None)
+    stage = str(args.command).replace("-", "_")
+    return stage if stage in {c.stage for c in CANDIDATES} else None
+
+
+def budget_banner(stage: str | None) -> str:
+    """The budget line for the startup banner. **DISPLAY ONLY.**
+
+    Derived from the candidate register, never from a restated constant, so the
+    line cannot drift from the policy the run will actually be held to.
+
+    The generic banner printed "one continuation, then STOP" for every command,
+    including the three V2 first-screen candidates, whose budgets set
+    `allows_precommitted_continuation = False` and are hard-capped at 20 000
+    updates. The claim was false for them and PREFLIGHT 5A caught it. Enforcement
+    was always correct -- `trainer.resolve_run_cap`, `trainer.resolve_budget` and
+    `execute.continuation_permitted` all refuse the 40k leg for a hard-capped
+    candidate -- so this repairs what the banner SAYS, not what the run DOES.
+    """
+    if stage is None:
+        return f"  budget         : {INITIAL_MAX_UPDATES} updates, one continuation, then STOP"
+    budget = candidate_for_stage(stage).budget
+    if budget.allows_precommitted_continuation:
+        return f"  budget         : {INITIAL_MAX_UPDATES} updates, one continuation, then STOP"
+    return (
+        f"  budget         : {budget.hard_max_updates} updates, HARD CAP "
+        f"({budget.policy}); NO continuation to {EXTENDED_MAX_UPDATES}"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -879,7 +921,7 @@ def main(argv=None) -> int:
     print(f"  backbone       : {ENCODER_CHECKPOINT} @ {ENCODER_REVISION} (frozen)")
     print(f"  corpus         : {CORPUS_DATASET} @ {CORPUS_REVISION}")
     print(f"  max_length     : {MAX_LENGTH} | batch {BATCH_SIZE} | eval every {EVAL_EVERY_UPDATES}")
-    print(f"  budget         : {INITIAL_MAX_UPDATES} updates, one continuation, then STOP")
+    print(budget_banner(banner_stage(args)))
     print(f"  corruption     : p ~ U(0,1), redraw per visit, pi_strip {PI_STRIP}, "
           f"seed {CORRUPTION_SEED}")
     print(f"  validation     : {list(VALIDATION_CONDITIONS)}, seed {VALIDATION_CORRUPTION_SEED}")

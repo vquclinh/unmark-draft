@@ -719,20 +719,27 @@ def execute_stage(
             artifact["selected"] = select_r(candidates, frozen).to_dict()
         sink.emit("selection", stage=stage, selected=artifact["selected"])
     elif stage in FIRST_SCREEN_STAGES:
-        # NO SELECTION. V2-GC is one run, so there is no candidate to choose
-        # between -- and the checkpoint WITHIN it is still chosen by the locked
-        # held-out rule in `select_checkpoint`, which this stage does not touch.
-        # The grid term is a training term and a logged diagnostic; it selects
-        # nothing, and no downstream label or Macro-F1 enters here.
+        # NO SELECTION. A first screen is ONE run, so there is no candidate to
+        # choose between -- and the checkpoint WITHIN it is still chosen by the
+        # locked held-out rule in `select_checkpoint`, which this stage does not
+        # touch. Whatever extra term the candidate's objective carries is a
+        # training term and a logged diagnostic; it selects nothing, and no
+        # downstream label or Macro-F1 enters here.
         # NOTE: `candidate` here is the StageCandidate resolved from the stage
         # name; the screened run is `candidates[0]`. The two are deliberately
         # named apart -- conflating them is how a budget block could end up
         # describing the wrong thing.
         screened = candidates[0]
         artifact[stage] = {
+            # CANDIDATE-NEUTRAL. This branch is shared by every first-screen
+            # candidate, so the prose must be true for all of them: it states
+            # what the STAGE does and leaves what the candidate IS to the
+            # machine-readable `objective` field below. Naming one candidate's
+            # loss here made the note false for the other two (PREFLIGHT 5A).
             "note": (
-                "post-hoc research candidate: the historical objective plus a "
-                "token-grid consistency term, ONE run, no selection performed here"
+                "post-hoc research candidate: ONE fixed first-screen run; "
+                "checkpoint selection within the run uses the locked Stage-1 "
+                "held-out rule; no between-candidate selection is performed here"
             ),
             "objective": objective_identity.to_dict(),
             # The ENFORCED screening budget, not a restated constant. A reader
