@@ -3,8 +3,10 @@
 ## Scope
 
 This audit implements the separate RESTORE baseline executor for the UNMARK
-paper evaluation. It does not run scientific scoring, does not generate RESTORE
-results, and does not modify historical Audit 063 evidence.
+paper evaluation. This Codex implementation task does not run scientific
+scoring, does not generate RESTORE results itself, and does not modify
+historical Audit 063 evidence. The later real e22 scientific measurement is
+recorded below as immutable historical provenance.
 
 RESTORE tests the string-level repair strategy:
 
@@ -91,6 +93,7 @@ RESTORE code lives under:
 ```text
 unmark/baselines/restore/
 scripts/baselines/restore_stage2.py
+scripts/baselines/restore_e22_postprocess.py
 tests/baselines/restore/
 ```
 
@@ -320,6 +323,64 @@ Headline degraded GRR averages the five degraded RESTORE scores first, averages
 the five degraded Vanilla FLOOR scores first, then applies the ratio once.
 Condition GRRs are not averaged into the headline.
 
+## E22 Post-Measurement Integration Repair
+
+The real execution at repository head
+`e22c5ea8dbcbea4060193dca3f40fc97694fbb4a` successfully completed the
+expensive/scientific phases through 30-unit RESTORE measurement and diagnostics.
+The durable measurement artifact is:
+
+```text
+measurement/restore-measurement.json
+SHA256=c175d492834d5bb32e9423fd8f14fbd65874f1c22906f014dbd6727a0ba7b38f
+score_units=30
+```
+
+`RESTORE_GRR` then exposed a post-measurement integration bug: the reader did
+not support the already-authenticated closed Vanilla evidence schema, where
+condition means live at:
+
+```text
+aggregate[CONDITION].macro_f1.mean
+aggregate[CONDITION].accuracy.mean
+```
+
+This is not a RESTORE scientific measurement failure. The measurement,
+diagnostics, heads, representations, restored text caches, corruption
+realisation, tokenizer/generation settings, and canonicalization remain
+unchanged. The repair adapts the read-only evidence parser to the historical
+schema; it does not rewrite or normalize the Vanilla JSON.
+
+The provenance-preserving recovery is an explicit post-processing closeout that
+authenticates and binds:
+
+```text
+source_execution_head=e22c5ea8dbcbea4060193dca3f40fc97694fbb4a
+restore_measurement_sha256=c175d492834d5bb32e9423fd8f14fbd65874f1c22906f014dbd6727a0ba7b38f
+vanilla_evidence_sha256=d4d6914b8cbe440698a125c6e7299f42431beb707e4c7c54e110ee6ccfa8a862
+unmark_a_evidence_sha256=8d9fbd4396f88334b12606e0194123e7009e902f8e7b3e4bd1b94f35b77edff2
+```
+
+The repair-head closeout must not claim to have generated the e22 model,
+representation, head, text-cache, measurement, or diagnostic artifacts, and it
+must not silently reuse artifacts across heads.
+
+The dedicated post-processing executor writes only derived JSON under:
+
+```text
+stage2-baselines/restore-postprocess/<repair-head-prefix>/audit064-e22-closeout-v1/
+```
+
+It must not write under:
+
+```text
+stage2-baselines/restore/e22c5ea8dbcb/audit064-restore-v1/
+```
+
+Allowed post-processing outputs are GRR JSON, contextual comparison JSON, and a
+post-processing closeout evidence JSON. No model, head, representation,
+restored-text, or measurement directories are produced by this recovery path.
+
 ## Diagnostics
 
 Restoration diagnostics are descriptive only and cannot influence any model,
@@ -356,7 +417,10 @@ HARD_STOP=YES
 
 This audit adds static and synthetic tests only. No real RESTORE model weights,
 PhoBERT weights, Drive data, UIT-VSFC data, official validation rows, or
-official TEST rows were loaded during this Codex implementation task.
+official TEST rows were loaded during this Codex implementation/post-processing
+repair task. This local verification statement is scoped to Codex work in the
+repository and does not negate the durable e22 scientific measurement recorded
+above.
 
 The required local verification commands are recorded in the final Codex
 response for this task.
@@ -367,7 +431,10 @@ response for this task.
 AUDIT064_RESTORE_IMPLEMENTATION=PASS
 
 RESTORE_EXECUTOR_IMPLEMENTED=YES
-RESTORE_REAL_RESULTS_GENERATED=NO
+RESTORE_POSTPROCESS_EXECUTOR_IMPLEMENTED=YES
+RESTORE_REAL_RESULTS_GENERATED_BY_CODEX_IMPLEMENTATION_TASK=NO
+RESTORE_E22_REAL_SCIENTIFIC_MEASUREMENT_EXISTS=YES
+RESTORE_E22_MEASUREMENT_SHA256=c175d492834d5bb32e9423fd8f14fbd65874f1c22906f014dbd6727a0ba7b38f
 
 RESTORE_MODEL_DOWNLOADED_BY_THIS_AUDIT=NO
 PHOBERT_LOADED_BY_THIS_AUDIT=NO

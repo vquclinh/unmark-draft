@@ -109,6 +109,7 @@ from unmark.baselines.restore.stage2 import (
     build_condition_streams,
     compute_grr,
     canonical_clean_texts,
+    extract_condition_metrics,
     load_restore_validation_split,
     require_changed_row_counts,
     restore_records,
@@ -241,6 +242,116 @@ def _condition_table(full: float, degraded: tuple[float, float, float, float, fl
         condition: {"macro_f1": value, "accuracy": value}
         for condition, value in values.items()
     }
+
+
+RESTORE_FIXTURE_MEANS = {
+    "FULL": (0.710, 0.810),
+    "P25": (0.620, 0.720),
+    "P50": (0.580, 0.680),
+    "P75": (0.540, 0.640),
+    "P100": (0.500, 0.600),
+    "STRIP_ALL": (0.460, 0.560),
+}
+VANILLA_FIXTURE_MEANS = {
+    "FULL": (0.745602, 0.901327),
+    "P25": (0.702882, 0.860265),
+    "P50": (0.663827, 0.816425),
+    "P75": (0.609040, 0.754264),
+    "P100": (0.536465, 0.673279),
+    "STRIP_ALL": (0.368986, 0.443714),
+}
+UNMARK_A_FIXTURE_MEANS = {
+    "FULL": (0.667074, 0.812508),
+    "P25": (0.644674, 0.797599),
+    "P50": (0.641626, 0.788882),
+    "P75": (0.624020, 0.763108),
+    "P100": (0.618434, 0.756665),
+    "STRIP_ALL": (0.610777, 0.751358),
+}
+
+
+def _expected_metrics(values: dict[str, tuple[float, float]]) -> dict[str, dict[str, float]]:
+    return {
+        condition: {"macro_f1": values[condition][0], "accuracy": values[condition][1]}
+        for condition in RESTORE_CONDITIONS
+    }
+
+
+def _restore_native_aggregate_fixture() -> dict[str, object]:
+    return {
+        "schema_version": "restore-stage2-baseline-v1",
+        "protocol_version": "restore-baseline-protocol-v1",
+        "score_units": 30,
+        "conditions": {
+            condition: {
+                "macro_f1_mean": macro,
+                "macro_f1_sample_std": 0.01,
+                "accuracy_mean": accuracy,
+                "accuracy_sample_std": 0.02,
+                "per_class_f1_mean": [macro / 2, macro / 2, macro / 2],
+            }
+            for condition, (macro, accuracy) in RESTORE_FIXTURE_MEANS.items()
+        },
+    }
+
+
+def _vanilla_final_evidence_fixture() -> dict[str, object]:
+    return {
+        "schema_version": "vanilla-upper-floor-final-v1",
+        "conditions": list(RESTORE_CONDITIONS),
+        "aggregate": {
+            condition: {
+                "macro_f1": {"mean": macro, "sample_sd": 0.01},
+                "accuracy": {"mean": accuracy, "sample_sd": 0.02},
+            }
+            for condition, (macro, accuracy) in VANILLA_FIXTURE_MEANS.items()
+        },
+    }
+
+
+def _unmark_a_final_evidence_fixture() -> dict[str, object]:
+    unmark_b = {
+        condition: {
+            "macro_f1_mean": macro - 0.1,
+            "macro_f1_std": 0.03,
+            "accuracy_mean": accuracy - 0.1,
+            "accuracy_std": 0.04,
+            "per_class_f1_mean": [macro / 3, macro / 3, macro / 3],
+        }
+        for condition, (macro, accuracy) in UNMARK_A_FIXTURE_MEANS.items()
+    }
+    return {
+        "schema_version": "stage2-corrected-measurement-v3-final",
+        "arms": {
+            "UNMARK-A": {
+                "conditions": {
+                    condition: {
+                        "macro_f1_mean": macro,
+                        "macro_f1_std": 0.01,
+                        "accuracy_mean": accuracy,
+                        "accuracy_std": 0.02,
+                        "per_class_f1_mean": [macro / 3, macro / 3, macro / 3],
+                    }
+                    for condition, (macro, accuracy) in UNMARK_A_FIXTURE_MEANS.items()
+                },
+                "robustness_summaries": {
+                    "degraded_equal_weight_macro_f1_mean": statistics.fmean(
+                        UNMARK_A_FIXTURE_MEANS[c][0] for c in RESTORE_DEGRADED_CONDITIONS
+                    )
+                },
+            },
+            "UNMARK-B": {
+                "conditions": unmark_b,
+                "robustness_summaries": {},
+            },
+        },
+        "ab_selection_performed": False,
+        "winner": None,
+    }
+
+
+def _json_clone(payload: dict[str, object]) -> dict[str, object]:
+    return json.loads(json.dumps(payload))
 
 
 def _load_runner_module():
@@ -798,6 +909,83 @@ def test_24_restore_aggregates_with_sample_standard_deviation():
     assert aggregate["sample_sd_aggregation"] is True
 
 
+def test_24a_evidence_parser_supports_current_restore_native_schema():
+    payload = _restore_native_aggregate_fixture()
+    metrics = extract_condition_metrics(payload)
+    assert metrics == _expected_metrics(RESTORE_FIXTURE_MEANS)
+    assert set(metrics) == set(RESTORE_CONDITIONS)
+
+
+def test_24b_evidence_parser_supports_closed_vanilla_final_schema():
+    payload = _vanilla_final_evidence_fixture()
+    metrics = extract_condition_metrics(payload)
+    assert metrics == _expected_metrics(VANILLA_FIXTURE_MEANS)
+    assert payload["conditions"] == list(RESTORE_CONDITIONS)
+
+
+def test_24c_evidence_parser_supports_closed_unmark_a_final_schema():
+    payload = _unmark_a_final_evidence_fixture()
+    metrics = extract_condition_metrics(payload)
+    assert metrics == _expected_metrics(UNMARK_A_FIXTURE_MEANS)
+    assert payload["arms"]["UNMARK-A"]["conditions"]["P25"]["macro_f1_mean"] == metrics["P25"]["macro_f1"]
+
+
+def test_24d_evidence_parser_extracts_only_nested_means():
+    payload = _vanilla_final_evidence_fixture()
+    payload["aggregate"]["P25"]["macro_f1"]["sample_sd"] = 99.0
+    payload["aggregate"]["P25"]["accuracy"]["sample_sd"] = 88.0
+    metrics = extract_condition_metrics(payload)
+    assert metrics["P25"] == {
+        "macro_f1": VANILLA_FIXTURE_MEANS["P25"][0],
+        "accuracy": VANILLA_FIXTURE_MEANS["P25"][1],
+    }
+
+
+def test_24e_evidence_parser_refuses_condition_list_without_aggregate_metrics():
+    with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
+        extract_condition_metrics({"conditions": list(RESTORE_CONDITIONS)})
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload["aggregate"].pop("P100"),
+        lambda payload: payload["aggregate"]["P25"].pop("macro_f1"),
+        lambda payload: payload["aggregate"]["P25"].pop("accuracy"),
+        lambda payload: payload["aggregate"]["P25"]["macro_f1"].pop("mean"),
+        lambda payload: payload["aggregate"]["P25"]["accuracy"].pop("mean"),
+        lambda payload: payload["aggregate"]["P25"]["macro_f1"].update({"mean": "0.7"}),
+        lambda payload: payload["aggregate"]["P25"]["accuracy"].update({"mean": True}),
+    ],
+)
+def test_24f_evidence_parser_refuses_malformed_vanilla_aggregate_shapes(mutate):
+    payload = _json_clone(_vanilla_final_evidence_fixture())
+    mutate(payload)
+    with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
+        extract_condition_metrics(payload)
+
+
+def test_24g_evidence_parser_refuses_five_condition_aggregate_table():
+    payload = {
+        "aggregate_table": [
+            {"condition": condition, "macro_f1": 0.5, "accuracy": 0.6}
+            for condition in RESTORE_CONDITIONS[:-1]
+        ]
+    }
+    with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
+        extract_condition_metrics(payload)
+
+
+def test_24h_evidence_parser_refuses_extra_condition_in_aggregate_mapping():
+    payload = _json_clone(_vanilla_final_evidence_fixture())
+    payload["aggregate"]["P10"] = {
+        "macro_f1": {"mean": 0.5, "sample_sd": 0.1},
+        "accuracy": {"mean": 0.6, "sample_sd": 0.1},
+    }
+    with pytest.raises(EvaluationContractViolation, match="six-condition aggregate metrics"):
+        extract_condition_metrics(payload)
+
+
 def test_25_grr_formula_has_no_epsilon_or_clipping():
     restore = {"conditions": _condition_table(1.0, (0.6, 0.6, 0.6, 0.6, 0.6))}
     vanilla = {"conditions": _condition_table(1.0, (0.2, 0.2, 0.2, 0.2, 0.2))}
@@ -806,6 +994,26 @@ def test_25_grr_formula_has_no_epsilon_or_clipping():
     assert grr["no_epsilon"] is True
     assert grr["no_clipping"] is True
     assert grr["conditions"]["P25"]["macro_f1_grr"] == pytest.approx(0.5)
+
+
+def test_25a_grr_accepts_closed_vanilla_schema_without_formula_drift():
+    restore = _restore_native_aggregate_fixture()
+    vanilla = _vanilla_final_evidence_fixture()
+    grr = compute_grr(restore_aggregate=restore, vanilla_evidence=vanilla)
+    expected = (
+        RESTORE_FIXTURE_MEANS["P25"][0] - VANILLA_FIXTURE_MEANS["P25"][0]
+    ) / (VANILLA_FIXTURE_MEANS["FULL"][0] - VANILLA_FIXTURE_MEANS["P25"][0])
+    assert grr["conditions"]["P25"]["macro_f1_grr"] == pytest.approx(expected)
+    assert grr["zero_denominator_policy"] == "UNDEFINED"
+    assert grr["no_epsilon"] is True
+    assert grr["no_clipping"] is True
+
+
+def test_25b_grr_zero_denominator_remains_undefined():
+    restore = {"conditions": _condition_table(0.7, (0.6, 0.6, 0.6, 0.6, 0.6))}
+    vanilla = {"conditions": _condition_table(0.2, (0.2, 0.1, 0.1, 0.1, 0.1))}
+    grr = compute_grr(restore_aggregate=restore, vanilla_evidence=vanilla)
+    assert grr["conditions"]["P25"]["macro_f1_grr"] == "UNDEFINED"
 
 
 def test_26_headline_grr_averages_scores_first_then_applies_ratio_once():
@@ -818,6 +1026,24 @@ def test_26_headline_grr_averages_scores_first_then_applies_ratio_once():
     condition_average = statistics.fmean(
         (r - f) / (1.0 - f)
         for r, f in zip((0.5, 0.8, 0.9, 0.5, 0.8), (0.2, 0.7, 0.8, 0.4, 0.6))
+    )
+    assert grr["headline_degraded"]["macro_f1_grr"] == pytest.approx(expected)
+    assert grr["headline_degraded"]["macro_f1_grr"] != pytest.approx(condition_average)
+    assert grr["headline_degraded"]["condition_grrs_averaged"] is False
+
+
+def test_26a_headline_grr_keeps_score_first_rule_with_closed_vanilla_schema():
+    restore = _restore_native_aggregate_fixture()
+    vanilla = _vanilla_final_evidence_fixture()
+    grr = compute_grr(restore_aggregate=restore, vanilla_evidence=vanilla)
+    mean_restore = statistics.fmean(RESTORE_FIXTURE_MEANS[c][0] for c in RESTORE_DEGRADED_CONDITIONS)
+    mean_floor = statistics.fmean(VANILLA_FIXTURE_MEANS[c][0] for c in RESTORE_DEGRADED_CONDITIONS)
+    expected = (mean_restore - mean_floor) / (VANILLA_FIXTURE_MEANS["FULL"][0] - mean_floor)
+    condition_average = statistics.fmean(
+        (
+            RESTORE_FIXTURE_MEANS[c][0] - VANILLA_FIXTURE_MEANS[c][0]
+        ) / (VANILLA_FIXTURE_MEANS["FULL"][0] - VANILLA_FIXTURE_MEANS[c][0])
+        for c in RESTORE_DEGRADED_CONDITIONS
     )
     assert grr["headline_degraded"]["macro_f1_grr"] == pytest.approx(expected)
     assert grr["headline_degraded"]["macro_f1_grr"] != pytest.approx(condition_average)
