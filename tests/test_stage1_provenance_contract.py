@@ -42,6 +42,13 @@ CONSTRUCTOR_FIELDS = (
     "run_seed", "init_seed", "corruption_seed", "learning_rate", "r",
     "corpus_manifest_digest", "repository_head",
     "backbone_checkpoint", "backbone_revision", "protocol_version", "precision",
+    # The V2 candidates: which loss the run minimised. Defaults to the
+    # historical objective, so an artifact that predates the field still reads
+    # as the experiment it was.
+    "objective",
+    # C1 (V2-SCF) trains the historical objective under a different adapter
+    # architecture, so the objective alone no longer identifies a checkpoint.
+    "fusion",
     # D-S1A-008, added by Audit 030 §W: the pinned syllable inventory decides
     # every corruption denominator, so a run artifact must name the one it used.
     "inventory",
@@ -148,8 +155,9 @@ def test_the_production_lifecycle_preserves_every_identity_field():
     recorded = payload_for(mine)["provenance"]
     for field in CONSTRUCTOR_FIELDS:
         expected = getattr(mine, field)
-        # `inventory` is a nested identity; it serialises through its own to_dict.
-        if field == "inventory":
+        # `inventory` and `objective` are nested identities; each serialises
+        # through its own to_dict.
+        if field in ("inventory", "objective", "fusion"):
             expected = expected.to_dict() if expected is not None else None
         assert recorded[field] == expected, field
     verify_checkpoint(payload_for(mine), mine)  # must not raise

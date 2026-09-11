@@ -209,9 +209,23 @@ def test_a_fresh_adapter_is_constructed_inside_the_loop():
     # never bound. Requiring it here is what kept the `NameError` alive through
     # every green suite (Audit 031 B1). The real constructor is `Stage1Objective`,
     # and `test_stage1_name_resolution.py` proves the name actually resolves.
-    for required in ("fresh_adapter", "UnmarkEncoder", "Stage1Objective",
+    for required in ("fresh_adapter", "UnmarkEncoder", "build_candidate_objective",
                      "expected_fresh_init_hash", "trainable_state_hash"):
         assert required in inside, f"{required} must be called per nominal run"
+
+
+def test_the_per_run_objective_constructor_really_constructs_an_objective():
+    """`build_candidate_objective` is the construction, not a rename of nothing.
+
+    The call above moved into a shared helper (Audit 066) so the real-model
+    smoke path builds the same objective a run trains. That is only equivalent
+    if the helper actually constructs one, so the original guarantee -- a real
+    objective per nominal run -- is asserted here rather than assumed.
+    """
+    node = function(EXECUTE, "build_candidate_objective")
+    built = calls(node)
+    assert "Stage1Objective" in built, "the historical objective is never constructed"
+    assert "GridConsistencyObjective" in built, "no candidate objective is constructed"
 
 
 def test_the_old_shared_objective_construction_is_gone():

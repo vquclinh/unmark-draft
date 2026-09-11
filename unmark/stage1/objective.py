@@ -122,14 +122,26 @@ class Stage1Objective(nn.Module):
         self.weights = weights
 
     # -- branches ---------------------------------------------------------
-    def reference_representation(
+    def reference_branch(
         self, input_ids: Tensor, attention_mask: Tensor, special_tokens_mask: Tensor
-    ) -> Tensor:
-        """`h(x)`: bare frozen encoder on the clean text. `[B, d]`.
+    ) -> tuple[Tensor, Tensor]:
+        """One reference forward, returning `(final hidden states, pooled)`.
 
-        Under `no_grad` because it is a **target**: theta is frozen, and no
-        gradient may flow into it. This is the one branch where `no_grad` is
-        correct -- the adapted branches must never be wrapped in it.
+        `[B, L, d]` and `[B, d]` from **one** encoder call. The pooled half is
+        exactly what `reference_representation` has always returned -- same
+        forward, same locked pooling, same order of operations -- so this is a
+        refactor of where the value is produced, not a change to what it is.
+
+        The hidden half is returned because an objective that needs the teacher's
+        contextual states would otherwise have to run the frozen encoder a second
+        time to see them, and a second forward of a 135M-parameter backbone is
+        not a cost a loss term gets to add silently.
+
+        Under `no_grad` because this branch is a **target**: theta is frozen, and
+        no gradient may flow into it. This is the one branch where `no_grad` is
+        correct -- the adapted branches must never be wrapped in it. A consumer
+        that wants an explicit stop-gradient detaches at its own boundary too,
+        where the decision is visible rather than implied by this wrapper.
         """
         encoder = self.unmark_encoder.encoder
         # The reference branch calls the frozen encoder directly, so it needs the
@@ -139,9 +151,22 @@ class Stage1Objective(nn.Module):
         with torch.no_grad():
             outputs = encoder(input_ids=input_ids, attention_mask=attention_mask)
             hidden = _hidden_states(outputs)
-            return masked_mean_non_special(hidden, attention_mask, special_tokens_mask)
+            pooled = masked_mean_non_special(hidden, attention_mask, special_tokens_mask)
+            return hidden, pooled
 
-    def adapted_representation(
+    def reference_representation(
+        self, input_ids: Tensor, attention_mask: Tensor, special_tokens_mask: Tensor
+    ) -> Tensor:
+        """`h(x)`: bare frozen encoder on the clean text. `[B, d]`.
+
+        Unchanged behaviour: one encoder forward under `no_grad`, the locked
+        masked mean over non-special content tokens. It now reads the pooled half
+        out of `reference_branch` so there is exactly one reference forward in
+        the repository rather than two that could drift.
+        """
+        return self.reference_branch(input_ids, attention_mask, special_tokens_mask)[1]
+
+    def adapted_branch(
         self,
         base_input_ids: Tensor,
         base_attention_mask: Tensor,
@@ -150,11 +175,24 @@ class Stage1Objective(nn.Module):
         tone_mask: Tensor,
         letter_ids: Tensor,
         letter_mask: Tensor,
-    ) -> Tensor:
-        """`h'(.)`: adapter + frozen encoder on the base grid. `[B, d]`.
+    ) -> tuple[Tensor, Tensor]:
+        """One adapted forward, returning `(final hidden states, pooled)`.
+
+        `[B, L, d]` and `[B, d]` from **one** encoder call. The pooled half is
+        exactly what `adapted_representation` has always returned -- same
+        forward, same locked pooling, same order of operations -- so this is a
+        refactor of where the value is produced, not a change to what it is.
+
+        The hidden half is returned because an objective that needs the
+        contextual states would otherwise have to run the encoder a second time
+        to see them, and a second forward of a 135M-parameter backbone is not a
+        cost a loss term gets to add silently. Callers that only want the pooled
+        representation keep calling `adapted_representation`.
 
         **Not** under `no_grad`, and nothing is detached: the graph must run from
-        the loss through the frozen encoder into `A_phi`.
+        the loss through the frozen encoder into `A_phi`. A consumer that wants a
+        detached *target* detaches at its own boundary, where the decision is
+        visible, rather than having it baked in here.
 
         `position_ids` is deliberately omitted so `UnmarkEncoder` derives and
         enforces the authoritative values from these same base ids (D-B4B-002).
@@ -169,9 +207,37 @@ class Stage1Objective(nn.Module):
             letter_mask=letter_mask,
         )
         hidden = _hidden_states(outputs)
-        return masked_mean_non_special(
+        pooled = masked_mean_non_special(
             hidden, base_attention_mask, base_special_tokens_mask
         )
+        return hidden, pooled
+
+    def adapted_representation(
+        self,
+        base_input_ids: Tensor,
+        base_attention_mask: Tensor,
+        base_special_tokens_mask: Tensor,
+        tone_ids: Tensor,
+        tone_mask: Tensor,
+        letter_ids: Tensor,
+        letter_mask: Tensor,
+    ) -> Tensor:
+        """`h'(.)`: adapter + frozen encoder on the base grid. `[B, d]`.
+
+        Unchanged behaviour: one encoder forward, the locked masked mean over
+        non-special content tokens, no `no_grad`, nothing detached. It now reads
+        the pooled half out of `adapted_branch` so there is exactly one adapted
+        forward in the repository rather than two that could drift.
+        """
+        return self.adapted_branch(
+            base_input_ids,
+            base_attention_mask,
+            base_special_tokens_mask,
+            tone_ids,
+            tone_mask,
+            letter_ids,
+            letter_mask,
+        )[1]
 
     # -- objective --------------------------------------------------------
     def forward(self, batch: dict[str, Any]) -> Stage1LossResult:

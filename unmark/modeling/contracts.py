@@ -250,6 +250,50 @@ GATE_IS_PROJECTION = True
 FUSION_IS_CONVEX = True
 """`z_i = g_i * f_i + (1 - g_i) * e_i` -- convex, not residual `e + g * f`."""
 
+# ---------------------------------------------------------------------------
+# Fusion identity -- which mixture rule an adapter implements
+# ---------------------------------------------------------------------------
+HISTORICAL_FUSION_ID = "historical-fusion-v1"
+"""The locked fusion every historical UNMARK-A/B adapter implements (§4.5)::
+
+    z = g * f + (1 - g) * e
+
+`f` and `e` enter the convex combination **at whatever scale they happen to
+have**. Named here so the historical rule has a positive identity rather than
+being "whatever has no name": an adapter that records this id is making a
+statement, and one that records a different id can never be loaded as historical.
+"""
+
+SCALE_CALIBRATED_FUSION_ID = "scale-calibrated-fusion-v1"
+"""**C1 / V2-SCF.** The same gate and the same `f`, calibrated in scale first::
+
+    scale = ||e||_2 / clamp(||f||_2, min=FUSION_SCALE_EPSILON)   per token
+    z     = g * (scale * f) + (1 - g) * e
+
+Motivated by post-hoc diagnostics D3/D4 on protocol-dev: `mean ||e|| ~= 1.41`
+against `mean ||f|| ~= 27.9`, a ratio of ~20.5, so a gate whose mean is ~0.03 on
+FULL clean input still moves the representation by `||z-e||/||e|| ~= 1.42`. A
+numerically small gate does not imply a small intervention when the two branches
+of the mixture live on different scales.
+
+C1 tests exactly that one mechanism and nothing else: it adds **zero trainable
+parameters**, does not touch `g`, `q`, the tone or letter channels, the
+LayerNorm, or the gate's dimensionality, and keeps the historical Stage-1
+objective.
+"""
+
+FUSION_IDS: tuple[str, ...] = (HISTORICAL_FUSION_ID, SCALE_CALIBRATED_FUSION_ID)
+"""Every fusion rule this repository can build or verify. A closed set."""
+
+FUSION_SCALE_EPSILON = 1e-8
+"""Denominator floor for the C1 scale ratio. **Not a tuned hyperparameter.**
+
+A numerical guard so a degenerate `||f|| = 0` token yields a finite, deterministic
+`scale` instead of a NaN that would silently poison an optimizer step. Fixed at
+exactly `1e-8`, the same order as the Stage-1 cosine floor, and it is not an
+experiment knob.
+"""
+
 GATE_INIT_TARGET = 0.01
 """**D-B4A-003, RESOLVED.** The gate's value at every position and dimension
 before any learning."""

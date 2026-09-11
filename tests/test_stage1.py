@@ -684,15 +684,34 @@ def _no_grad_blocks(function: ast.FunctionDef) -> list[ast.With]:
 
 
 def test_only_the_reference_branch_uses_no_grad():
+    """The reference forward is the ONE branch under `no_grad`. Adapted never is.
+
+    The `no_grad` lives in `reference_branch` since the C2 candidate needed the
+    teacher's hidden states from the SAME single forward; `reference_representation`
+    delegates to it. The guarantee is unchanged, one level down, and is asserted
+    here for both the branch primitive AND the public accessor that must route
+    through it -- so a future edit cannot reintroduce a second, graph-building
+    reference forward.
+    """
     seen = {}
     for node in ast.walk(tree(OBJECTIVE)):
         if isinstance(node, ast.FunctionDef) and node.name in {
-            "adapted_representation", "reference_representation", "forward"
+            "adapted_branch", "adapted_representation",
+            "reference_branch", "reference_representation", "forward",
         }:
             seen[node.name] = _no_grad_blocks(node)
     assert not seen["adapted_representation"], "the adapted branch is under no_grad"
+    assert not seen["adapted_branch"], "the adapted branch is under no_grad"
     assert not seen["forward"], "the objective forward is under no_grad"
-    assert seen["reference_representation"], "the reference target must not build a graph"
+    assert seen["reference_branch"], "the reference target must not build a graph"
+
+    # ... and the public accessor really is a delegation, not a second forward.
+    accessor = next(n for n in ast.walk(tree(OBJECTIVE))
+                    if isinstance(n, ast.FunctionDef) and n.name == "reference_representation")
+    calls = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+             for c in ast.walk(accessor) if isinstance(c, ast.Call)}
+    assert "reference_branch" in calls
+    assert "encoder" not in calls and "masked_mean_non_special" not in calls
 
 
 def test_no_adapted_representation_is_detached():

@@ -20,6 +20,11 @@ from __future__ import annotations
 from typing import Any
 
 from unmark.evaluation.profiling import derive_seeds
+from unmark.modeling.contracts import (
+    FUSION_IDS as _FUSION_IDS,
+    HISTORICAL_FUSION_ID as _HISTORICAL_FUSION_ID,
+    SCALE_CALIBRATED_FUSION_ID as _SCALE_CALIBRATED_FUSION_ID,
+)
 
 STAGE1_PROTOCOL_VERSION = "stage1-protocol-v1"
 """Bump this and old Stage-1 artifacts stop being comparable."""
@@ -126,6 +131,170 @@ def lambdas_for_r(r: float) -> tuple[float, float]:
         raise ValueError(f"r must be non-negative, got {r}")
     return LAMBDA_SCALE_SUM / (1.0 + r), LAMBDA_SCALE_SUM * r / (1.0 + r)
 
+
+# ---------------------------------------------------------------------------
+# Objective identity -- post-hoc V2 research candidates
+# ---------------------------------------------------------------------------
+HISTORICAL_OBJECTIVE_ID = "align-clean-pooled-v1"
+"""The objective every historical UNMARK-A / UNMARK-B run was trained under.
+
+    L = lambda_align * L_align + lambda_clean * L_clean
+
+on the **pooled** representations, and nothing else. Named here so the
+historical objective has a positive identity rather than being "whatever has no
+name": a checkpoint that records this id is making a statement, and one that
+records a different id can never be mistaken for a historical finalist.
+
+Provenance written before this constant existed carries no objective id at all.
+That absence is unambiguous -- only the historical objective could have produced
+it -- so `RunProvenance.require_match` READS a missing block as this identity.
+That is what keeps the frozen UNMARK-A/B checkpoints verifiable under the
+unchanged finalist gate.
+"""
+
+GRID_CONSISTENCY_OBJECTIVE_ID = "grid-consistency-v1"
+"""**V2-GC.** The first post-hoc UNMARK-v2 research candidate.
+
+    L = lambda_align * L_align + lambda_clean * L_clean + lambda_grid * L_grid
+
+`L_grid` is a token-level cosine consistency term between the adapted CLEAN and
+adapted CORRUPT branches on the **invariant base token grid**, with the clean
+branch detached. It adds ZERO model parameters: the adapter, the gate, both
+embedding tables, the fusion, the tokenizer, the position-id semantics and the
+frozen backbone are all untouched. The single isolated change is the training
+objective.
+
+Motivated by an UNLABELED diagnostic: UNMARK clean and corrupted inputs share a
+bit-identical base-token grid, yet final hidden-token cosine drift is ~0.141
+(P50), ~0.254 (P100) and ~0.314 (STRIP_ALL). The base embeddings agree exactly;
+the contextual states do not.
+"""
+
+HISTORICAL_FUSION_ID = _HISTORICAL_FUSION_ID
+SCALE_CALIBRATED_FUSION_ID = _SCALE_CALIBRATED_FUSION_ID
+FUSION_IDS: tuple[str, ...] = _FUSION_IDS
+"""The fusion rules, re-exported from `unmark.modeling.contracts`.
+
+**Imported, never retyped.** The architecture owns the identity of its own
+mixture rule; Stage-1 consumes it so a run artifact and the adapter it built can
+never disagree about which equation was trained. Same direction as `PI_STRIP`:
+one declaration, many consumers."""
+
+
+RELATIONAL_OBJECTIVE_ID = "geometry-relational-distillation-v1"
+"""**V2-GRD (C2).** The second post-hoc UNMARK-v2 research candidate.
+
+    L = lambda_align * L_align + lambda_clean * L_clean + lambda_grd * L_grd
+
+`L_grd` preserves the CLEAN NATIVE decision GEOMETRY -- the relations *between*
+examples in a batch -- in the FIRST_TOKEN space Stage-2 actually reads, rather
+than the masked-mean pooled space the historical objective constrains.
+
+Motivated by post-hoc diagnostic D4 on protocol-dev: even FULL UNMARK-A showed a
+native-vs-UNMARK FIRST_TOKEN cosine distance of ~0.303, same-Vanilla-head
+prediction agreement of ~0.485 and a centered-logit cosine of ~0.23. The
+historical objective constrains per-example pooled vectors and says nothing about
+how examples sit relative to one another where the downstream head looks.
+
+**The teacher is ALWAYS native PhoBERT on the CLEAN ORIGINAL input** -- never
+PhoBERT on a corrupted condition. Distilling from a corrupted teacher would pull
+severe conditions toward Vanilla's *degraded* behaviour, which is the opposite of
+what UNMARK is for.
+
+Adds ZERO model parameters and keeps the historical fusion: C2 is a
+TRAINING-OBJECTIVE-ONLY candidate."""
+
+OBJECTIVE_IDS: tuple[str, ...] = (
+    HISTORICAL_OBJECTIVE_ID,
+    GRID_CONSISTENCY_OBJECTIVE_ID,
+    RELATIONAL_OBJECTIVE_ID,
+)
+"""Every objective identity this repository can train or verify. Closed set."""
+
+LAMBDA_GRID = 1.0
+"""`lambda_grid` for V2-GC. **LOCKED at 1.0 a-priori -- not a tuning grid.**
+
+Deliberately a single pinned scalar and not a sweep: V2-GC exists to isolate the
+effect of *adding* the grid-consistency term, so its weight is fixed before any
+V2 number exists, exactly as `PI_STRIP` was. `GridConsistencyWeights` refuses any
+other value, so there is no CLI flag, no config key and no code path that can
+retune it without changing this line under review.
+
+Note that it does NOT enter `LAMBDA_SCALE_SUM`: `lambda_align + lambda_clean = 2`
+still holds for the two historical terms at every `r`, so the V2-GC run at
+`r = 1.0` carries exactly the historical `(1.0, 1.0)` and adds a third term of
+weight 1.0 beside them.
+"""
+
+
+LAMBDA_GRD = 1.0
+"""`lambda_grd` for V2-GRD. **LOCKED at 1.0 a-priori -- not a tuning grid.**
+
+Pinned before any C2 number exists, exactly as `LAMBDA_GRID` and `PI_STRIP` were.
+`RelationalWeights` refuses any other value, so there is no CLI flag, no config
+key and no code path that could retune it without changing this line under
+review."""
+
+RELATION_SPACE = "FIRST_TOKEN"
+"""`hidden[:, 0, :]` of each branch's FINAL contextual hidden state.
+
+**Deliberately not the masked mean.** The historical objective already
+constrains the pooled space; C2 exists because Stage-2 reads FIRST_TOKEN and the
+geometry there was not preserved. Using the pooled vector would re-test what
+`L_clean` already does."""
+
+RELATION_METRIC = "pairwise-cosine-gram"
+"""`G(X) = X_hat @ X_hat.T`, `[B, B]`, with `X_hat` row-wise L2-normalised."""
+
+RELATION_LOSS = "off-diagonal-mse"
+"""Mean squared difference over the OFF-DIAGONAL entries of the two Gram
+matrices. The diagonal is **excluded**, not merely expected to be small: every
+`G[i,i]` is 1 by construction for both student and teacher, so including it would
+dilute the loss with a constant-zero term whose only effect is to shrink the
+gradient by a known factor."""
+
+RELATIONAL_CLEAN_WEIGHT = 0.5
+RELATIONAL_CORRUPT_WEIGHT = 0.5
+"""`L_grd = 0.5 * (L_rel_clean + L_rel_corrupt)`. Exactly one half each.
+
+Not a tradeoff to tune: the candidate asks whether relational geometry should be
+preserved at all, so the clean and corrupted branches enter symmetrically. An
+asymmetric weighting is a different experiment and needs its own objective id."""
+
+RELATION_EPSILON = 1e-8
+"""Denominator floor for the row-wise L2 normalisation. **Not tuned.**
+
+The same order and the same role as `objective.COSINE_EPS` and
+`modeling.contracts.FUSION_SCALE_EPSILON`: a guard so a degenerate zero-norm row
+yields a finite, deterministic value rather than a NaN."""
+
+
+def lambda_grd_for(objective_id: str) -> float | None:
+    """The relational weight an objective identity implies. `None` = no GRD term.
+
+    `None` is honest absence, never zero -- the historical, C1 and C3 objectives
+    have no relational term at all, and recording `0.0` would describe a term
+    that was computed and weighted away.
+    """
+    if objective_id not in OBJECTIVE_IDS:
+        raise ValueError(
+            f"unknown objective id {objective_id!r}; the closed set is {list(OBJECTIVE_IDS)}"
+        )
+    return LAMBDA_GRD if objective_id == RELATIONAL_OBJECTIVE_ID else None
+
+
+def lambda_grid_for(objective_id: str) -> float | None:
+    """The grid weight an objective identity implies. `None` = no grid term.
+
+    `None` is honest absence, never zero: the historical objective has no third
+    term at all, and recording `0.0` would describe a term that was computed and
+    weighted away.
+    """
+    if objective_id not in OBJECTIVE_IDS:
+        raise ValueError(
+            f"unknown objective id {objective_id!r}; the closed set is {list(OBJECTIVE_IDS)}"
+        )
+    return LAMBDA_GRID if objective_id == GRID_CONSISTENCY_OBJECTIVE_ID else None
 
 # ---------------------------------------------------------------------------
 # Optimizer -- D-S1B-004
@@ -250,6 +419,68 @@ if len(set(ALL_SEEDS.values())) != len(ALL_SEEDS):  # pragma: no cover - import 
         f"Stage-1 role seeds collide: {sorted(ALL_SEEDS.items())}. Domain separation "
         "exists so training, selection and corruption cannot share an integer."
     )
+
+# ---------------------------------------------------------------------------
+# V2-GC run plan -- ONE run, every value taken from the closed Stage-1 campaign
+# ---------------------------------------------------------------------------
+V2_GC_STAGE = "v2_gc"
+"""Stage name. Its own namespace, so a V2-GC artifact can never be read as one
+of the eleven historical nominal runs."""
+
+V2_GC_LEARNING_RATE = LR_PILOT_GRID[0]
+V2_GC_R = LR_PILOT_R
+V2_GC_RUN_SEED = TRAIN_SEEDS[0]
+"""**Nothing here is retuned.** The learning rate is the one the closed LR pilot
+selected (1e-4, the first point of the locked grid), `r` is the one the closed
+`r` phase selected (1.0, giving `lambda_align = lambda_clean = 1.0`), and the run
+seed is the first FINAL MAIN train seed -- the same seed UNMARK-A came from. The
+adapter init seed follows from it through `adapter_init_seed`, and the corruption
+stream is the campaign-wide `CORRUPTION_SEED`.
+
+Sharing the seed with the historical run is the point: V2-GC is a **paired**
+comparison that varies the objective and nothing else.
+"""
+
+V2_GC_MAX_UPDATES = INITIAL_MAX_UPDATES
+"""The same precommitted budget every historical run started under."""
+
+
+# ---------------------------------------------------------------------------
+# V2-SCF run plan -- ONE run, paired with V2-GC and with the historical run
+# ---------------------------------------------------------------------------
+V2_SCF_STAGE = "v2_scf"
+"""Stage name for C1. Its own namespace and its own output directory."""
+
+V2_SCF_LEARNING_RATE = V2_GC_LEARNING_RATE
+V2_SCF_R = V2_GC_R
+V2_SCF_RUN_SEED = V2_GC_RUN_SEED
+V2_GRD_STAGE = "v2_grd"
+V2_GRD_LEARNING_RATE = V2_GC_LEARNING_RATE
+V2_GRD_R = V2_GC_R
+V2_GRD_RUN_SEED = V2_GC_RUN_SEED
+V2_GRD_MAX_UPDATES = V2_GC_MAX_UPDATES
+"""**V2-GRD (C2) run plan.** The same already-closed values as C1 and C3.
+
+All three candidates and the historical UNMARK-A run start from
+`run_seed = 36930`, `init_seed = 51800`, `CORRUPTION_SEED`, LR 1e-4 and `r = 1.0`
+under the same 20 000-update hard cap. C1 varies the FUSION, C2 and C3 vary the
+OBJECTIVE in different ways, and none of them varies anything else."""
+
+V2_SCF_MAX_UPDATES = V2_GC_MAX_UPDATES
+"""**Inherited, never retuned -- and deliberately identical to V2-GC's.**
+
+C1, C3 and the historical UNMARK-A run all start from `run_seed = 36930`,
+`init_seed = adapter_init_seed(36930) = 51800`, `CORRUPTION_SEED`, LR 1e-4 and
+`r = 1.0`, under the same 20 000-update hard cap. Three candidates that share
+every value except the one thing each is testing is what makes the comparison
+paired: C1 varies the FUSION, C3 varies the OBJECTIVE, and neither varies
+anything else.
+
+C1's adapter has the same parameter count and the same initialisation seed as the
+historical adapter, so `expected_fresh_init_hash` is identical for both -- the
+run starts from literally the same weights and diverges only through the mixture
+rule."""
+
 
 # ---------------------------------------------------------------------------
 # Boundaries

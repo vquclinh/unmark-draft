@@ -150,10 +150,25 @@ VERIFIED_PROVENANCE_FIELDS: tuple[str, ...] = (
     "precision",
     "repository_head",
     "inventory",
+    "objective",
+    "fusion",
     "lambda_align",
     "lambda_clean",
 )
 """Exactly what `RunProvenance.require_match` compares, in its own order.
+
+`objective` joined the contract when the first post-hoc V2 candidate (V2-GC,
+`grid-consistency-v1`) was implemented: which loss a run minimised is scientific
+identity, so the finalist gate verifies it like every other field. `fusion`
+joined with C1 (V2-SCF, `scale-calibrated-fusion-v1`), which trains the
+HISTORICAL objective under a different adapter architecture -- so the objective
+alone no longer identifies a checkpoint, and without this field a C1 adapter
+would verify as UNMARK-A and load into the wrong mixture rule.
+
+Both finalists are historical, and a historical provenance that predates either
+field is read as the historical objective and the historical fusion, so neither A
+nor B had to be re-verified or re-hashed -- the gate got strictly stronger, not
+different.
 
 Recorded so a test can assert this verifier is **not weaker** than the contract a
 resume must satisfy. If `require_match` ever gains a field and this tuple does

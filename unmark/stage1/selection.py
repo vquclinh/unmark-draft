@@ -25,6 +25,18 @@ from unmark.stage1.protocol import (
     R_PHASE1_GRID,
     TOTAL_NOMINAL_RUNS,
     TRAIN_SEEDS,
+    V2_GC_LEARNING_RATE,
+    V2_GC_R,
+    V2_GC_RUN_SEED,
+    V2_GC_STAGE,
+    V2_GRD_LEARNING_RATE,
+    V2_GRD_R,
+    V2_GRD_RUN_SEED,
+    V2_GRD_STAGE,
+    V2_SCF_LEARNING_RATE,
+    V2_SCF_R,
+    V2_SCF_RUN_SEED,
+    V2_SCF_STAGE,
     VALIDATION_CONDITIONS,
 )
 
@@ -340,6 +352,82 @@ def final_main_schedule(learning_rate: float, r: float) -> tuple[PlannedRun, ...
     """The three FINAL MAIN Stage-1 runs. **Nothing follows them.**"""
     return tuple(
         PlannedRun("final_main", f"seed={seed}", learning_rate, r, seed) for seed in TRAIN_SEEDS
+    )
+
+
+def v2_gc_schedule() -> tuple[PlannedRun, ...]:
+    """**V2-GC.** Exactly ONE run, and every value is already-closed.
+
+    Not part of the eleven nominal runs and deliberately not counted by
+    `total_planned_runs`: the historical campaign is CLOSED, and a post-hoc
+    research candidate that quietly grew the locked run plan would be exactly
+    the drift this repository writes schedules in code to prevent.
+
+    There is nothing to sweep, so this takes no arguments. The learning rate is
+    the one the closed LR pilot selected, `r` is the one the closed `r` phase
+    selected, and the seed is the first FINAL MAIN train seed -- the same seed
+    the historical UNMARK-A run came from, which is what makes V2-GC a paired
+    comparison against it that varies the objective and nothing else.
+    `lambda_grid` is not here because it is not a run-plan value: it is pinned in
+    `protocol.LAMBDA_GRID` and carried by the objective identity.
+    """
+    return (
+        PlannedRun(
+            V2_GC_STAGE,
+            f"seed={V2_GC_RUN_SEED}",
+            V2_GC_LEARNING_RATE,
+            V2_GC_R,
+            V2_GC_RUN_SEED,
+        ),
+    )
+
+
+def v2_scf_schedule() -> tuple[PlannedRun, ...]:
+    """**V2-SCF (C1).** Exactly ONE run, at the same already-closed values as C3.
+
+    Like `v2_gc_schedule`, this is not part of the eleven nominal runs and is
+    deliberately not counted by `total_planned_runs`: the historical campaign is
+    CLOSED, and a post-hoc candidate that quietly grew the locked run plan would
+    be exactly the drift this repository writes schedules in code to prevent.
+
+    Takes no arguments because there is nothing to sweep. The learning rate, `r`
+    and the seed are the same values C3 and the historical UNMARK-A run used, so
+    C1 varies the FUSION and nothing else. The fusion is not a run-plan value: it
+    is carried by the candidate register and stamped into provenance.
+    """
+    return (
+        PlannedRun(
+            V2_SCF_STAGE,
+            f"seed={V2_SCF_RUN_SEED}",
+            V2_SCF_LEARNING_RATE,
+            V2_SCF_R,
+            V2_SCF_RUN_SEED,
+        ),
+    )
+
+
+def v2_grd_schedule() -> tuple[PlannedRun, ...]:
+    """**V2-GRD (C2).** Exactly ONE run, at the same already-closed values as C1/C3.
+
+    Not part of the eleven nominal runs and deliberately not counted by
+    `total_planned_runs`: the historical campaign is CLOSED, and a post-hoc
+    candidate that quietly grew the locked run plan would be exactly the drift
+    this repository writes schedules in code to prevent.
+
+    Takes no arguments because there is nothing to sweep. The learning rate, `r`
+    and the seed are the values UNMARK-A, C1 and C3 all used, so C2 varies the
+    OBJECTIVE and nothing else. `lambda_grd` and the whole relational
+    specification are not run-plan values: they are locked in `protocol` and
+    carried by the objective identity.
+    """
+    return (
+        PlannedRun(
+            V2_GRD_STAGE,
+            f"seed={V2_GRD_RUN_SEED}",
+            V2_GRD_LEARNING_RATE,
+            V2_GRD_R,
+            V2_GRD_RUN_SEED,
+        ),
     )
 
 

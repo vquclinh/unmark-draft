@@ -48,6 +48,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TELEMETRY_PREFIX = "UNMARK_TELEMETRY "
 SUPPORTED_SCHEMA = "stage1-telemetry-v1"
 
+DEFAULT_PROJECT = "unmark-stage1"
+"""W&B project when telemetry names no recognisable stage. The historical value,
+so nothing about the existing campaign's dashboard changes."""
+
 VERIFIED_TRAIN_CHUNKS = 2_621_624
 """The verified Stage-6 train chunk count. Used ONLY as a fallback denominator
 for the pass-equivalent display when telemetry has not yet reported the real
@@ -298,15 +302,52 @@ def sample_process(pid: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # W&B bridge -- lazily imported, entirely optional
 # ---------------------------------------------------------------------------
+def project_for_event(event: Mapping[str, Any], override: str | None = None) -> str:
+    """WHICH W&B project this candidate logs to. **OPERATIONAL ONLY.**
+
+    Resolution order:
+
+    1. an explicit `--project`, which always wins;
+    2. the project the candidate register binds to the telemetry's `stage`;
+    3. `DEFAULT_PROJECT`, for telemetry with no recognisable stage.
+
+    Resolved from the register rather than from notebook magic or a hard-coded
+    branch, so C1, C2 and C3 launched from three separate Colab notebooks off ONE
+    repository HEAD land in three separate projects without three separate
+    monitor configurations:
+
+        v2_scf -> UNMARK-v2-C1-SCF-Stage1
+        v2_gc  -> UNMARK-v2-C3-GC-Stage1
+        the historical stages -> unmark-stage1   (unchanged)
+
+    Nothing here is scientific. The project name reaches no loss, no seed, no
+    selection and no budget; it decides where a curve is drawn.
+    """
+    if override is not None:
+        return override
+    stage = event.get("stage")
+    if isinstance(stage, str):
+        try:
+            from unmark.stage1.candidates import wandb_project_for_stage
+
+            return wandb_project_for_stage(stage)
+        except Exception:  # noqa: BLE001 - monitoring must never break a run
+            pass
+    return DEFAULT_PROJECT
+
+
 class WandbBridge:
     """One W&B run per scientific candidate. Degrades to a no-op on any failure.
 
     Only scalars, config and safe identifiers are uploaded. **Never** raw corpus
     text, chunks, prepared data, official TEST, checkpoints, weights or
     tokenizer artifacts.
+
+    `project` may be `None`, meaning "resolve per candidate from the register"
+    (`project_for_event`). An explicit `--project` still overrides everything.
     """
 
-    def __init__(self, project: str, group: str | None, state_dir: Path,
+    def __init__(self, project: str | None, group: str | None, state_dir: Path,
                  enabled: bool = True, mode: str | None = None) -> None:
         self.project, self.group = project, group
         self.state_dir = Path(state_dir)
@@ -350,14 +391,19 @@ class WandbBridge:
         key = candidate_key(event)
         if key is None or not self.enabled:
             return None
+        # Namespaced by project: C1 and C3 share a label and a seed and differ
+        # only by stage, so a project-blind key could resume one candidate's run
+        # into the other's dashboard.
+        key = f"{project_for_event(event, self.project)}/{key}"
         wandb = self._load()
         if wandb is None:
             return None
         self.finish()
         existing = self._ids().get(key)
         try:
+            project = project_for_event(event, self.project)
             self._run = wandb.init(
-                project=self.project, group=self.group, name=candidate_run_name(event),
+                project=project, group=self.group, name=candidate_run_name(event),
                 id=existing, resume="allow" if existing else None,
                 config=dict(config), mode=self.mode,
                 # No code, no artifacts, no source scraping.
@@ -422,6 +468,12 @@ CANDIDATE_CONFIG_KEYS = (
     "stage", "label", "lr", "r", "seed", "init_seed", "corruption_seed",
     "batch_size", "cap", "candidate_index", "candidate_count",
     "train_chunks", "resumed", "execution_mode",
+    # The post-hoc candidate's full scientific identity. Every one of these
+    # originates in the production plan and is transported here unchanged --
+    # this tuple selects what may be shown, it never defines anything.
+    "candidate_id", "objective_id", "fusion_id", "lambda_grid",
+    "lambda_grd", "relational",
+    "hard_max_updates", "wandb_project",
 )
 """Per-candidate scalars."""
 
@@ -472,7 +524,8 @@ def render_progress(state: MonitorState, rate: float | None) -> str:
         + "   (derived, chunk-visits)",
     ]
     prog = state.last_progress or {}
-    for key in ("loss", "loss_align", "loss_clean"):
+    for key in ("loss", "loss_align", "loss_clean", "loss_grid", "mean_distance_grid",
+                "loss_grd", "loss_rel_clean", "loss_rel_corrupt"):
         if isinstance(prog.get(key), (int, float)):
             lines.append(f"  {key:<13} {prog[key]:.6f}                     (exact)")
     if rate:
@@ -507,7 +560,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python", default=sys.executable,
                         help="the ACCEPTED SCIENTIFIC python executable (torch/transformers). "
                              "Must NOT be the monitoring venv.")
-    parser.add_argument("--project", default="unmark-stage1")
+    parser.add_argument(
+        "--project", default=None,
+        help="W&B project. DEFAULT: resolved per candidate from the candidate "
+             "register -- UNMARK-v2-C1-SCF-Stage1 for v2-scf, "
+             "UNMARK-v2-C3-GC-Stage1 for v2-gc, and unmark-stage1 for the "
+             "historical stages. An explicit value overrides that. OPERATIONAL "
+             "ONLY: the project name reaches nothing scientific.",
+    )
     parser.add_argument("--group", default=None,
                         help="W&B group; defaults to the stage name from telemetry")
     parser.add_argument("--state-dir", default=".unmark-monitor",
@@ -646,6 +706,35 @@ def _handle(kind: str, event: Mapping[str, Any], state: MonitorState,
             "train/loss": event.get("loss"),
             "train/loss_align": event.get("loss_align"),
             "train/loss_clean": event.get("loss_clean"),
+            # V2-GC only. Absent from a historical run's event, and omitted
+            # rather than logged as null, so the old path's series are exactly
+            # what they were.
+            **{
+                f"train/{key}": event[key]
+                for key in ("loss_grid", "mean_distance_grid")
+                if key in event
+            },
+            # V2-SCF only. Passive diagnostics read off the adapter's last
+            # forward; absent from every other candidate's event, and omitted
+            # rather than logged as null.
+            **{
+                f"train/scf/{key}": event[f"scf_{key}"]
+                for key in ("scale_factor", "postcal_f_over_e",
+                            "intervention_ratio", "gate_mean")
+                if f"scf_{key}" in event
+            },
+            # V2-GRD only. The three loss terms sit beside the historical ones;
+            # the teacher geometry statistic goes under its own namespace.
+            **{
+                f"train/{key}": event[key]
+                for key in ("loss_grd", "loss_rel_clean", "loss_rel_corrupt")
+                if key in event
+            },
+            **{
+                f"train/grd/{key}": event[f"grd_{key}"]
+                for key in ("teacher_offdiag_cos_mean",)
+                if f"grd_{key}" in event
+            },
             **{f"diagnostics/{k}": v for k, v in state.diagnostics().items()},
         })
         return

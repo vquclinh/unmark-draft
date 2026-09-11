@@ -13,7 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from unmark.modeling.contracts import (
+    FUSION_IDS,
     FUSION_IS_CONVEX,
+    HISTORICAL_FUSION_ID,
+    SCALE_CALIBRATED_FUSION_ID,
     GATE_ZERO_IS_WIRING_TEST_ONLY,
     GateContract,
     LetterChannelContract,
@@ -99,6 +102,19 @@ class AdapterConfig:
     fusion_kind: str = FUSION_KIND
     use_gate: bool = True
     encoder_frozen: bool = True
+    fusion_id: str = HISTORICAL_FUSION_ID
+    """WHICH mixture rule this adapter implements. Defaults to the historical one.
+
+    Architecture, not a hyperparameter: it selects a fixed equation from the
+    closed `FUSION_IDS` set, carries no learnable value, and changes
+    `parameter_count()` by nothing. A configuration that says nothing is the
+    historical adapter, so every existing construction site keeps its exact
+    behaviour and every existing checkpoint keeps its exact meaning.
+
+    A candidate fusion must be named to be built, which is what lets a checkpoint
+    record the architecture it was trained under (C1 and the historical adapter
+    share an objective, so the objective identity alone cannot tell them apart).
+    """
 
     def __post_init__(self) -> None:
         if not isinstance(self.hidden_size, int) or isinstance(self.hidden_size, bool):
@@ -112,6 +128,17 @@ class AdapterConfig:
             )
         if self.fusion_kind not in {"linear", "mlp"}:
             raise ValueError(f"unknown fusion_kind {self.fusion_kind!r}")
+        if self.fusion_id not in FUSION_IDS:
+            raise ValueError(
+                f"unknown fusion_id {self.fusion_id!r}; the closed set is "
+                f"{list(FUSION_IDS)}. A fusion rule nothing in this repository "
+                "implements is not an architecture."
+            )
+
+    @property
+    def is_scale_calibrated(self) -> bool:
+        """Whether `f` is rescaled to `||e||` before the gated mixture (C1)."""
+        return self.fusion_id == SCALE_CALIBRATED_FUSION_ID
 
     @property
     def fusion_input_size(self) -> int:

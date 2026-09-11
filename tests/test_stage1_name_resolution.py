@@ -95,9 +95,13 @@ def test_the_original_defect_is_detected_by_this_test():
     """
     module = importlib.import_module("unmark.stage1.execute")
     source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+    # The construction moved out of `execute_stage`'s loop and into the shared
+    # `build_candidate_objective`, so that the real-model smoke path builds the
+    # SAME objective a run would train (Audit 066). The mutation check is
+    # unchanged in kind: reintroduce the unbound name and require detection.
     broken = source.replace(
-        "objective = Stage1Objective(unmark_encoder, provenance.weights)",
-        "objective = objective_cls(unmark_encoder, provenance.weights)",
+        "objective = Stage1Objective(unmark_encoder, weights)",
+        "objective = objective_cls(unmark_encoder, weights)",
     )
     assert broken != source, "the repaired construction line was not found"
 
@@ -116,20 +120,36 @@ def test_the_original_defect_is_detected_by_this_test():
 
 
 def test_the_objective_is_constructed_from_a_locally_bound_class():
-    """`Stage1Objective` is a real local binding in `execute_stage`, not a global.
+    """`Stage1Objective` is a real local binding in the constructor, not a global.
 
     It is imported inside the function (torch stays lazy), so it must appear in
     the code object's *locals*. If a future edit moves the import without moving
     the call, the previous test catches it; this one states the intended shape.
+
+    The constructor is `build_candidate_objective` since Audit 066 -- one
+    dispatch shared by `execute_stage` and the real-model smoke path. The
+    guarantee is unchanged, one level down, and is now asserted for BOTH
+    objective classes rather than only the historical one.
     """
     module = importlib.import_module("unmark.stage1.execute")
     source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
     compiled = compile(source, module.__file__, "exec")
+    builder = next(
+        code
+        for code in _code_objects(compiled)
+        if code.co_name == "build_candidate_objective"
+    )
+    for name in ("Stage1Objective", "GridConsistencyObjective", "GridConsistencyWeights"):
+        assert name in builder.co_varnames, (
+            f"build_candidate_objective must bind {name} locally via its lazy import"
+        )
+    assert "objective_cls" not in builder.co_varnames
+    assert "objective_cls" not in builder.co_names
+
+    # And the caller still cannot reintroduce the unbound name.
     stage = next(
         code for code in _code_objects(compiled) if code.co_name == "execute_stage"
     )
-    assert "Stage1Objective" in stage.co_varnames, (
-        "execute_stage must bind Stage1Objective locally via its lazy import"
-    )
     assert "objective_cls" not in stage.co_varnames
     assert "objective_cls" not in stage.co_names
+    assert "build_candidate_objective" in stage.co_names

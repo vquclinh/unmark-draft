@@ -510,3 +510,263 @@ class CorruptionRatePolicy:
             "scope_namespace": SCOPE_NAMESPACE,
             "schema_version": self.schema_version,
         }
+
+
+# ---------------------------------------------------------------------------
+# Objective identity and the V2-GC weights
+# ---------------------------------------------------------------------------
+from unmark.stage1.protocol import (  # noqa: E402 - single source of truth
+    FUSION_IDS,
+    GRID_CONSISTENCY_OBJECTIVE_ID,
+    HISTORICAL_FUSION_ID,
+    HISTORICAL_OBJECTIVE_ID,
+    LAMBDA_GRD,
+    LAMBDA_GRID,
+    OBJECTIVE_IDS,
+    RELATION_EPSILON,
+    RELATION_LOSS,
+    RELATION_METRIC,
+    RELATION_SPACE,
+    RELATIONAL_CLEAN_WEIGHT,
+    RELATIONAL_CORRUPT_WEIGHT,
+    RELATIONAL_OBJECTIVE_ID,
+    SCALE_CALIBRATED_FUSION_ID,
+    lambda_grd_for,
+    lambda_grid_for,
+)
+
+
+@dataclass(frozen=True)
+class RelationalSpec:
+    """**How** a relational-distillation objective measures geometry.
+
+    A typed record rather than a loose dict, and part of a checkpoint's durable
+    identity, because "relational distillation" names a family, not an
+    experiment. Two runs could both call themselves relational and differ in the
+    space they relate (FIRST_TOKEN vs pooled), the metric (cosine Gram vs
+    Euclidean distance matrix), the reduction (off-diagonal MSE vs a Frobenius
+    mean that includes the diagonal), the clean/corrupt balance, or the epsilon --
+    and every one of those is a different scientific claim.
+
+    Every field is **derived from the objective id**, never supplied, so an
+    artifact cannot record an identity and a specification that disagree.
+    """
+
+    lambda_grd: float
+    relation_space: str
+    relation_metric: str
+    relation_loss: str
+    relational_clean_weight: float
+    relational_corrupt_weight: float
+    epsilon: float
+
+    def __post_init__(self) -> None:
+        total = self.relational_clean_weight + self.relational_corrupt_weight
+        if abs(total - 1.0) > 0:
+            raise Stage1ContractViolation(
+                f"the clean and corrupt relational weights must sum to exactly 1.0, "
+                f"got {self.relational_clean_weight} + {self.relational_corrupt_weight} "
+                f"= {total}. `L_grd` is a mean of the two relational losses, not a "
+                "rescaling of their sum."
+            )
+        if self.epsilon <= 0:
+            raise Stage1ContractViolation(f"epsilon must be positive, got {self.epsilon}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "lambda_grd": self.lambda_grd,
+            "relation_space": self.relation_space,
+            "relation_metric": self.relation_metric,
+            "relation_loss": self.relation_loss,
+            "relational_clean_weight": self.relational_clean_weight,
+            "relational_corrupt_weight": self.relational_corrupt_weight,
+            "epsilon": self.epsilon,
+        }
+
+
+GEOMETRY_RELATIONAL_SPEC = RelationalSpec(
+    lambda_grd=LAMBDA_GRD,
+    relation_space=RELATION_SPACE,
+    relation_metric=RELATION_METRIC,
+    relation_loss=RELATION_LOSS,
+    relational_clean_weight=RELATIONAL_CLEAN_WEIGHT,
+    relational_corrupt_weight=RELATIONAL_CORRUPT_WEIGHT,
+    epsilon=RELATION_EPSILON,
+)
+"""**V2-GRD.** The one relational specification this repository can train."""
+
+
+def relational_spec_for(objective_id: str) -> RelationalSpec | None:
+    """The relational specification an objective implies. `None` = no GRD term."""
+    if objective_id not in OBJECTIVE_IDS:
+        raise Stage1ContractViolation(
+            f"unknown objective id {objective_id!r}; the closed set is "
+            f"{list(OBJECTIVE_IDS)}"
+        )
+    return GEOMETRY_RELATIONAL_SPEC if objective_id == RELATIONAL_OBJECTIVE_ID else None
+
+
+@dataclass(frozen=True)
+class FusionIdentity:
+    """**Which adapter architecture** a run was trained under. Scientific identity.
+
+    Separate from `ObjectiveIdentity` because the two vary independently, and C1
+    is the proof: it optimises the *historical* objective with a *different*
+    fusion rule. A checkpoint that recorded only its objective could not be told
+    apart from UNMARK-A, and its weights would load silently into the historical
+    mixture -- same shapes, same names, different equation, wrong science.
+
+    The pair `(objective_id, fusion_id)` is what identifies a candidate:
+
+        historical  = (align-clean-pooled-v1, historical-fusion-v1)
+        C1 / V2-SCF = (align-clean-pooled-v1, scale-calibrated-fusion-v1)
+        C3 / V2-GC  = (grid-consistency-v1,   historical-fusion-v1)
+    """
+
+    fusion_id: str
+
+    def __post_init__(self) -> None:
+        if self.fusion_id not in FUSION_IDS:
+            raise Stage1ContractViolation(
+                f"unknown fusion id {self.fusion_id!r}; the closed set is "
+                f"{list(FUSION_IDS)}. A fusion rule nothing in this repository "
+                "implements is not an architecture."
+            )
+
+    @property
+    def is_historical(self) -> bool:
+        return self.fusion_id == HISTORICAL_FUSION_ID
+
+    @property
+    def is_scale_calibrated(self) -> bool:
+        return self.fusion_id == SCALE_CALIBRATED_FUSION_ID
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"fusion_id": self.fusion_id}
+
+
+HISTORICAL_FUSION = FusionIdentity(HISTORICAL_FUSION_ID)
+"""What every UNMARK-A/B adapter implements, and the default."""
+
+SCALE_CALIBRATED_FUSION = FusionIdentity(SCALE_CALIBRATED_FUSION_ID)
+"""**C1 / V2-SCF.**"""
+
+
+@dataclass(frozen=True)
+class ObjectiveIdentity:
+    """**Which objective** a run was trained under. Scientific identity.
+
+    Two runs that share every seed, the learning rate, `r`, the corpus, the
+    backbone and the inventory but optimise different losses are different
+    experiments -- and until this existed a Stage-1 artifact had no field that
+    said so. `RunProvenance` carries one, `require_match` compares it, and the
+    finalist gate verifies it, so a V2 candidate's checkpoint can neither
+    masquerade as a historical UNMARK-A/B adapter nor resume from one.
+
+    `lambda_grid` is **derived** from `objective_id` rather than supplied: the
+    weight is locked per objective (`protocol.lambda_grid_for`), so an artifact
+    cannot record an identity and a weight that disagree. It is recorded anyway,
+    in the same spirit as `RunProvenance.DERIVED_KEYS`, so a reader sees the
+    weight the objective actually used instead of having to recompute it.
+    """
+
+    objective_id: str
+
+    def __post_init__(self) -> None:
+        if self.objective_id not in OBJECTIVE_IDS:
+            raise Stage1ContractViolation(
+                f"unknown objective id {self.objective_id!r}; the closed set is "
+                f"{list(OBJECTIVE_IDS)}. An objective identity is not free text: a "
+                "name nothing in this repository can train is not an experiment."
+            )
+
+    @property
+    def lambda_grid(self) -> float | None:
+        """The locked grid weight, or `None` where there is no grid term."""
+        return lambda_grid_for(self.objective_id)
+
+    @property
+    def lambda_grd(self) -> float | None:
+        """The locked relational weight, or `None` where there is no GRD term."""
+        return lambda_grd_for(self.objective_id)
+
+    @property
+    def relational(self) -> "RelationalSpec | None":
+        """The full relational specification, or `None`. Derived, never supplied."""
+        return relational_spec_for(self.objective_id)
+
+    @property
+    def is_historical(self) -> bool:
+        return self.objective_id == HISTORICAL_OBJECTIVE_ID
+
+    def to_dict(self) -> dict[str, Any]:
+        relational = self.relational
+        return {
+            "objective_id": self.objective_id,
+            "lambda_grid": self.lambda_grid,
+            "lambda_grd": self.lambda_grd,
+            # The FULL relational specification, so a reader can recover HOW the
+            # geometry was measured -- space, metric, reduction, balance and
+            # epsilon -- from the artifact alone. `None` for every objective that
+            # has no relational term.
+            "relational": relational.to_dict() if relational is not None else None,
+        }
+
+
+HISTORICAL_OBJECTIVE = ObjectiveIdentity(HISTORICAL_OBJECTIVE_ID)
+"""What every UNMARK-A / UNMARK-B run was trained under, and the default."""
+
+GRID_CONSISTENCY_OBJECTIVE = ObjectiveIdentity(GRID_CONSISTENCY_OBJECTIVE_ID)
+"""**V2-GC (C3).**"""
+
+GEOMETRY_RELATIONAL_OBJECTIVE = ObjectiveIdentity(RELATIONAL_OBJECTIVE_ID)
+"""**V2-GRD (C2).**"""
+
+
+@dataclass(frozen=True)
+class GridConsistencyWeights(ObjectiveWeights):
+    """`lambda_a`, `lambda_c` and the LOCKED `lambda_grid`.
+
+    `lambda_align` and `lambda_clean` keep their existing meaning exactly: they
+    are still required, still have no defaults, and for the V2-GC run still come
+    from `lambdas_for_r(1.0) = (1.0, 1.0)`.
+
+    `lambda_grid` is different in kind, and the type says so. It is **not** an
+    OPEN value to be tuned on a development split -- it is pinned a-priori at
+    `protocol.LAMBDA_GRID = 1.0`, because V2-GC exists to isolate the effect of
+    *adding* the grid-consistency term rather than to search for its weight. Any
+    other value is refused here, which is why `lambda_grid` can never become a
+    CLI flag or a sweep: there is no code path that would accept the result.
+
+    Relaxing this is a scientific decision and must look like one -- an edit to
+    `protocol.LAMBDA_GRID` and to this guard, under review, with a new objective
+    id, so the artifacts of a differently-weighted run cannot be confused with
+    V2-GC's.
+    """
+
+    lambda_grid: float = LAMBDA_GRID
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if isinstance(self.lambda_grid, bool) or not isinstance(
+            self.lambda_grid, (int, float)
+        ):
+            raise Stage1ContractViolation(
+                f"lambda_grid must be a real number, got {self.lambda_grid!r}"
+            )
+        if self.lambda_grid != LAMBDA_GRID:
+            raise Stage1ContractViolation(
+                f"lambda_grid is LOCKED at {LAMBDA_GRID} for "
+                f"{GRID_CONSISTENCY_OBJECTIVE_ID!r} and got {self.lambda_grid!r}. It is "
+                "not a tuning grid: V2-GC isolates the effect of adding the "
+                "grid-consistency term, so its weight was fixed before any V2 number "
+                "existed. Changing it is a new objective, not a new argument."
+            )
+
+    @property
+    def objective(self) -> ObjectiveIdentity:
+        """The identity these weights belong to. Always V2-GC."""
+        return GRID_CONSISTENCY_OBJECTIVE
+
+    def to_dict(self) -> dict[str, float]:
+        return {**super().to_dict(), "lambda_grid": self.lambda_grid}

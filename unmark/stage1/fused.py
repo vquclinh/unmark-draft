@@ -217,6 +217,19 @@ def train_fused_r_phase1(
             "seed": planned.seed,
         }
 
+        # The fused path is the `r_phase1` co-residency optimisation and builds
+        # the HISTORICAL objective unconditionally. It is only ever entered for
+        # that stage, so this cannot currently be reached with anything else --
+        # which is exactly why it is asserted rather than assumed: a future stage
+        # routed through here would otherwise get a silently different loss than
+        # its provenance claims.
+        if not provenance.objective.is_historical:
+            raise Stage1ContractViolation(
+                f"{planned.label}: the fused r-phase1 path builds the historical "
+                f"objective, but this run's provenance declares "
+                f"{provenance.objective.objective_id!r}. A run whose artifact names "
+                "one objective and whose loss is another is not reproducible."
+            )
         adapter = fresh_adapter(hidden_size, provenance.init_seed)
         fresh_hash = trainable_state_hash(trainable_state(adapter))
         adapter.to(device)

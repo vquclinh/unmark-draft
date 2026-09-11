@@ -23,11 +23,23 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from unmark.modeling.contracts import HISTORICAL_FUSION_ID
 from unmark.stage1.protocol import adapter_init_seed
 
 
-def fresh_adapter(hidden_size: int, init_seed: int) -> Any:
+def fresh_adapter(
+    hidden_size: int, init_seed: int, fusion_id: str = HISTORICAL_FUSION_ID
+) -> Any:
     """A new `OrthographyInputAdapter` on CPU, initialised from `init_seed` alone.
+
+    `fusion_id` selects which mixture rule the adapter implements and defaults to
+    the historical one, so every existing call site keeps its exact behaviour.
+    It is **architecture, not initialisation**: the parameter set, their creation
+    order and therefore every RNG draw are identical for all fusions, so a
+    historical adapter and a C1 adapter built from the same `init_seed` start
+    from bit-identical weights and diverge only through the equation that mixes
+    them. That is exactly what makes C1 a paired comparison, and it is asserted
+    by test rather than assumed.
 
     The RNG is **forked**, not merely seeded: `torch.random.fork_rng(devices=[])`
     snapshots and restores the **CPU** generator on exit, so constructing an
@@ -55,7 +67,9 @@ def fresh_adapter(hidden_size: int, init_seed: int) -> Any:
 
     with torch.random.fork_rng(devices=[]):
         torch.default_generator.manual_seed(int(init_seed))
-        adapter = OrthographyInputAdapter(AdapterConfig(hidden_size=hidden_size))
+        adapter = OrthographyInputAdapter(
+            AdapterConfig(hidden_size=hidden_size, fusion_id=fusion_id)
+        )
     for parameter in adapter.parameters():
         parameter.requires_grad_(True)
     return adapter
@@ -105,6 +119,11 @@ def expected_fresh_init_hash(hidden_size: int, run_seed: int) -> str:
     value -- deliberately (D-S1B-016). Equal hashes are therefore **expected** and
     prove nothing about object identity; storage independence is a separate
     contract, proven by mutation isolation.
+
+    Deliberately independent of the fusion: a fusion rule adds no parameter and
+    consumes no RNG, so a V2-SCF run at `run_seed` must start from exactly this
+    hash too. A post-hoc candidate that started from different weights than the
+    historical run it is compared against would not be a paired comparison.
     """
     return trainable_state_hash(
         trainable_state(fresh_adapter(hidden_size, adapter_init_seed(run_seed)))

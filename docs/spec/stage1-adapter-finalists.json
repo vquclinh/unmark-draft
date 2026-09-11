@@ -120,7 +120,7 @@
     },
     "provenance_fields_verified": {
       "classification": "safety_gate",
-      "note": "exactly what RunProvenance.require_match compares; the finalist verifier reuses verify_checkpoint so it cannot drift weaker",
+      "note": "exactly what RunProvenance.require_match compares; the finalist verifier reuses verify_checkpoint so it cannot drift weaker. `objective` was added with the V2-GC candidate and `fusion` with the V2-SCF candidate, which trains the historical objective under a different adapter architecture. A provenance predating either field is read as the historical objective and the historical fusion, so both finalists verify unchanged and no digest, score or identity was touched.",
       "value": [
         "run_seed",
         "init_seed",
@@ -134,6 +134,8 @@
         "precision",
         "repository_head",
         "inventory",
+        "objective",
+        "fusion",
         "lambda_align",
         "lambda_clean"
       ]

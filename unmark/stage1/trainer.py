@@ -27,6 +27,10 @@ if TYPE_CHECKING:  # imported lazily: `trainer` must stay importable without PyY
     from unmark.stage1.preflight import InventoryIdentity
 
 from unmark.stage1.contracts import (
+    HISTORICAL_FUSION,
+    HISTORICAL_OBJECTIVE,
+    FusionIdentity,
+    ObjectiveIdentity,
     ObjectiveWeights,
     Stage1ContractViolation,
     TruncationPolicy,
@@ -46,6 +50,7 @@ from unmark.stage1.protocol import (
     STAGE1_PROTOCOL_VERSION,
     lambdas_for_r,
 )
+from unmark.stage1.candidates import budget_for_identity
 from unmark.stage1.sampler import DeterministicSampler
 from unmark.stage1.telemetry import NullSink, TelemetrySink
 from unmark.stage1.selection import ValidationPoint, budget_decision, select_checkpoint
@@ -90,6 +95,37 @@ class RunProvenance:
     backbone_revision: str = ENCODER_REVISION
     protocol_version: str = STAGE1_PROTOCOL_VERSION
     precision: str = PRECISION
+    objective: ObjectiveIdentity = HISTORICAL_OBJECTIVE
+    """WHICH objective this run optimises, and the grid weight that implies.
+
+    Scientific identity, and until the V2 candidates existed the one dimension a
+    Stage-1 artifact could not name. Two runs that agree on every seed, the
+    learning rate, `r`, the corpus, the backbone and the inventory but minimise
+    different losses are different experiments, so this is compared exactly like
+    the rest of `require_match`.
+
+    Defaults to the historical objective because that is what every existing
+    checkpoint was trained under, and because a run that says nothing about its
+    objective is making the historical claim. A V2 candidate must say so
+    explicitly, which is what stops its checkpoint resuming from -- or being
+    verified as -- UNMARK-A or UNMARK-B.
+    """
+
+    fusion: FusionIdentity = HISTORICAL_FUSION
+    """WHICH adapter architecture this run trained. Scientific identity.
+
+    Independent of `objective`, and C1 is why both are needed: V2-SCF optimises
+    the historical objective with a scale-calibrated fusion, so a provenance that
+    recorded only its objective would be indistinguishable from UNMARK-A's. The
+    weights would even load -- same names, same shapes -- into the wrong equation.
+
+    Defaults to the historical fusion because that is what every existing
+    checkpoint implements, and because a run that says nothing about its
+    architecture is making the historical claim. A candidate must say so
+    explicitly, which is what stops its checkpoint resuming from, or being
+    verified as, UNMARK-A or UNMARK-B.
+    """
+
     inventory: "InventoryIdentity | None" = None
     """The pinned Vietnamese syllable inventory this run resolved eligibility with.
 
@@ -146,11 +182,27 @@ class RunProvenance:
             "protocol_version": self.protocol_version,
             "precision": self.precision,
             "inventory": self.inventory.to_dict() if self.inventory is not None else None,
+            "objective": self.objective.to_dict(),
+            "fusion": self.fusion.to_dict(),
         }
 
     def require_match(self, other: dict[str, Any]) -> None:
         """Refuse to resume into a different experiment."""
         mine = self.to_dict()
+        # A provenance written before the V2 candidates existed carries no
+        # `objective` block. That absence is not ambiguity -- only the historical
+        # two-term objective could have produced such a payload, because every
+        # objective added since records its own identity -- so it is READ as the
+        # historical identity rather than as a mismatch. This is what keeps the
+        # frozen UNMARK-A/B checkpoints verifiable under an unchanged gate, and
+        # it costs nothing in the other direction: a historical environment
+        # meeting a `grid-consistency-v1` payload, or a V2-GC environment meeting
+        # a historical one, still fails in the loop below.
+        other = {
+            "objective": HISTORICAL_OBJECTIVE.to_dict(),
+            "fusion": HISTORICAL_FUSION.to_dict(),
+            **dict(other),
+        }
         for key in (
             "run_seed", "init_seed", "corruption_seed", "learning_rate", "r",
             "corpus_manifest_digest", "backbone_checkpoint", "backbone_revision",
@@ -166,6 +218,15 @@ class RunProvenance:
             # every corruption rate changes. Compared as a whole so the message
             # shows both identities at once.
             "inventory",
+            # WHICH loss was minimised. Compared as a whole -- id and the grid
+            # weight it implies together -- so a payload cannot match on the name
+            # while disagreeing about the term it names.
+            "objective",
+            # WHICH adapter architecture was trained. Independent of the
+            # objective: C1 shares the historical loss and differs only here, so
+            # without this field its checkpoint would verify as UNMARK-A and its
+            # weights would load into the wrong mixture rule.
+            "fusion",
         ):
             if other.get(key) != mine[key]:
                 raise TrainerContractViolation(
@@ -231,6 +292,81 @@ def verify_model_contract(unmark_encoder: Any) -> dict[str, Any]:
         "hidden_size": hidden,
         "precision": PRECISION,
     }
+
+
+# ---------------------------------------------------------------------------
+# Loss telemetry
+# ---------------------------------------------------------------------------
+def loss_telemetry(loss_result: Any) -> dict[str, float]:
+    """The per-term training telemetry a loss result exposes. **OPERATIONAL.**
+
+    The historical three keys -- `loss`, `loss_align`, `loss_clean` -- in their
+    historical order, so a run under the historical objective emits exactly the
+    event it emitted before this function existed: same keys, same order, same
+    values, same number of host syncs.
+
+    A candidate result carries its own extra terms and those keys follow:
+    `loss_grid` / `mean_distance_grid` for V2-GC, and `loss_grd` /
+    `loss_rel_clean` / `loss_rel_corrupt` / `grd_teacher_offdiag_cos_mean` for
+    V2-GRD. They are appended, never interleaved, so an existing consumer that
+    reads the first three is unaffected and a consumer that wants a candidate's
+    diagnostics finds them by name. A candidate never sees another's keys.
+
+    Every extra term is **telemetry only**. They are logged, plotted and read by
+    a human; none reaches a selection rule. Checkpoint selection stays exactly
+    where D-S1B-004 put it -- the held-out unlabeled validation score in
+    `selection.select_checkpoint` -- and this function is not on that path.
+
+    Detected by attribute rather than by type so the historical `Stage1LossResult`
+    and any future result object both work without this module importing torch or
+    either objective.
+    """
+    fields = {
+        "loss": float(loss_result.loss.detach()),
+        "loss_align": float(loss_result.loss_align.detach()),
+        "loss_clean": float(loss_result.loss_clean.detach()),
+    }
+    grid = getattr(loss_result, "loss_grid", None)
+    if grid is not None:
+        fields["loss_grid"] = float(grid.detach())
+        fields["mean_distance_grid"] = float(
+            loss_result.distance_grid_per_example.detach().mean()
+        )
+    relational = getattr(loss_result, "loss_grd", None)
+    if relational is not None:
+        fields["loss_grd"] = float(relational.detach())
+        fields["loss_rel_clean"] = float(loss_result.loss_rel_clean.detach())
+        fields["loss_rel_corrupt"] = float(loss_result.loss_rel_corrupt.detach())
+        teacher = getattr(loss_result, "teacher_offdiagonal_mean", None)
+        if teacher is not None:
+            fields["grd_teacher_offdiag_cos_mean"] = float(teacher.detach())
+    return fields
+
+
+def scale_telemetry(adapter: Any) -> dict[str, float]:
+    """Passive fusion diagnostics from the adapter's last forward. **OPERATIONAL.**
+
+    Empty for every adapter that is not scale-calibrated, so the historical and
+    V2-GC training events are byte-identical to what they were before C1 existed.
+
+    For C1 it returns the four quantities the candidate's hypothesis is about --
+    the mean scale factor, the post-calibration `||f||/||e||`, the realised
+    intervention ratio `||z-e||/||e||`, and the gate mean -- each already computed
+    inside the forward that just ran, detached there, and converted to a float
+    only here.
+
+    **No extra encoder forward, no RNG, no graph, no effect on any scientific
+    value.** It reads state the adapter recorded; it cannot change what the
+    adapter computed, and nothing it returns reaches a loss, a checkpoint
+    selection or a budget. Called at the telemetry cadence, not per batch.
+    """
+    read = getattr(adapter, "scale_diagnostics", None)
+    if read is None:
+        return {}
+    try:
+        return {f"scf_{name}": value for name, value in read().items()}
+    except Exception:  # noqa: BLE001 - diagnostics never break a run
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +493,50 @@ def resume_cap(payload: Mapping[str, Any]) -> int:
             f"updates; the continuation leg begins only after the "
             f"{INITIAL_MAX_UPDATES} leg completes"
         )
+    return cap
+
+
+def resolve_run_cap(
+    provenance: RunProvenance, cap: int, resume: Mapping[str, Any] | None = None
+) -> int:
+    """THE cap this run may execute under. **Fails closed. Returns `cap`.**
+
+    The single structural enforcement point for a candidate's screening budget
+    (Audit 065 BLOCKER 1). `train_run`'s loop is `while global_update < cap`, so
+    proving `cap` is inside the candidate's ceiling *before* the loop proves the
+    run can never execute the update after it -- there is no other way in.
+
+    The budget is looked up from `provenance.objective` AND `provenance.fusion`,
+    not from a stage name or an argument, so a checkpoint carries everything
+    needed to re-derive the policy it was trained under. Both halves are required:
+    C1 shares the historical objective and is distinguished only by its fusion.
+
+    Three things are checked, and each refuses rather than repairs:
+
+    * the requested `cap` is within the ceiling;
+    * a resumed `global_update` is within the ceiling -- a payload already past
+      it is real evidence of unauthorised work and is never normalised;
+    * the resumed payload's own recorded `cap` is within the ceiling.
+
+    The historical objective has no ceiling (`hard_max_updates is None`), so
+    every historical run resolves exactly the cap it was given and the locked
+    20k -> 40k continuation is untouched.
+    """
+    budget = budget_for_identity(
+        provenance.objective.objective_id, provenance.fusion.fusion_id
+    )
+    what = (
+        f"objective {provenance.objective.objective_id!r} / "
+        f"fusion {provenance.fusion.fusion_id!r}"
+    )
+    budget.require_cap(cap, what=what)
+    if resume is not None:
+        if "global_update" in resume:
+            budget.require_update_within(
+                int(resume["global_update"]), what=f"{what} resume"
+            )
+        if "cap" in resume:
+            budget.require_cap(int(resume["cap"]), what=f"{what} resume")
     return cap
 
 
@@ -616,6 +796,25 @@ class RunResult:
     cap: int = INITIAL_MAX_UPDATES
     budget_limited: bool = False
     continued: bool = False
+    hard_capped: bool = False
+    """True when this run stopped because its candidate's screening budget
+    forbids the continuation, not because the selection was inside the budget.
+
+    Recorded so the artifact is honest about *why* a trajectory ends at its cap.
+    Before Audit 065 a hard-capped candidate could not say this at all, because
+    it was silently promoted to the 40k leg instead."""
+
+    @property
+    def budget(self):
+        """This run's screening budget, re-derived from its own identity.
+
+        From `(objective, fusion)`, not the objective alone: C1 shares the
+        historical objective, so an objective-only lookup would hand it the
+        historical continuation policy.
+        """
+        return budget_for_identity(
+            self.provenance.objective.objective_id, self.provenance.fusion.fusion_id
+        )
 
     @property
     def selected(self) -> ValidationPoint:
@@ -627,6 +826,11 @@ class RunResult:
             "cap": self.cap,
             "continued_past_initial_budget": self.continued,
             "budget_limited": self.budget_limited,
+            # WHICH budget regime produced this trajectory, and whether it ended
+            # against a candidate-specific ceiling. A reader no longer has to
+            # infer the regime from the numbers.
+            "budget_policy": self.budget.to_dict(),
+            "stopped_at_hard_cap": self.hard_capped,
             "evaluations": [p.to_dict() for p in self.points],
             "selected": self.selected.to_dict(),
             "optimizer": {
@@ -646,7 +850,17 @@ def resolve_budget(result: RunResult) -> RunResult:
     testable without training anything.
     """
     decision = budget_decision(result.selected.update, result.cap)
-    if decision.continue_run:
+    if decision.continue_run and not result.budget.allows_precommitted_continuation:
+        # HARD-CAPPED CANDIDATE (Audit 065 BLOCKER 1). The locked rule would
+        # continue this run to EXTENDED_MAX_UPDATES because its best held-out
+        # checkpoint sits exactly on the cap. That rule belongs to the historical
+        # campaign; a first-screen candidate stops instead, and says so. `cap` is
+        # deliberately NOT raised -- an artifact claiming 40 000 when no 40 000
+        # updates were authorised, let alone executed, would be a lie.
+        result.hard_capped = True
+        result.budget_limited = True
+        result.continued = False
+    elif decision.continue_run:
         result.cap = EXTENDED_MAX_UPDATES
         result.continued = True
         result.budget_limited = False
@@ -704,6 +918,13 @@ def train_run(
 
     if not train_chunks:
         raise TrainerContractViolation("no training chunks supplied")
+    # THE structural budget gate, FIRST. Before the adapter is touched, before
+    # the optimizer exists, before the first batch, and before
+    # `while global_update < cap` can execute anything: a cap or a carried update
+    # past this candidate's screening ceiling stops the run right here. Placed
+    # ahead of every other check deliberately -- a run that is not allowed to
+    # happen should not get as far as building something (Audit 065 BLOCKER 1).
+    resolve_run_cap(provenance, cap, resume)
     adapter = objective.unmark_encoder.adapter
     if not corruption_policy.is_locked_mixture:
         raise TrainerContractViolation(
@@ -817,9 +1038,8 @@ def train_run(
                 batch_size=BATCH_SIZE,
                 visit=sampler.visit,
                 position=sampler.position,
-                loss=float(loss_result.loss.detach()),
-                loss_align=float(loss_result.loss_align.detach()),
-                loss_clean=float(loss_result.loss_clean.detach()),
+                **loss_telemetry(loss_result),
+                **scale_telemetry(adapter),
                 **identity,
             )
 
@@ -877,9 +1097,7 @@ def train_run(
                     "global_update": global_update,
                     "visit": sampler.visit,
                     "position": sampler.position,
-                    "loss": float(loss_result.loss.detach()),
-                    "loss_align": float(loss_result.loss_align.detach()),
-                    "loss_clean": float(loss_result.loss_clean.detach()),
+                    **loss_telemetry(loss_result),
                     "validation": point.to_dict(),
                     "monitor_window": window.to_dict(),
                     "gradients": grads,

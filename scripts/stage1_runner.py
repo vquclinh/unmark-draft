@@ -107,16 +107,45 @@ from unmark.stage1.protocol import (  # noqa: E402
     STAGE1_PROTOCOL_VERSION,
     TOTAL_NOMINAL_RUNS,
     TRAIN_SEEDS,
+    V2_GC_LEARNING_RATE,
+    V2_GC_MAX_UPDATES,
+    V2_GC_R,
+    V2_GC_RUN_SEED,
+    V2_GC_STAGE,
+    V2_GRD_LEARNING_RATE,
+    V2_GRD_MAX_UPDATES,
+    V2_GRD_R,
+    V2_GRD_RUN_SEED,
+    V2_GRD_STAGE,
+    V2_SCF_LEARNING_RATE,
+    V2_SCF_MAX_UPDATES,
+    V2_SCF_R,
+    V2_SCF_RUN_SEED,
+    V2_SCF_STAGE,
     VALIDATION_CONDITIONS,
     VALIDATION_CORRUPTION_SEED,
     protocol_dict,
 )
+from unmark.stage1.candidates import (  # noqa: E402
+    CANDIDATES,
+    candidate_for_stage,
+)
+from unmark.stage1.contracts import (  # noqa: E402
+    GEOMETRY_RELATIONAL_OBJECTIVE,
+    GRID_CONSISTENCY_OBJECTIVE,
+    HISTORICAL_FUSION,
+    SCALE_CALIBRATED_FUSION,
+)
+from unmark.stage1.execute import HISTORICAL_SMOKE_STAGE  # noqa: E402
 from unmark.stage1.selection import (  # noqa: E402
     final_main_schedule,
     lr_pilot_schedule,
     r_phase1_schedule,
     select_learning_rate,
     select_r,
+    v2_gc_schedule,
+    v2_grd_schedule,
+    v2_scf_schedule,
 )
 
 # ---------------------------------------------------------------------------
@@ -489,6 +518,111 @@ def run_final_main(args) -> int:
     return _execute(args, schedule, "final_main", verified)
 
 
+def run_v2_gc(args) -> int:
+    """**V2-GC** -- the first post-hoc UNMARK-v2 research candidate. ONE run.
+
+    Takes no scientific arguments, exactly like the three historical stages: the
+    learning rate, `r`, the seeds, the corruption stream, the budget and the
+    evaluation cadence are all the already-closed campaign's values, and
+    `lambda_grid` is pinned in `protocol.LAMBDA_GRID` and carried by the
+    objective identity. There is deliberately no `--lambda-grid`.
+
+    It reads no selection artifact, because it selects nothing: it is one run at
+    an already-frozen configuration, and the checkpoint within it is chosen by
+    the same locked held-out unlabeled rule every historical run used.
+    """
+    verified = _verified_corpus(args)
+    schedule = v2_gc_schedule()
+    identity = GRID_CONSISTENCY_OBJECTIVE
+    print(f"V2-GC: {len(schedule)} run, objective {identity.objective_id}")
+    print(f"  objective     : L_align + L_clean + L_grid")
+    print(f"  lambda_grid   : {identity.lambda_grid} (LOCKED a-priori; no flag, no sweep)")
+    print(f"  L_grid        : token cosine consistency on the INVARIANT base grid, "
+          f"adapted-corrupt vs stop_gradient(adapted-clean)")
+    print(f"  LR / r        : {V2_GC_LEARNING_RATE:g} / {V2_GC_R:g} "
+          f"(lambda_align = lambda_clean = 1.0)")
+    print(f"  run seed      : {V2_GC_RUN_SEED} (paired with the historical run at the "
+          f"same seed)")
+    budget = candidate_for_stage(V2_GC_STAGE).budget
+    print(f"  budget        : {budget.hard_max_updates} updates, HARD CAP "
+          f"({budget.policy}); the 20k->40k continuation does NOT apply")
+    assert budget.hard_max_updates == V2_GC_MAX_UPDATES
+    print("  selection     : UNCHANGED — held-out UNLABELED distance only; L_grid is "
+          "logged, never selected on")
+    print("  new model parameters: 0")
+    return _execute(args, schedule, V2_GC_STAGE, verified)
+
+
+def run_v2_scf(args) -> int:
+    """**V2-SCF (C1)** -- scale-calibrated fusion. ONE run, historical objective.
+
+    Takes no scientific arguments. Every value is the already-closed campaign's:
+    the learning rate the LR pilot selected, the `r` the `r` phase selected, the
+    seeds UNMARK-A used, and the same 20 000-update hard cap C3 runs under. The
+    one thing that differs from the historical run is the adapter's mixture rule,
+    and that is carried by the candidate register, not by a flag.
+    """
+    verified = _verified_corpus(args)
+    schedule = v2_scf_schedule()
+    candidate = candidate_for_stage(V2_SCF_STAGE)
+    print(f"V2-SCF: {len(schedule)} run, fusion {candidate.fusion.fusion_id}")
+    print(f"  objective     : {candidate.objective.objective_id} "
+          f"(L_align + L_clean; NO grid term, NO extra loss)")
+    print(f"  fusion        : scale = ||e|| / clamp(||f||, 1e-8) per token; "
+          f"z = g*(scale*f) + (1-g)*e")
+    print(f"  new parameters: 0 (the gate, both tables, the fusion and the "
+          f"LayerNorm are untouched)")
+    print(f"  LR / r        : {V2_SCF_LEARNING_RATE:g} / {V2_SCF_R:g} "
+          f"(lambda_align = lambda_clean = 1.0)")
+    print(f"  run seed      : {V2_SCF_RUN_SEED} (paired with UNMARK-A and with V2-GC)")
+    print(f"  budget        : {candidate.budget.hard_max_updates} updates, HARD CAP "
+          f"({candidate.budget.policy}); the 20k->40k continuation does NOT apply")
+    print(f"  W&B project   : {candidate.wandb_project}")
+    print("  selection     : UNCHANGED — held-out UNLABELED distance only; scale "
+          "telemetry is logged, never selected on")
+    assert candidate.budget.hard_max_updates == V2_SCF_MAX_UPDATES
+    assert candidate.fusion is SCALE_CALIBRATED_FUSION
+    return _execute(args, schedule, V2_SCF_STAGE, verified)
+
+
+def run_v2_grd(args) -> int:
+    """**V2-GRD (C2)** -- geometry / relational distillation. ONE run.
+
+    Takes no scientific arguments. Every value is the already-closed campaign's,
+    and the entire relational specification -- the FIRST_TOKEN space, the cosine
+    Gram, the off-diagonal MSE, the 0.5/0.5 balance, the 1e-8 epsilon and
+    `lambda_grd = 1.0` -- is locked in `protocol` and carried by the objective
+    identity. There is deliberately no flag for any of it.
+    """
+    verified = _verified_corpus(args)
+    schedule = v2_grd_schedule()
+    candidate = candidate_for_stage(V2_GRD_STAGE)
+    spec = candidate.objective.relational
+    print(f"V2-GRD: {len(schedule)} run, objective {candidate.objective.objective_id}")
+    print(f"  objective     : L_align + L_clean + lambda_grd * L_grd")
+    print(f"  lambda_grd    : {spec.lambda_grd} (LOCKED a-priori; no flag, no sweep)")
+    print(f"  teacher       : native PhoBERT on the CLEAN ORIGINAL input "
+          f"(never a corrupted condition)")
+    print(f"  relation space: {spec.relation_space}  metric: {spec.relation_metric}  "
+          f"loss: {spec.relation_loss} (diagonal EXCLUDED)")
+    print(f"  L_grd         : {spec.relational_clean_weight} * L_rel_clean + "
+          f"{spec.relational_corrupt_weight} * L_rel_corrupt, epsilon {spec.epsilon:g}")
+    print(f"  fusion        : {candidate.fusion.fusion_id} (UNCHANGED; no scale calibration)")
+    print(f"  new parameters: 0")
+    print(f"  LR / r        : {V2_GRD_LEARNING_RATE:g} / {V2_GRD_R:g} "
+          f"(lambda_align = lambda_clean = 1.0)")
+    print(f"  run seed      : {V2_GRD_RUN_SEED} (paired with UNMARK-A, C1 and C3)")
+    print(f"  budget        : {candidate.budget.hard_max_updates} updates, HARD CAP "
+          f"({candidate.budget.policy}); the 20k->40k continuation does NOT apply")
+    print(f"  W&B project   : {candidate.wandb_project}")
+    print("  selection     : UNCHANGED — held-out UNLABELED distance only; L_grd is "
+          "logged, never selected on")
+    assert candidate.budget.hard_max_updates == V2_GRD_MAX_UPDATES
+    assert candidate.objective is GEOMETRY_RELATIONAL_OBJECTIVE
+    assert candidate.fusion is HISTORICAL_FUSION
+    return _execute(args, schedule, V2_GRD_STAGE, verified)
+
+
 def _campaign_identity(args, verified):
     """The identity of the stage that is ABOUT TO RUN, from current inputs only.
 
@@ -573,6 +707,10 @@ def run_smoke(args) -> int:
         prepared_corpus=Path(args.prepared_corpus),
         completion_dir=Path(args.completion_dir) if args.completion_dir else None,
         revision=args.revision,
+        # WHICH candidate to exercise. A dispatch selector over a closed set, not
+        # a scientific override: smoke takes no update, so nothing it selects can
+        # change a locked value or relax a screening budget.
+        stage=args.candidate,
         # Same authority, but the clean-tree requirement is deliberately relaxed:
         # smoke is a no-update diagnostic run *while* code is being changed, and
         # it produces no scientific artifact. It still cannot claim a false HEAD.
@@ -681,10 +819,44 @@ def build_parser() -> argparse.ArgumentParser:
     final.add_argument("--lr-artifact", required=True, help="lr-pilot selection artifact")
     final.add_argument("--r-artifact", required=True, help="r-phase1 selection artifact")
 
+    v2grd = sub.add_parser(
+        "v2-grd",
+        help="V2-GRD (C2): ONE post-hoc candidate run at the closed configuration, "
+             "adding FIRST_TOKEN relational distillation from the CLEAN native "
+             "teacher (lambda_grd LOCKED at 1.0, historical fusion, 0 new "
+             "parameters, hard cap 20000)",
+    )
+    _corpus_consumer(v2grd)
+
+    v2scf = sub.add_parser(
+        "v2-scf",
+        help="V2-SCF (C1): ONE post-hoc candidate run at the closed configuration, "
+             "with scale-calibrated fusion (historical objective, 0 new parameters, "
+             "hard cap 20000)",
+    )
+    _corpus_consumer(v2scf)
+
+    v2gc = sub.add_parser(
+        "v2-gc",
+        help="V2-GC: ONE post-hoc candidate run at the closed configuration, with "
+             "the token-grid consistency term added (lambda_grid LOCKED at 1.0)",
+    )
+    _corpus_consumer(v2gc)
+
     smoke = sub.add_parser("smoke", help="no-update real-model check; cannot step an optimizer")
     _prepared_corpus_inputs(smoke)
     smoke.add_argument("--revision", default=ENCODER_REVISION)
     smoke.add_argument("--repository-head", default=None)
+    smoke.add_argument(
+        "--candidate", default=HISTORICAL_SMOKE_STAGE,
+        choices=[c.stage for c in CANDIDATES],
+        help="WHICH Stage-1 candidate to smoke, resolved through the same "
+             "candidate register the real run uses. Defaults to the historical "
+             "objective, so the pre-existing behaviour is unchanged. This is a "
+             "dispatch selector over a closed set, not a scientific override: "
+             "smoke takes no optimizer step, so it cannot change a locked value "
+             "or relax any screening budget.",
+    )
     return parser
 
 
@@ -720,6 +892,9 @@ def main(argv=None) -> int:
         "lr-pilot": run_lr_pilot,
         "r-phase1": run_r_phase1,
         "final-main": run_final_main,
+        "v2-gc": run_v2_gc,
+        "v2-scf": run_v2_scf,
+        "v2-grd": run_v2_grd,
         "smoke": run_smoke,
     }
     try:

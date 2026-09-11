@@ -147,8 +147,11 @@ def test_smoke_help_reflects_the_accepted_contract():
         for option in action.option_strings
         if option.startswith("--") and option != "--help"
     }
+    # `--candidate` (Audit 066) selects WHICH Stage-1 candidate the no-update
+    # smoke exercises, over the closed candidate register. It is a dispatch
+    # selector, not a scientific override: smoke takes no optimizer step.
     assert declared == {"--prepared-corpus", "--completion-dir", "--revision",
-                        "--repository-head"}, declared
+                        "--repository-head", "--candidate"}, declared
 
     help_text = subparser("smoke").format_help()
     for option in declared:

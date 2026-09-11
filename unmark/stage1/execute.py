@@ -17,14 +17,22 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
+from unmark.modeling.contracts import HISTORICAL_FUSION_ID
+from unmark.stage1.candidates import (
+    HISTORICAL_STAGES,
+    StageCandidate,
+    candidate_for_stage,
+)
 from unmark.stage1.contracts import (
     CorruptionRatePolicy,
+    GEOMETRY_RELATIONAL_OBJECTIVE,
+    GRID_CONSISTENCY_OBJECTIVE,
     OverflowBehaviour,
     Stage1ContractViolation,
     TruncationPolicy,
 )
 from unmark.stage1.checkpoint import VerifiedCorpus
-from unmark.stage1.trainer import load_training_checkpoint, resume_cap
+from unmark.stage1.trainer import load_training_checkpoint, resolve_run_cap, resume_cap
 from unmark.stage1.manifest import CHUNKS_NAME
 from unmark.stage1.protocol import (
     BATCH_SIZE,
@@ -34,8 +42,12 @@ from unmark.stage1.protocol import (
     EXTENDED_MAX_UPDATES,
     HIDDEN_SIZE,
     INITIAL_MAX_UPDATES,
+    LR_PILOT_R,
     MAX_LENGTH,
     STAGE1_PROTOCOL_VERSION,
+    V2_GC_STAGE,
+    V2_GRD_STAGE,
+    V2_SCF_STAGE,
     lambdas_for_r,
 )
 from unmark.stage1.artifact import CampaignIdentity
@@ -47,6 +59,18 @@ from unmark.stage1.selection import (
     select_r,
 )
 from unmark.stage1.trainer import RunProvenance, train_run, verify_model_contract
+
+FIRST_SCREEN_STAGES: tuple[str, ...] = (V2_GC_STAGE, V2_SCF_STAGE, V2_GRD_STAGE)
+"""Post-hoc single-run candidate stages. Each writes its own artifact leg and
+performs NO selection -- there is one run, and the checkpoint within it is still
+chosen by the locked held-out rule. A further candidate joins by being
+registered."""
+
+HISTORICAL_SMOKE_STAGE = HISTORICAL_STAGES[0]
+"""Default candidate for `smoke_check`: the historical objective.
+
+A smoke that names no candidate smokes the objective every existing checkpoint
+was trained under, so the pre-repair default behaviour is preserved exactly."""
 
 _FULL_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 """A commit identity is the full sha. A branch name or abbreviation is not one."""
@@ -130,8 +154,14 @@ def require_frozen_backbone_unchanged(encoder, expected_hash: str, label: str) -
         )
 
 
-def build_objective(revision: str):
-    """Frozen pinned encoder + the locked adapter. **Lazy torch/transformers.**"""
+def build_objective(revision: str, fusion_id: str = HISTORICAL_FUSION_ID):
+    """Frozen pinned encoder + the locked adapter. **Lazy torch/transformers.**
+
+    `fusion_id` selects the adapter architecture and defaults to the historical
+    one, so every existing caller keeps its exact behaviour. It exists so the
+    real-model smoke can exercise a candidate's actual adapter rather than
+    checking a candidate objective over the historical mixture rule.
+    """
     from transformers import AutoModel, AutoTokenizer
 
     from unmark.modeling.adapter import OrthographyInputAdapter, UnmarkEncoder
@@ -152,8 +182,90 @@ def build_objective(revision: str):
     hidden = int(encoder.config.hidden_size)
     if hidden != HIDDEN_SIZE:
         raise Stage1ContractViolation(f"hidden size {hidden} != locked {HIDDEN_SIZE}")
-    adapter = OrthographyInputAdapter(AdapterConfig(hidden_size=hidden))
+    adapter = OrthographyInputAdapter(
+        AdapterConfig(hidden_size=hidden, fusion_id=fusion_id)
+    )
     return tokenizer, UnmarkEncoder(encoder=encoder, adapter=adapter), Stage1Objective
+
+
+def build_candidate_objective(unmark_encoder, candidate: StageCandidate, weights):
+    """THE Stage-1 objective constructor. **Lazy torch. One dispatch, one place.**
+
+    Used by `execute_stage` for a real run and by `smoke_check` for the
+    no-update real-model check, so a smoke can never validate a different loss
+    from the one the run would optimise (Audit 065 BLOCKER 4). Before this
+    existed, `smoke_check` built `Stage1Objective` unconditionally and could not
+    exercise a candidate objective at all.
+
+    Dispatch is on the candidate's **objective identity**, resolved by
+    `candidates.candidate_for_stage` from the stage name -- never on an argument,
+    a flag or a string compared here. Adding C1/C2 adds a branch to the register,
+    not to every call site.
+
+    `weights` supplies `lambda_align` and `lambda_clean`, which keep their
+    historical meaning and their historical source (`lambdas_for_r`). A candidate
+    whose objective needs more than those two upgrades them to its own weights
+    type; `lambda_grid` is never passed in, because it is locked in `protocol`
+    and `GridConsistencyWeights` refuses any other value.
+    """
+    from unmark.stage1.contracts import GridConsistencyWeights
+    from unmark.stage1.objective import Stage1Objective
+    from unmark.stage1.objective_grid import GridConsistencyObjective
+    from unmark.stage1.objective_relational import RelationalDistillationObjective
+
+    # The adapter that was actually built must implement the fusion this
+    # candidate declares. Both are derived from the same `StageCandidate`, so a
+    # mismatch means two derivations drifted -- which would train C1's objective
+    # over the historical architecture, or the reverse, and record a provenance
+    # that describes neither.
+    built = getattr(unmark_encoder.adapter.config, "fusion_id", None)
+    if built != candidate.fusion.fusion_id:
+        raise Stage1ContractViolation(
+            f"{candidate.stage}: the adapter implements fusion {built!r} but the "
+            f"candidate declares {candidate.fusion.fusion_id!r}. The architecture "
+            "and the provenance must be the same statement."
+        )
+    if candidate.objective is GRID_CONSISTENCY_OBJECTIVE:
+        # The SAME adapter, the SAME frozen backbone, and the two historical
+        # weights read straight off the plan -- so a V2-GC run cannot optimise
+        # one pair of lambdas while its checkpoint claims another.
+        return GridConsistencyObjective(
+            unmark_encoder,
+            GridConsistencyWeights(
+                lambda_align=weights.lambda_align,
+                lambda_clean=weights.lambda_clean,
+            ),
+        )
+    if candidate.objective is GEOMETRY_RELATIONAL_OBJECTIVE:
+        # C2 takes the plain historical weights: `lambda_grd` and the whole
+        # relational specification are locked in `protocol` and carried by the
+        # objective identity, so there is nothing about the third term that a
+        # caller could pass in or get wrong.
+        return RelationalDistillationObjective(unmark_encoder, weights)
+    objective = Stage1Objective(unmark_encoder, weights)
+    return objective
+
+
+def continuation_permitted(
+    candidate: StageCandidate, leg_cap: int, result_cap: int
+) -> bool:
+    """May this run enter the historical 20k -> 40k continuation leg?
+
+    Two independent conditions, and the candidate's is checked first:
+
+    * its screening budget must ALLOW the precommitted continuation at all --
+      a first-screen candidate is hard-capped and never continues, whatever its
+      held-out curve did (Audit 065 BLOCKER 1);
+    * the leg that just ran must be the initial one and the locked rule must
+      have asked for the extension, exactly as before.
+
+    Pure and module-level so the decision is testable without torch, a corpus or
+    a GPU. `resolve_budget` already refuses to raise `result.cap` for a
+    hard-capped candidate, so for those this is a second, independent refusal.
+    """
+    if not candidate.budget.allows_precommitted_continuation:
+        return False
+    return leg_cap == INITIAL_MAX_UPDATES and result_cap == EXTENDED_MAX_UPDATES
 
 
 def execute_stage(
@@ -186,13 +298,30 @@ def execute_stage(
             "not reproducible. It is derived from Git, never supplied."
         )
 
+    # WHICH objective this stage trains AND how far its run may go, both decided
+    # ONCE from the stage name by the candidate register and then carried by
+    # provenance into every checkpoint and artifact. The three historical stages
+    # keep the historical objective and the locked precommitted budget exactly;
+    # the V2-GC stage, which has its own name and its own output namespace, gets
+    # the grid term and a 20 000-update hard cap. A stage cannot pick either
+    # through an argument, so no flag, config key or typo can give a historical
+    # run a different loss or a candidate a longer budget. An unregistered stage
+    # fails closed rather than defaulting into the historical one.
+    candidate = candidate_for_stage(stage)
+    objective_identity = candidate.objective
+
     # OPERATIONAL ONLY (Audit 040). Defaults to a no-op sink, so a caller that
     # does not opt in gets exactly the pre-telemetry code path.
     sink = telemetry if telemetry is not None else NullSink()
     sink.emit(
         "stage_start", stage=stage, candidate_count=len(schedule),
         repository_head=repository_head, protocol_version=STAGE1_PROTOCOL_VERSION,
-        resume=bool(resume),
+        resume=bool(resume), **objective_identity.to_dict(),
+        **candidate.fusion.to_dict(),
+        candidate_id=candidate.stage,
+        budget_policy=candidate.budget.to_dict(),
+        hard_max_updates=candidate.budget.hard_max_updates,
+        wandb_project=candidate.wandb_project,
     )
 
     from unmark.linguistics import make_classifier, try_load_inventory
@@ -217,7 +346,6 @@ def execute_stage(
         resolve_r_phase1_execution,
         train_fused_r_phase1,
     )
-    from unmark.stage1.objective import Stage1Objective
     from unmark.stage1.preflight import verify_scientific_inputs
     from unmark.stage1.preparation import (
         PreparationPool,
@@ -383,6 +511,8 @@ def execute_stage(
               corpus_manifest_digest=manifest_digest,
               repository_head=repository_head,
               inventory=inputs.inventory,
+              objective=objective_identity,
+              fusion=candidate.fusion,
           )
           # --- FRESH NOMINAL RUN (D-S1B-016 / D-S1B-017) ----------------------
           # A NEW adapter, initialised on CPU from this run's domain-separated
@@ -402,11 +532,24 @@ def execute_stage(
               "r": planned.r,
               "seed": planned.seed,
           }
-          adapter = fresh_adapter(hidden_size, provenance.init_seed)
+          # The candidate's ARCHITECTURE. Historical and C3 get the historical
+          # fusion; C1 gets the scale-calibrated one. The parameter set and every
+          # RNG draw are identical either way, so this run starts from exactly the
+          # weights `expected_fresh_init_hash` predicts and differs only in the
+          # equation that mixes them.
+          adapter = fresh_adapter(
+              hidden_size, provenance.init_seed, candidate.fusion.fusion_id
+          )
           fresh_hash = trainable_state_hash(trainable_state(adapter))
           adapter.to(device)
           unmark_encoder = UnmarkEncoder(encoder=frozen_encoder, adapter=adapter)
-          objective = Stage1Objective(unmark_encoder, provenance.weights)
+          # ONE dispatch, shared with the real-model smoke path, on the SAME
+          # weights object the artifact records. Whichever objective is built,
+          # the adapter, the frozen backbone and the parameter count are
+          # identical: 3 551 232 trainable.
+          objective = build_candidate_objective(
+              unmark_encoder, candidate, provenance.weights
+          )
 
           placed_hash = trainable_state_hash(trainable_state(adapter))
           if placed_hash != fresh_hash:
@@ -439,6 +582,11 @@ def execute_stage(
           # 20k budget (Audit 031 B3 / Audit 032 B2).
           carried = load_training_checkpoint(run_checkpoints) if resume else None
           leg_cap = resume_cap(carried) if carried is not None else INITIAL_MAX_UPDATES
+          # The candidate's screening budget, applied BEFORE any run_start event
+          # so a hard-capped candidate handed a 40k leg (or a checkpoint already
+          # past its ceiling) stops here with a policy error rather than deep in
+          # the loop. `train_run` re-asserts this; it is the structural gate.
+          resolve_run_cap(provenance, leg_cap, carried)
           sink.emit(
               "run_start",
               initial_global_update=int(carried["global_update"]) if carried else 0,
@@ -450,6 +598,17 @@ def execute_stage(
               batch_size=BATCH_SIZE,
               train_chunks=len(train_text),
               resumed=carried is not None,
+              # The candidate's full scientific identity, on the event the W&B
+              # bridge turns into a run config. OPERATIONAL transport only: every
+              # value originates in the production plan above.
+              candidate_id=candidate.stage,
+              **objective_identity.to_dict(),
+              **candidate.fusion.to_dict(),
+              hard_max_updates=candidate.budget.hard_max_updates,
+              # `objective_identity.to_dict()` already carries `relational`, so a
+              # candidate's full specification -- space, metric, reduction,
+              # balance and epsilon -- reaches the dashboard config unchanged.
+              wandb_project=candidate.wandb_project,
               **telemetry_identity,
           )
           result = train_run(
@@ -476,7 +635,7 @@ def execute_stage(
           # a continuation resume also sets, so it would re-enter here. The leg
           # that just ran is the authority -- after the extended leg there is no
           # successor, which is how "no 60k/80k extension" stays structural.
-          if leg_cap == INITIAL_MAX_UPDATES and result.cap == EXTENDED_MAX_UPDATES:
+          if continuation_permitted(candidate, leg_cap, result.cap):
               # SAME run, continued -- not a new candidate. The locked budget rule
               # requires preserving adapter, optimizer, visit, cursor and streams
               # across the 20k boundary. This passed `resume=None` until the Audit
@@ -534,6 +693,10 @@ def execute_stage(
         "stage": stage,
         "protocol_version": STAGE1_PROTOCOL_VERSION,
         "identity": campaign.to_dict(),
+        # WHICH loss produced these candidates, and the grid weight it implies.
+        # Recorded at the top level so the objective is recoverable from the
+        # stage artifact alone, without opening a checkpoint.
+        "objective": objective_identity.to_dict(),
         "repository_head": repository_head,
         "corpus_manifest_digest": manifest_digest,
         "candidates": [c.to_dict() for c in candidates],
@@ -555,6 +718,32 @@ def execute_stage(
         with phase(sink, "selection", stage=stage):
             artifact["selected"] = select_r(candidates, frozen).to_dict()
         sink.emit("selection", stage=stage, selected=artifact["selected"])
+    elif stage in FIRST_SCREEN_STAGES:
+        # NO SELECTION. V2-GC is one run, so there is no candidate to choose
+        # between -- and the checkpoint WITHIN it is still chosen by the locked
+        # held-out rule in `select_checkpoint`, which this stage does not touch.
+        # The grid term is a training term and a logged diagnostic; it selects
+        # nothing, and no downstream label or Macro-F1 enters here.
+        # NOTE: `candidate` here is the StageCandidate resolved from the stage
+        # name; the screened run is `candidates[0]`. The two are deliberately
+        # named apart -- conflating them is how a budget block could end up
+        # describing the wrong thing.
+        screened = candidates[0]
+        artifact[stage] = {
+            "note": (
+                "post-hoc research candidate: the historical objective plus a "
+                "token-grid consistency term, ONE run, no selection performed here"
+            ),
+            "objective": objective_identity.to_dict(),
+            # The ENFORCED screening budget, not a restated constant. A reader
+            # can tell from the artifact alone that no 40k leg was permitted.
+            "budget": candidate.budget.to_dict(),
+            "label": screened.label,
+            "learning_rate": screened.learning_rate,
+            "r": screened.r,
+            "selected": screened.selected.to_dict(),
+            "budget_limited": screened.budget_limited,
+        }
     else:
         from unmark.stage1.selection import descriptive_summary
 
@@ -592,14 +781,27 @@ def smoke_check(
     revision: str,
     repository_head: str | None,
     completion_dir: Path | None = None,
+    stage: str = HISTORICAL_SMOKE_STAGE,
 ) -> int:
-    """No-update real-model integration check.
+    """No-update real-model integration check, for ONE candidate.
 
     **Constructs no optimizer and calls no `.backward()`.** It reports the model
-    contract and one forward pass, and cannot change a parameter.
+    contract and one forward pass, and cannot change a parameter. No checkpoint
+    is selected, no update is taken, no official validation or TEST is touched,
+    and no downstream label exists anywhere on this path.
 
     Verifies the prepared corpus **before the model is loaded** (Audit 030 F1),
     so the smoke exercises exactly the gate a training run will pass through.
+
+    `stage` names the candidate to exercise and is resolved by the **same**
+    `candidates.candidate_for_stage` the real run uses, then built by the **same**
+    `build_candidate_objective`. Smoking `v2_gc` therefore runs a real
+    `GridConsistencyObjective` forward on real PhoBERT over the real adapter and
+    a real prepared batch -- which Audit 065 BLOCKER 4 found was impossible,
+    because this path constructed `Stage1Objective` unconditionally.
+
+    Every loss term the candidate's objective produces is asserted finite before
+    anything is reported, so a smoke cannot pass on a NaN.
     """
     import time
 
@@ -634,9 +836,20 @@ def smoke_check(
     resident = _resident_bytes()
     if resident is not None:
         print(f"  process RSS after load: {resident / 1e9:.2f} GB")
-    tokenizer, unmark_encoder, objective_cls = build_objective(revision)
+    # `build_objective` still supplies the pinned tokenizer, the frozen backbone
+    # and the locked adapter; the objective itself comes from the shared
+    # candidate dispatch, so the class it returns is never the thing that decides
+    # which loss is smoked.
+    candidate = candidate_for_stage(stage)
+    tokenizer, unmark_encoder, _historical_objective_cls = build_objective(
+        revision, fusion_id=candidate.fusion.fusion_id
+    )
     contract = verify_model_contract(unmark_encoder)
-    objective = objective_cls(unmark_encoder, lambdas_to_weights(1.0))
+    objective = build_candidate_objective(
+        unmark_encoder, candidate, lambdas_to_weights(LR_PILOT_R)
+    )
+    print(f"smoking candidate {candidate.stage!r}: objective "
+          f"{candidate.objective.objective_id}")
     corruption = CorruptionRatePolicy(seed=CORRUPTION_SEED)
     classifier = make_classifier(try_load_inventory())
 
@@ -651,20 +864,66 @@ def smoke_check(
     ]
     # The same one boundary `evaluate` and `train_run` use: the batch follows the
     # model, derived from the objective's own parameters. A no-op on CPU.
+    usable = [p for p in prepared if p is not None]
+    # Relational geometry is defined only BETWEEN examples, so a candidate with a
+    # relational term needs a real batch. Checked before the forward, so the
+    # smoke reports a policy error rather than a shape error from inside a loss.
+    if candidate.objective.relational is not None and len(usable) < 2:
+        raise Stage1ContractViolation(
+            f"{candidate.stage!r} smokes a relational objective, which needs at least "
+            f"2 examples to have an off-diagonal pair; the batch has {len(usable)}"
+        )
     batch = batch_to_device(
-        collate_stage1_batch([p for p in prepared if p is not None], tokenizer.pad_token_id),
+        collate_stage1_batch(usable, tokenizer.pad_token_id),
         module_device(objective),
     )
     with torch.no_grad():
         result = objective(batch)
+    losses = result.to_dict()
+
+    # Every term the candidate produced must be a real number. A smoke that
+    # prints NaN and returns 0 is not a check. `loss_grid`/`mean_distance_grid`
+    # are present exactly when the candidate's objective has a grid term, so this
+    # also proves the dispatch above really built what the register promised.
+    required = ["loss", "loss_align", "loss_clean"]
+    if candidate.objective.lambda_grid is not None:
+        required += ["loss_grid", "mean_distance_grid"]
+    if candidate.objective.lambda_grd is not None:
+        required += ["loss_grd", "loss_rel_clean", "loss_rel_corrupt"]
+    for key in required:
+        value = losses.get(key)
+        if not isinstance(value, (int, float)) or value != value or value in (
+            float("inf"), float("-inf")
+        ):
+            raise Stage1ContractViolation(
+                f"smoke for {candidate.stage!r} produced {key}={value!r}, which is not "
+                "finite. The candidate's objective is not usable for training."
+            )
+    # PASSIVE C1 diagnostics, read off the adapter's last forward. No extra
+    # encoder forward, no graph, no RNG: `scale_diagnostics()` returns `{}` for
+    # any adapter that is not scale-calibrated.
+    scale = unmark_encoder.adapter.scale_diagnostics()
+    for name, value in scale.items():
+        if value != value or value in (float("inf"), float("-inf")):
+            raise Stage1ContractViolation(
+                f"smoke for {candidate.stage!r} produced a non-finite scale "
+                f"diagnostic {name}={value!r}"
+            )
     print(json.dumps({
         "smoke": "STAGE1_NO_UPDATE_FORWARD_ONLY",
         "repository_head": repository_head,
+        "candidate": candidate.to_dict(),
+        "scale_diagnostics": scale,
         "model_contract": contract,
-        "losses": result.to_dict(),
+        "losses": losses,
+        "loss_terms_verified_finite": required,
         "optimizer_constructed": False,
         "backward_called": False,
         "parameters_updated": 0,
+        "checkpoint_selected": False,
+        "official_validation_used": False,
+        "official_test_used": False,
+        "downstream_label_used": False,
     }, indent=2, sort_keys=True))
     return 0
 

@@ -40,6 +40,7 @@ from torch import Tensor, nn
 
 from unmark.modeling.config import AdapterConfig
 from unmark.modeling.contracts import (
+    FUSION_SCALE_EPSILON,
     GATE_INIT_BIAS,
     GATE_INIT_WEIGHT,
     LETTER_TABLE_ROWS,
@@ -92,6 +93,46 @@ def _validate_ids(ids: Tensor, mask: Tensor, rows: int, name: str) -> None:
         )
 
 
+def scale_calibrated_fusion(fused: Tensor, base: Tensor) -> Tensor:
+    """`f_cal = f * ||e|| / clamp(||f||, min=eps)` -- C1 / V2-SCF only.
+
+    ::
+
+        e_norm = ||e_i||_2                       over the hidden dimension
+        f_norm = ||f_i||_2                       over the hidden dimension
+        scale  = e_norm / clamp(f_norm, 1e-8)    shape [B, L, 1]
+        f_cal  = scale * f_i
+
+    **Per token, over the final hidden dimension only.** Not a batch statistic and
+    not a sequence statistic: each token is calibrated against *its own* base
+    embedding, so the operation is independent of batch composition, of sequence
+    length, and of which other tokens happen to be padded. A batch- or
+    sequence-level norm would make one example's gradient depend on its
+    neighbours, which is not the hypothesis C1 tests.
+
+    For an ordinary non-degenerate token this makes `||f_cal|| ~= ||e||`, which is
+    the entire mechanism: the historical gate mixes two branches whose norms
+    differ by ~20x on protocol-dev, so a gate mean of ~0.03 still moves the
+    representation by ~1.42 relative. Calibrating the scale first makes the gate
+    value mean what it appears to mean.
+
+    Exposed as a free function, like `convex_combination`, so the numerics can be
+    tested on the primitive without an adapter, a config or a forward pass.
+
+    **Fully differentiable through both arguments.** Nothing is detached: the
+    gradient flows through `f` and through `scale` (hence back into `f` a second
+    time, and into `e`). Detaching `scale` would make this a stop-gradient
+    rescaling, which is a different mechanism and is not what C1 specifies.
+
+    `clamp(min=FUSION_SCALE_EPSILON)` is a finiteness guard for a degenerate
+    zero-norm `f`, not a tuned value.
+    """
+    e_norm = base.norm(dim=-1, keepdim=True)
+    f_norm = fused.norm(dim=-1, keepdim=True)
+    scale = e_norm / f_norm.clamp(min=FUSION_SCALE_EPSILON)
+    return scale * fused
+
+
 def convex_combination(gate: Tensor, fused: Tensor, base: Tensor) -> Tensor:
     """`z = g * f + (1 - g) * e` -- the locked combination (§4.5).
 
@@ -132,6 +173,9 @@ class OrthographyInputAdapter(nn.Module):
         self.gate = nn.Linear(wide, d, bias=True) if config.use_gate else None
 
         self.reset_gate_parameters()
+        # Plain attribute, NOT a registered buffer: diagnostics must never reach
+        # `state_dict()`, any persisted payload, or the trainable parameter count.
+        self._scale_diagnostics: dict[str, Tensor] = {}
 
     # -- initialisation ---------------------------------------------------
     def reset_gate_parameters(self) -> None:
@@ -256,10 +300,67 @@ class OrthographyInputAdapter(nn.Module):
         q = torch.cat([e, t, l], dim=-1)
 
         f = self.layer_norm(self.fusion(q))
+        # C1 / V2-SCF ONLY. The historical adapter reaches `convex_combination`
+        # with exactly the `f` it always had -- this branch is not entered, and no
+        # tensor op is added to it. The calibration sits strictly BETWEEN the
+        # LayerNorm and the gated mixture: `q`, `W_f`, the LayerNorm, `W_g`, `g`
+        # and the combination rule are all untouched.
+        if self.config.is_scale_calibrated:
+            f = scale_calibrated_fusion(f, e)
         if self.gate is None:
             return f
         g = torch.sigmoid(self.gate(q))
-        return convex_combination(g, f, e)
+        z = convex_combination(g, f, e)
+        self._record_scale_diagnostics(e, f, g, z)
+        return z
+
+    # -- passive diagnostics ----------------------------------------------
+    def _record_scale_diagnostics(
+        self, e: Tensor, f: Tensor, g: Tensor, z: Tensor
+    ) -> None:
+        """Stash detached scale statistics for telemetry. **C1 only, read-only.**
+
+        Runs only under the scale-calibrated fusion, so the historical and C3
+        paths execute nothing here at all -- not a reduction, not an allocation.
+
+        Everything recorded is `detach()`ed and never enters the autograd graph,
+        no RNG is consumed, no parameter or buffer is touched, and no encoder
+        forward is added: `e`, `f` and `z` are tensors this forward already
+        computed. The values are kept as 0-dim tensors rather than floats so
+        reading them costs no host synchronisation; telemetry converts at emit
+        time, off the training path.
+
+        `_scale_diagnostics` is deliberately a plain attribute, not a registered
+        buffer: it must not enter `state_dict()`, any persisted payload, or the
+        adapter's parameter count.
+        """
+        if not self.config.is_scale_calibrated:
+            return
+        with torch.no_grad():
+            e_norm = e.norm(dim=-1)
+            self._scale_diagnostics = {
+                # ||f|| BEFORE calibration is recoverable from the scale factor:
+                # scale = ||e|| / ||f_pre||, so ||f_pre|| / ||e|| = 1 / scale.
+                "scale_factor": (e_norm / f.norm(dim=-1).clamp(min=FUSION_SCALE_EPSILON)).mean(),
+                "postcal_f_over_e": (f.norm(dim=-1) / e_norm.clamp(min=FUSION_SCALE_EPSILON)).mean(),
+                "intervention_ratio": (
+                    (z - e).norm(dim=-1) / e_norm.clamp(min=FUSION_SCALE_EPSILON)
+                ).mean(),
+                "gate_mean": g.mean(),
+            }
+
+    def scale_diagnostics(self) -> dict[str, float]:
+        """The last forward's scale statistics as floats, or `{}`. **Diagnostic.**
+
+        Converting here is the only host synchronisation, and it happens on the
+        telemetry path -- never inside the objective and never per batch unless a
+        sink asks. Returns `{}` for any adapter that is not scale-calibrated, so a
+        caller cannot accidentally report C1 statistics for a historical run.
+        """
+        recorded = getattr(self, "_scale_diagnostics", None)
+        if not recorded:
+            return {}
+        return {name: float(value) for name, value in recorded.items()}
 
     # -- introspection ----------------------------------------------------
     def gate_values(
