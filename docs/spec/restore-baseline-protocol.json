@@ -4,7 +4,8 @@
   "created_utc_date": "2026-09-10",
   "implementation_base_head": "966cbfa280f7576c5418f850c4e641a1fb8a85d8",
   "scientific_purpose": {
-    "pathway": "observed Vietnamese text -> frozen external Vietnamese diacritic-restoration model -> restored text -> frozen PhoBERT-base -> RESTORE-specific linear head -> UIT-VSFC sentiment prediction",
+    "pathway": "source CSV text -> unmark.orthography.canon(text) neutral Stage-2 preprocessing -> condition corruption if degraded -> frozen external Vietnamese diacritic-restoration model -> restored text -> frozen PhoBERT-base -> RESTORE-specific linear head -> UIT-VSFC sentiment prediction",
+    "neutral_preprocessing": "unmark.orthography.canon(text); shared with Vanilla/UNMARK Stage-2 input semantics and not part of RESTORE itself",
     "baseline_question": "repair the damaged string first, then use the pretrained encoder normally"
   },
   "restore_model": {
@@ -117,6 +118,10 @@
     "condition_aware_routing": false,
     "full_bypass": false,
     "one_restore_pathway": true,
+    "full_corruption_seed": null,
+    "degraded_corruption_seed": 19225,
+    "condition_stream_construction": "FULL observed text is canonical clean text; degraded observed text is authoritative corrupt(canonical clean text, condition, seed=19225)",
+    "changed_row_count_reference": "canonical clean text, never raw CSV spelling",
     "all_conditions_pass_through_restorer": [
       "FULL",
       "P25",
@@ -147,9 +152,12 @@
     "task": "sentiment",
     "num_labels": 3,
     "derived_train": {
+      "default_path": "stage1-inputs/uit-vsfc-derived/train.csv",
       "raw_sha256": "a20c0f7760f32dc48263a79d73ddf5363526c17e9de2afc32d8346b23444d301",
       "rows": 11424
     },
+    "official_validation_default_path": "stage1-inputs/uit-vsfc-derived/validation.csv",
+    "preg1_split_default_dir": "preg1-uit-vsfc-internal-split/preg1-split-v1-66f4522a-7bd5d189",
     "protocol_train": {
       "rows": 9139,
       "ordered_id_digest": "2cad022dd4aabbc875e388030e453ba2479f1046bea884309398b79f7d878cbd",
@@ -186,8 +194,8 @@
     "best_seed_selection": false,
     "cross_seed_selection": false,
     "corrupted_label_training": false,
-    "train_inputs": "clean protocol-train text passed through RESTORE first",
-    "dev_inputs": "clean protocol-dev text passed through RESTORE first"
+    "train_inputs": "clean protocol-train source text canonicalized with canon(text), then passed through RESTORE first",
+    "dev_inputs": "clean protocol-dev source text canonicalized with canon(text), then passed through RESTORE first"
   },
   "official_validation_boundary": {
     "official_validation_previously_seen_by_authors": true,
@@ -211,6 +219,10 @@
     "implementation": "unmark.corruption.corrupt",
     "reimplemented": false,
     "seed": 19225,
+    "full_corruption_seed": null,
+    "degraded_corruption_seed": 19225,
+    "neutral_preprocessing": "source text is canonicalized once with unmark.orthography.canon(text) before RESTORE condition corruption",
+    "changed_row_count_reference": "canonical clean text",
     "conditions": [
       "FULL",
       "P25",
@@ -306,6 +318,22 @@
       "stage2-training",
       "stage2-vanilla-anchor"
     ]
+  },
+  "known_failed_execution": {
+    "repository_head": "3affe91f6cde5186d6efa4ae8e584767b8792af6",
+    "namespace": "stage2-baselines/restore/3affe91f6cde/audit064-restore-v1/",
+    "failure": "RESTORE condition-stream construction compared corrupt(canon(raw)) output to raw CSV spelling, producing false FULL changed rows",
+    "observed_changed_row_counts": {
+      "FULL": 29,
+      "P25": 1272,
+      "P50": 1513,
+      "P75": 1564,
+      "P100": 1576,
+      "STRIP_ALL": 1579
+    },
+    "validation_restored_caches_written": false,
+    "scientific_restore_result_exists": false,
+    "reuse_policy": "historical failed provenance only; do not reuse for patched execution"
   },
   "resume": {
     "phase_level_resume": true,

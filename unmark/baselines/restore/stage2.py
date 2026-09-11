@@ -34,6 +34,7 @@ from unmark.baselines.restore.cache import (
 from unmark.baselines.restore.config import (
     RESTORE_BASELINE_SCHEMA_VERSION,
     RESTORE_BEST_SEED_SELECTION,
+    RESTORE_CANONICAL_INPUT_SEMANTICS,
     RESTORE_CONDITIONS,
     RESTORE_CORRUPTED_LABEL_TRAINING,
     RESTORE_CORRUPTION_SEED,
@@ -105,12 +106,19 @@ from unmark.evaluation.preg1_head import (
     select_checkpoint,
 )
 from unmark.evaluation.preg1_split import load_derived_pool
+from unmark.orthography import canon
 
 
 RESTORE_STAGE2_TRAINING_ROLE = Preg1Role.PROTOCOL_TRAIN
 RESTORE_STAGE2_SELECTION_ROLE = Preg1Role.PROTOCOL_DEV
 RESTORE_STAGE2_MEASUREMENT_ROLE = Preg1Role.OFFICIAL_VALIDATION
 RESTORE_SCORE_UNITS = len(RESTORE_STAGE2_HEAD_SEEDS) * len(RESTORE_CONDITIONS)
+
+
+def canonical_clean_texts(texts: Sequence[str]) -> tuple[str, ...]:
+    """Shared neutral RESTORE Stage-2 input normalization."""
+
+    return tuple(canon(text) for text in texts)
 
 
 @dataclass(frozen=True)
@@ -141,6 +149,14 @@ class RestoreSplit:
     def text_digest(self) -> str:
         return semantic_text_digest(self.texts)
 
+    @property
+    def canonical_texts(self) -> tuple[str, ...]:
+        return canonical_clean_texts(self.texts)
+
+    @property
+    def canonical_text_digest(self) -> str:
+        return semantic_text_digest(self.canonical_texts)
+
 
 @dataclass(frozen=True)
 class RestoreConditionStream:
@@ -150,6 +166,27 @@ class RestoreConditionStream:
     observed_texts: tuple[str, ...]
     clean_gold_texts: tuple[str, ...]
     labels: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if self.condition not in RESTORE_CONDITIONS:
+            raise EvaluationContractViolation(f"unknown RESTORE condition {self.condition!r}")
+        if (
+            len(self.sample_ids) != len(self.observed_texts)
+            or len(self.sample_ids) != len(self.clean_gold_texts)
+            or len(self.sample_ids) != len(self.labels)
+        ):
+            raise EvaluationContractViolation("RESTORE condition stream fields differ in length")
+        if tuple(canon(text) for text in self.clean_gold_texts) != self.clean_gold_texts:
+            raise EvaluationContractViolation("RESTORE clean reference text must already be canonical")
+        if self.condition == "FULL":
+            if self.corruption_seed is not None:
+                raise EvaluationContractViolation("RESTORE FULL must not carry a corruption seed")
+            if self.observed_texts != self.clean_gold_texts:
+                raise EvaluationContractViolation("RESTORE FULL observed text must equal canonical clean text")
+        elif self.corruption_seed != RESTORE_CORRUPTION_SEED:
+            raise EvaluationContractViolation(
+                f"RESTORE degraded conditions must use corruption seed {RESTORE_CORRUPTION_SEED}"
+            )
 
     @property
     def ordered_id_digest(self) -> str:
@@ -162,6 +199,10 @@ class RestoreConditionStream:
     @property
     def input_text_digest(self) -> str:
         return semantic_text_digest(self.observed_texts)
+
+    @property
+    def clean_gold_text_digest(self) -> str:
+        return semantic_text_digest(self.clean_gold_texts)
 
     @property
     def changed_row_count(self) -> int:
@@ -318,7 +359,12 @@ def restore_text_request_for_split(
     input_texts: Sequence[str] | None = None,
     restore_batch_size: int = RESTORE_RESTORER_BATCH_SIZE,
 ) -> RestoreTextCacheRequest:
-    texts = tuple(split.texts if input_texts is None else input_texts)
+    texts = tuple(split.canonical_texts if input_texts is None else input_texts)
+    if condition == "FULL":
+        if corruption_seed is not None:
+            raise EvaluationContractViolation("RESTORE clean split request cannot carry a corruption seed")
+        if texts != split.canonical_texts:
+            raise EvaluationContractViolation("RESTORE clean split inputs must be canonical")
     return RestoreTextCacheRequest(
         repository_head=repository_head,
         role=split.role.value,
@@ -413,28 +459,37 @@ def build_condition_streams(
     corruption_purpose: CorruptionPurpose = CorruptionPurpose.SCIENTIFIC,
     eligibility_policy: EligibilityPolicy | None = None,
 ) -> dict[str, RestoreConditionStream]:
-    """Apply the authoritative corruption implementation for all six conditions."""
+    """Build canonical-clean validation streams before the common RESTORE path."""
 
     require_restore_conditions(RESTORE_CONDITIONS)
+    if corruption_seed != RESTORE_CORRUPTION_SEED:
+        raise EvaluationContractViolation(
+            f"RESTORE degraded corruption seed must be {RESTORE_CORRUPTION_SEED}"
+        )
+    canonical = validation.canonical_texts
     streams: dict[str, RestoreConditionStream] = {}
     for condition in RESTORE_CONDITIONS:
-        observed: list[str] = []
-        for sample_id, text in zip(validation.sample_ids, validation.texts):
-            result = corrupt(
-                text,
-                condition,
-                seed=corruption_seed,
-                sample_id=sample_id,
-                purpose=corruption_purpose,
-                eligibility_policy=eligibility_policy,
+        stream_seed = None if condition == "FULL" else corruption_seed
+        if condition == "FULL":
+            observed = canonical
+        else:
+            observed = tuple(
+                corrupt(
+                    text,
+                    condition,
+                    seed=corruption_seed,
+                    sample_id=sample_id,
+                    purpose=corruption_purpose,
+                    eligibility_policy=eligibility_policy,
+                ).corrupted_text
+                for sample_id, text in zip(validation.sample_ids, canonical)
             )
-            observed.append(result.corrupted_text)
         stream = RestoreConditionStream(
             condition=condition,
-            corruption_seed=corruption_seed,
+            corruption_seed=stream_seed,
             sample_ids=validation.sample_ids,
-            observed_texts=tuple(observed),
-            clean_gold_texts=validation.texts,
+            observed_texts=observed,
+            clean_gold_texts=canonical,
             labels=validation.labels,
         )
         streams[condition] = stream
@@ -1256,6 +1311,7 @@ def build_final_evidence(
                 RESTORE_OFFICIAL_VALIDATION_PREVIOUSLY_SEEN_BY_AUTHORS
             ),
             "official_test_read": False,
+            "canonical_input_semantics": RESTORE_CANONICAL_INPUT_SEMANTICS,
             "hard_stop": True,
             "condition_aware_routing": False,
             "full_bypass": RESTORE_FULL_BYPASS,
@@ -1357,6 +1413,7 @@ __all__ = [
     "build_condition_streams",
     "build_final_evidence",
     "build_restore_head_artifact",
+    "canonical_clean_texts",
     "compute_grr",
     "diagnostics_for_condition",
     "extract_condition_metrics",

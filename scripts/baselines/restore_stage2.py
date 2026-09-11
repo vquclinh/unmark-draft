@@ -34,6 +34,7 @@ from unmark.baselines.restore.cache import (  # noqa: E402
     write_json,
 )
 from unmark.baselines.restore.config import (  # noqa: E402
+    RESTORE_CANONICAL_INPUT_SEMANTICS,
     RESTORE_CONDITIONS,
     RESTORE_CORRUPTION_SEED,
     RESTORE_DEGRADED_CONDITIONS,
@@ -116,16 +117,16 @@ def require_clean_git_head(expected_head: str) -> str:
 
 
 def default_derived_train(drive_root: Path) -> Path:
-    return drive_root / "runtime-input-cache" / "uit-vsfc" / "derived-train.csv"
+    return drive_root / "stage1-inputs" / "uit-vsfc-derived" / "train.csv"
 
 
 def default_official_validation(drive_root: Path) -> Path:
-    return drive_root / "runtime-input-cache" / "uit-vsfc" / "official-validation.csv"
+    return drive_root / "stage1-inputs" / "uit-vsfc-derived" / "validation.csv"
 
 
 def default_split_dir(drive_root: Path) -> Path:
     return (
-        drive_root.parent
+        drive_root
         / "preg1-uit-vsfc-internal-split"
         / "preg1-split-v1-66f4522a-7bd5d189"
     )
@@ -166,6 +167,10 @@ class RestoreRunner:
             "restore_model_id": RESTORE_MODEL_ID,
             "restore_model_revision": RESTORE_MODEL_REVISION,
             "artifact_root": str(self.artifact_root),
+            "derived_train_path": str(self.derived_train_path),
+            "official_validation_path": str(self.official_validation_path),
+            "split_dir": str(self.split_dir),
+            "canonical_input_semantics": RESTORE_CANONICAL_INPUT_SEMANTICS,
             "restore_batch_size": self.args.restore_batch_size,
             "phobert_batch_size": self.args.phobert_batch_size,
             "generation_config": RESTORE_GENERATION_CONFIG.to_dict(),
@@ -266,6 +271,7 @@ class RestoreRunner:
             manifests = {}
             for role in (Preg1Role.PROTOCOL_TRAIN, Preg1Role.PROTOCOL_DEV):
                 split = splits[role]
+                texts = split.canonical_texts
                 cache = RestoreTextCache(self.artifact_root / "clean-restored-text" / role.value)
                 request = restore_text_request_for_split(
                     split,
@@ -277,9 +283,14 @@ class RestoreRunner:
                     request=request,
                     restorer=restorer,
                     sample_ids=split.sample_ids,
-                    texts=split.texts,
+                    texts=texts,
                     batch_size=self.args.restore_batch_size,
-                    extra_manifest={"input_role": role.value},
+                    extra_manifest={
+                        "input_role": role.value,
+                        "canonical_input_semantics": RESTORE_CANONICAL_INPUT_SEMANTICS,
+                        "source_text_digest": split.text_digest,
+                        "canonical_input_text_digest": split.canonical_text_digest,
+                    },
                 )
                 manifests[role.value] = {
                     "path": str(cache.manifest_path),
@@ -395,6 +406,9 @@ class RestoreRunner:
                 "rows": len(validation.sample_ids),
                 "ordered_id_digest": validation.ordered_id_digest,
                 "label_digest": validation.label_digest,
+                "source_text_digest": validation.text_digest,
+                "canonical_clean_text_digest": validation.canonical_text_digest,
+                "canonical_input_semantics": RESTORE_CANONICAL_INPUT_SEMANTICS,
                 "class_counts": {
                     str(label): count
                     for label, count in sorted(Counter(validation.labels).items())
@@ -430,14 +444,19 @@ class RestoreRunner:
                     batch_size=self.args.restore_batch_size,
                     extra_manifest={
                         "condition": condition,
-                        "corruption_seed": RESTORE_CORRUPTION_SEED,
+                        "corruption_seed": stream.corruption_seed,
                         "changed_row_count": stream.changed_row_count,
+                        "canonical_input_semantics": RESTORE_CANONICAL_INPUT_SEMANTICS,
+                        "source_text_digest": validation.text_digest,
+                        "canonical_clean_text_digest": stream.clean_gold_text_digest,
+                        "observed_text_digest": stream.input_text_digest,
                     },
                 )
                 manifests[condition] = {
                     "path": str(cache.manifest_path),
                     "sha256": file_sha256(cache.manifest_path),
                     "changed_row_count": stream.changed_row_count,
+                    "corruption_seed": stream.corruption_seed,
                 }
             out = self.artifact_root / "validation-restored-text" / "validation-text-index.json"
             write_json(out, manifests)
@@ -467,7 +486,7 @@ class RestoreRunner:
                     text_manifest_path=text_cache.manifest_path,
                     role=Preg1Role.OFFICIAL_VALIDATION,
                     condition=condition,
-                    corruption_seed=RESTORE_CORRUPTION_SEED,
+                    corruption_seed=stream.corruption_seed,
                     sample_ids=stream.sample_ids,
                     labels=stream.labels,
                     restored_texts=restored,
@@ -518,7 +537,7 @@ class RestoreRunner:
                         text_manifest_path=text_cache.manifest_path,
                         role=Preg1Role.OFFICIAL_VALIDATION,
                         condition=condition,
-                        corruption_seed=RESTORE_CORRUPTION_SEED,
+                        corruption_seed=stream.corruption_seed,
                         sample_ids=stream.sample_ids,
                         labels=stream.labels,
                         restored_texts=[r.restored_text for r in records],

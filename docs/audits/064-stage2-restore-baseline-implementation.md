@@ -9,7 +9,9 @@ results, and does not modify historical Audit 063 evidence.
 RESTORE tests the string-level repair strategy:
 
 ```text
-observed Vietnamese text
+source CSV text
+  -> unmark.orthography.canon(text) neutral Stage-2 preprocessing
+  -> condition corruption if degraded
   -> frozen external diacritic-restoration model
   -> restored text
   -> frozen PhoBERT-base
@@ -21,6 +23,7 @@ observed Vietnamese text
 
 ```text
 RESTORE_IMPLEMENTATION_BASE_HEAD=966cbfa280f7576c5418f850c4e641a1fb8a85d8
+RESTORE_CANONICALIZATION_REPAIR_BASE_HEAD=3affe91f6cde5186d6efa4ae8e584767b8792af6
 ```
 
 The starting repository state was checked with:
@@ -137,7 +140,8 @@ RESTORE uses the frozen PREG1 TRAIN source and protocol-train/dev membership.
 The clean head-training pathway is:
 
 ```text
-clean protocol-train text
+clean protocol-train source text
+  -> unmark.orthography.canon(text)
   -> RESTORE
   -> PhoBERT
   -> RESTORE clean train representations
@@ -184,10 +188,30 @@ mock closeout path.
 
 ## Corruption and RESTORE Pathway
 
-The corruption seed is frozen:
+RESTORE Stage-2 shares the same neutral canonical-clean input semantics as the
+Vanilla and corrected UNMARK Stage-2 paths:
+
+```text
+source CSV text -> unmark.orthography.canon(text)
+```
+
+This preprocessing is not RESTORE itself; it is the common Stage-2 spelling
+anchor before any intervention. FULL observes canonical clean text. Degraded
+conditions apply the authoritative `unmark.corruption.corrupt` implementation
+to that canonical clean text. Changed-row counts compare observed pre-RESTORE
+text to canonical clean text, not to raw CSV spelling.
+
+The degraded corruption seed is frozen:
 
 ```text
 corruption_seed=19225
+```
+
+FULL is the clean condition and carries no corruption seed in scientific/cache
+identity:
+
+```text
+FULL corruption_seed=None
 ```
 
 The six validation conditions are:
@@ -219,6 +243,43 @@ CONDITION_AWARE_ROUTING=NO
 FULL_BYPASS=NO
 ONE_RESTORE_PATHWAY=YES
 ```
+
+Special-casing FULL at condition-stream construction only means "no corruption";
+it does not bypass the frozen RESTORE model.
+
+## Failed 3affe91 Execution
+
+The real execution at repository head
+`3affe91f6cde5186d6efa4ae8e584767b8792af6` under
+`stage2-baselines/restore/3affe91f6cde/audit064-restore-v1/` exposed a
+condition-stream canonicalization bug before validation-restored caches were
+written. No scientific RESTORE result exists from that failed execution.
+
+The failed run counted raw-vs-canonical spelling differences as corruption
+damage and observed:
+
+```text
+FULL=29
+P25=1272
+P50=1513
+P75=1564
+P100=1576
+STRIP_ALL=1579
+```
+
+The frozen expected changed-row counts were not altered:
+
+```text
+FULL=0
+P25=1268
+P50=1513
+P75=1564
+P100=1576
+STRIP_ALL=1579
+```
+
+That namespace is historical failed provenance only and must not be reused by a
+patched execution.
 
 ## Scoring
 

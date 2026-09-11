@@ -35,6 +35,9 @@ from unmark.evaluation.preg1_protocol import (
 
 RESTORE_PROTOCOL_VERSION = "restore-baseline-protocol-v1"
 RESTORE_BASELINE_SCHEMA_VERSION = "restore-stage2-baseline-v1"
+RESTORE_CANONICAL_INPUT_SEMANTICS = (
+    "source CSV text -> unmark.orthography.canon(text) -> condition corruption if degraded"
+)
 
 RESTORE_MODEL_ID = "nrl-ai/vn-diacritic-vit5-base"
 RESTORE_MODEL_REVISION = "7ec0710193721ac3321b3bb3741ec92d8b43cad3"

@@ -14,6 +14,7 @@ import inspect
 import json
 import pathlib
 import statistics
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +31,7 @@ from unmark.baselines.restore.cache import (
 )
 from unmark.baselines.restore.config import (
     RESTORE_BEST_SEED_SELECTION,
+    RESTORE_CANONICAL_INPUT_SEMANTICS,
     RESTORE_CONDITION_AWARE_ROUTING,
     RESTORE_CONDITIONS,
     RESTORE_CORRUPTION_SEED,
@@ -38,10 +40,15 @@ from unmark.baselines.restore.config import (
     RESTORE_EXPECTED_CHANGED_ROW_COUNTS,
     RESTORE_FULL_BYPASS,
     RESTORE_GENERATION_CONFIG,
+    RESTORE_HF_GENERATION_CONFIG_FIELDS,
+    RESTORE_HF_MODEL_CONFIG_GENERATION_FIELDS,
+    RESTORE_MODEL_CONFIG_SHA256,
+    RESTORE_MODEL_GENERATION_CONFIG_SHA256,
     RESTORE_MODEL_ID,
     RESTORE_MODEL_REVISION,
     RESTORE_ONE_RESTORE_PATHWAY,
     RESTORE_OFFICIAL_TEST_READ,
+    RESTORE_PHASES,
     RESTORE_PHOBERT_CHECKPOINT,
     RESTORE_PHOBERT_DTYPE,
     RESTORE_PHOBERT_HIDDEN_SIZE,
@@ -90,22 +97,29 @@ from unmark.baselines.restore.model import (
     RESTORE_RULE_BASED_FALLBACK,
     RESTORE_SPELL_CORRECTION_FALLBACK,
     FrozenDiacriticRestorer,
+    run_batched_decode_smoke,
 )
 from unmark.baselines.restore.stage2 import (
     RESTORE_SCORE_UNITS,
     RestoreConditionScore,
     RestoreConditionStream,
+    RestoreSplit,
     aggregate_restore_scores,
     authenticate_read_only_evidence,
+    build_condition_streams,
     compute_grr,
+    canonical_clean_texts,
     load_restore_validation_split,
     require_changed_row_counts,
     restore_records,
     restore_text_cache,
+    restore_text_request_for_split,
+    restore_text_request_for_stream,
     validate_restore_head_artifact,
 )
 from unmark.evaluation.contracts import EvaluationContractViolation
 from unmark.evaluation.preg1_head import EpochScore, Preg1Role, ordered_id_digest
+from unmark.orthography import canon
 
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
@@ -196,7 +210,7 @@ def _validation_stream(condition: str, changed_rows: int) -> RestoreConditionStr
     labels = tuple(i % 3 for i in range(RESTORE_VALIDATION_ROWS))
     return RestoreConditionStream(
         condition=condition,
-        corruption_seed=RESTORE_CORRUPTION_SEED,
+        corruption_seed=None if condition == "FULL" else RESTORE_CORRUPTION_SEED,
         sample_ids=tuple(f"validation-{i}" for i in range(RESTORE_VALIDATION_ROWS)),
         observed_texts=observed,
         clean_gold_texts=clean,
@@ -340,9 +354,14 @@ def test_05c_restored_text_cache_identity_binds_tokenizer_generation_and_batch_s
     )
     payload = request.to_dict()
     assert payload["generation_config"] == RESTORE_GENERATION_CONFIG.to_dict()
+    assert payload["hf_generation_config_fields"] == RESTORE_HF_GENERATION_CONFIG_FIELDS
+    assert payload["hf_model_config_generation_fields"] == RESTORE_HF_MODEL_CONFIG_GENERATION_FIELDS
+    assert payload["restore_model_config_sha256"] == RESTORE_MODEL_CONFIG_SHA256
+    assert payload["restore_model_generation_config_sha256"] == RESTORE_MODEL_GENERATION_CONFIG_SHA256
     assert payload["tokenizer_contract"] == RESTORE_TOKENIZER_CONTRACT.to_dict()
     assert payload["tokenizer_artifact_sha256s"] == RESTORE_TOKENIZER_ARTIFACT_SHA256S
     assert payload["restore_batch_size"] == RESTORE_RESTORER_BATCH_SIZE
+    assert payload["input_text_semantics"] == RESTORE_CANONICAL_INPUT_SEMANTICS
 
     drifted = RESTORE_TOKENIZER_CONTRACT.to_dict()
     drifted["decode"] = dict(drifted["decode"])
@@ -359,8 +378,85 @@ def test_05c_restored_text_cache_identity_binds_tokenizer_generation_and_batch_s
             tokenizer_contract=drifted,
         )
 
+    with pytest.raises(EvaluationContractViolation, match="input semantics"):
+        RestoreTextCacheRequest(
+            repository_head=HEAD,
+            role=Preg1Role.PROTOCOL_TRAIN.value,
+            condition="FULL",
+            corruption_seed=None,
+            input_row_count=1,
+            ordered_id_digest=ordered_id_digest(ids),
+            input_text_digest=semantic_text_digest(texts),
+            input_text_semantics="raw source text",
+        )
 
-def test_05d_restored_text_cache_refuses_runtime_batch_size_drift(tmp_path):
+
+def test_05d_restore_canonical_input_semantics_use_project_canon():
+    raw = "Hòa Bình"
+    canonical = "Hoà Bình"
+    assert canon(raw) == canonical
+    assert raw != canonical
+    assert canonical_clean_texts((raw, canonical)) == (canonical, canonical)
+
+
+def test_05e_restore_split_request_defaults_to_canonical_inputs():
+    raw = "Hòa Bình"
+    canonical = canon(raw)
+    split = RestoreSplit(
+        role=Preg1Role.PROTOCOL_TRAIN,
+        sample_ids=("row-1",),
+        texts=(raw,),
+        labels=(2,),
+        source_sha256="0" * 64,
+    )
+    request = restore_text_request_for_split(split, repository_head=HEAD)
+    assert request.input_text_digest == semantic_text_digest((canonical,))
+    assert request.input_text_digest != semantic_text_digest((raw,))
+    assert request.input_text_semantics == RESTORE_CANONICAL_INPUT_SEMANTICS
+    assert split.canonical_texts == (canonical,)
+
+    with pytest.raises(EvaluationContractViolation, match="clean split inputs must be canonical"):
+        restore_text_request_for_split(split, repository_head=HEAD, input_texts=split.texts)
+
+
+def test_05f_clean_restore_cache_supplies_canonical_inputs_and_digest(tmp_path):
+    raw = "Hòa Bình"
+    canonical = canon(raw)
+
+    class SpyRestorer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def restore_batch(self, texts):
+            self.calls.append(tuple(texts))
+            return [text + "|restored" for text in texts]
+
+    split = RestoreSplit(
+        role=Preg1Role.PROTOCOL_DEV,
+        sample_ids=("row-1",),
+        texts=(raw,),
+        labels=(1,),
+        source_sha256="0" * 64,
+    )
+    request = restore_text_request_for_split(split, repository_head=HEAD, restore_batch_size=1)
+    restorer = SpyRestorer()
+    records = restore_text_cache(
+        cache=RestoreTextCache(tmp_path / "clean"),
+        request=request,
+        restorer=restorer,
+        sample_ids=split.sample_ids,
+        texts=split.canonical_texts,
+        batch_size=1,
+    )
+
+    assert restorer.calls == [(canonical,)]
+    assert records[0].input_text == canonical
+    manifest = RestoreTextCache(tmp_path / "clean").read_manifest()
+    assert manifest["request"]["input_text_digest"] == semantic_text_digest((canonical,))
+    assert manifest["request"]["input_text_semantics"] == RESTORE_CANONICAL_INPUT_SEMANTICS
+
+
+def test_05g_restored_text_cache_refuses_runtime_batch_size_drift(tmp_path):
     ids = ("row-1",)
     texts = ("toi yeu ngon ngu",)
     request = RestoreTextCacheRequest(
@@ -439,7 +535,7 @@ def test_08_full_condition_is_not_bypassed(tmp_path):
         repository_head=HEAD,
         role=Preg1Role.OFFICIAL_VALIDATION.value,
         condition="FULL",
-        corruption_seed=RESTORE_CORRUPTION_SEED,
+        corruption_seed=None,
         input_row_count=1,
         ordered_id_digest=ordered_id_digest(ids),
         input_text_digest=semantic_text_digest(texts),
@@ -456,6 +552,30 @@ def test_08_full_condition_is_not_bypassed(tmp_path):
     )
     assert restorer.calls == 1
     assert records[0].restored_text == "CLEAN INPUT"
+
+
+def test_08a_batched_decode_smoke_requires_exact_single_batch_equality():
+    class MatchingRestorer:
+        generation_config = RESTORE_GENERATION_CONFIG
+        tokenizer_contract = RESTORE_TOKENIZER_CONTRACT
+
+        def restore_text(self, text):
+            return text + "|r"
+
+        def restore_batch(self, texts):
+            return [text + "|r" for text in texts]
+
+    smoke = run_batched_decode_smoke(MatchingRestorer(), batch_size=2, examples=("a", "b", "c"))
+    assert smoke["single_equals_batched"] is True
+    assert smoke["generation_config"] == RESTORE_GENERATION_CONFIG.to_dict()
+    assert smoke["tokenizer_contract"] == RESTORE_TOKENIZER_CONTRACT.to_dict()
+
+    class MismatchingRestorer(MatchingRestorer):
+        def restore_batch(self, texts):
+            return [text + "|batch" for text in texts]
+
+    with pytest.raises(EvaluationContractViolation, match="batched greedy decode differs"):
+        run_batched_decode_smoke(MismatchingRestorer(), batch_size=2, examples=("a", "b"))
 
 
 def test_09_restore_uses_direct_model_api_without_rule_llm_or_spell_fallbacks():
@@ -552,6 +672,14 @@ def test_19_six_restore_conditions_are_exact_and_ordered():
 
 
 def test_20_changed_row_counts_are_exact_and_fail_closed():
+    assert RESTORE_EXPECTED_CHANGED_ROW_COUNTS == {
+        "FULL": 0,
+        "P25": 1268,
+        "P50": 1513,
+        "P75": 1564,
+        "P100": 1576,
+        "STRIP_ALL": 1579,
+    }
     streams = {
         condition: _validation_stream(condition, changed)
         for condition, changed in RESTORE_EXPECTED_CHANGED_ROW_COUNTS.items()
@@ -563,15 +691,63 @@ def test_20_changed_row_counts_are_exact_and_fail_closed():
         require_changed_row_counts(drifted)
 
 
+def test_20a_condition_streams_use_canonical_clean_reference_and_seed_contract(monkeypatch):
+    raw = "Hòa Bình"
+    canonical = canon(raw)
+    assert raw != canonical
+    sample_ids = tuple(f"validation-{i}" for i in range(RESTORE_VALIDATION_ROWS))
+    texts = (raw,) + tuple(f"clean-{i}" for i in range(1, RESTORE_VALIDATION_ROWS))
+    labels = tuple(i % 3 for i in range(RESTORE_VALIDATION_ROWS))
+    validation = RestoreSplit(
+        role=Preg1Role.OFFICIAL_VALIDATION,
+        sample_ids=sample_ids,
+        texts=texts,
+        labels=labels,
+        source_sha256="0" * 64,
+    )
+    calls: list[tuple[str, int, str, str, str]] = []
+
+    def fake_corrupt(text, condition, *, seed, sample_id, purpose, eligibility_policy):
+        assert text == canon(text)
+        assert seed == RESTORE_CORRUPTION_SEED
+        assert purpose.name == "SCIENTIFIC"
+        assert eligibility_policy is None
+        calls.append((condition, seed, text, str(sample_id), purpose.name))
+        row_index = int(str(sample_id).rsplit("-", 1)[1])
+        changed = row_index < RESTORE_EXPECTED_CHANGED_ROW_COUNTS[condition]
+        return SimpleNamespace(corrupted_text=f"{text}|damaged" if changed else text)
+
+    monkeypatch.setattr("unmark.baselines.restore.stage2.corrupt", fake_corrupt)
+    streams = build_condition_streams(validation)
+
+    full = streams["FULL"]
+    assert full.observed_texts[0] == canonical
+    assert full.clean_gold_texts[0] == canonical
+    assert full.changed_row_count == 0
+    assert full.corruption_seed is None
+    assert full.input_text_digest == semantic_text_digest(full.observed_texts)
+    assert restore_text_request_for_stream(full, repository_head=HEAD).corruption_seed is None
+
+    assert {call[0] for call in calls} == set(RESTORE_DEGRADED_CONDITIONS)
+    assert {streams[condition].corruption_seed for condition in RESTORE_DEGRADED_CONDITIONS} == {
+        RESTORE_CORRUPTION_SEED
+    }
+    assert {
+        condition: stream.changed_row_count
+        for condition, stream in streams.items()
+    } == RESTORE_EXPECTED_CHANGED_ROW_COUNTS
+
+
 def test_21_six_validation_restored_text_caches_are_separate_and_identity_bound(tmp_path):
     ids = ("v-1", "v-2")
     texts = ("toi yeu ngon ngu", "du lieu sach")
     for condition in RESTORE_CONDITIONS:
+        seed = None if condition == "FULL" else RESTORE_CORRUPTION_SEED
         request = RestoreTextCacheRequest(
             repository_head=HEAD,
             role=Preg1Role.OFFICIAL_VALIDATION.value,
             condition=condition,
-            corruption_seed=RESTORE_CORRUPTION_SEED,
+            corruption_seed=seed,
             input_row_count=len(ids),
             ordered_id_digest=ordered_id_digest(ids),
             input_text_digest=semantic_text_digest(texts),
@@ -584,6 +760,7 @@ def test_21_six_validation_restored_text_caches_are_separate_and_identity_bound(
         cache.save(request, records)
         manifest = cache.read_manifest()
         assert manifest["request"]["condition"] == condition
+        assert manifest["request"]["corruption_seed"] == seed
         assert manifest["request"]["restore_model_id"] == RESTORE_MODEL_ID
         assert manifest["request"]["restore_model_revision"] == RESTORE_MODEL_REVISION
     assert sorted(path.name for path in tmp_path.iterdir()) == sorted(RESTORE_CONDITIONS)
@@ -592,10 +769,11 @@ def test_21_six_validation_restored_text_caches_are_separate_and_identity_bound(
 def test_22_six_validation_representation_caches_have_restore_keys(tmp_path):
     caches = {}
     for condition in RESTORE_CONDITIONS:
+        seed = None if condition == "FULL" else RESTORE_CORRUPTION_SEED
         key = _rep_key(
             Preg1Role.OFFICIAL_VALIDATION,
             condition=condition,
-            corruption_seed=RESTORE_CORRUPTION_SEED,
+            corruption_seed=seed,
         )
         cache = RestoreRepresentationCache(tmp_path / condition)
         caches[condition] = (cache, key)
@@ -723,15 +901,38 @@ def test_32a_phase_identity_binds_runtime_tokenizer_generation_and_batch_setting
 
     class Args:
         drive_root = str(tmp_path)
+        derived_train = None
+        official_validation = None
+        split_dir = None
         restore_batch_size = 3
         phobert_batch_size = 5
 
     runner = module.RestoreRunner(Args(), execution_head=HEAD)
     identity = runner.phase_identity("RESTORE_MODEL_PREFLIGHT")
+    assert identity["canonical_input_semantics"] == RESTORE_CANONICAL_INPUT_SEMANTICS
+    assert identity["derived_train_path"].endswith("stage1-inputs/uit-vsfc-derived/train.csv")
+    assert identity["official_validation_path"].endswith("stage1-inputs/uit-vsfc-derived/validation.csv")
+    assert identity["split_dir"].endswith("preg1-uit-vsfc-internal-split/preg1-split-v1-66f4522a-7bd5d189")
     assert identity["restore_batch_size"] == 3
     assert identity["phobert_batch_size"] == 5
     assert identity["generation_config"] == RESTORE_GENERATION_CONFIG.to_dict()
     assert identity["tokenizer_contract"] == RESTORE_TOKENIZER_CONTRACT.to_dict()
+
+
+def test_32b_default_runtime_data_paths_use_established_drive_layout(tmp_path):
+    module = _load_runner_module()
+    drive_root = tmp_path / "UNMARK-BACKUP"
+    assert module.default_derived_train(drive_root) == (
+        drive_root / "stage1-inputs" / "uit-vsfc-derived" / "train.csv"
+    )
+    assert module.default_official_validation(drive_root) == (
+        drive_root / "stage1-inputs" / "uit-vsfc-derived" / "validation.csv"
+    )
+    assert module.default_split_dir(drive_root) == (
+        drive_root
+        / "preg1-uit-vsfc-internal-split"
+        / "preg1-split-v1-66f4522a-7bd5d189"
+    )
 
 
 def test_33_official_test_is_structurally_unreachable_from_restore_runner():
@@ -741,6 +942,8 @@ def test_33_official_test_is_structurally_unreachable_from_restore_runner():
     assert not any(option.startswith("--test") for option in options)
     assert not any("TEST" in role.name or "test" in role.value for role in Preg1Role)
     assert RESTORE_OFFICIAL_TEST_READ is False
+    assert RESTORE_PHASES.index("RESTORE_MODEL_PREFLIGHT") < RESTORE_PHASES.index("RESTORE_CLEAN_TEXT")
+    assert RESTORE_PHASES.index("RESTORE_MODEL_PREFLIGHT") < RESTORE_PHASES.index("VALIDATION_IDENTITY_CHECK")
 
 
 def test_34_run_all_uses_real_runner_without_production_mock_path(tmp_path, monkeypatch, capsys):

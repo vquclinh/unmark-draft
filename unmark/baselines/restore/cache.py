@@ -10,9 +10,14 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from unmark.baselines.restore.config import (
     RESTORE_BASELINE_SCHEMA_VERSION,
+    RESTORE_CANONICAL_INPUT_SEMANTICS,
     RESTORE_GENERATION_CONFIG,
+    RESTORE_HF_GENERATION_CONFIG_FIELDS,
+    RESTORE_HF_MODEL_CONFIG_GENERATION_FIELDS,
     RESTORE_MODEL_ID,
     RESTORE_MODEL_REVISION,
+    RESTORE_MODEL_CONFIG_SHA256,
+    RESTORE_MODEL_GENERATION_CONFIG_SHA256,
     RESTORE_PHOBERT_CHECKPOINT,
     RESTORE_PHOBERT_DTYPE,
     RESTORE_PHOBERT_HIDDEN_SIZE,
@@ -140,10 +145,19 @@ class RestoreTextCacheRequest:
     input_row_count: int
     ordered_id_digest: str
     input_text_digest: str
+    input_text_semantics: str = RESTORE_CANONICAL_INPUT_SEMANTICS
     restore_batch_size: int = RESTORE_RESTORER_BATCH_SIZE
     generation_config: Mapping[str, Any] = field(
         default_factory=lambda: RESTORE_GENERATION_CONFIG.to_dict()
     )
+    hf_generation_config_fields: Mapping[str, Any] = field(
+        default_factory=lambda: dict(RESTORE_HF_GENERATION_CONFIG_FIELDS)
+    )
+    hf_model_config_generation_fields: Mapping[str, Any] = field(
+        default_factory=lambda: dict(RESTORE_HF_MODEL_CONFIG_GENERATION_FIELDS)
+    )
+    restore_model_config_sha256: str = RESTORE_MODEL_CONFIG_SHA256
+    restore_model_generation_config_sha256: str = RESTORE_MODEL_GENERATION_CONFIG_SHA256
     tokenizer_contract: Mapping[str, Any] = field(
         default_factory=lambda: RESTORE_TOKENIZER_CONTRACT.to_dict()
     )
@@ -167,8 +181,20 @@ class RestoreTextCacheRequest:
             raise EvaluationContractViolation("RESTORE text cache binds the wrong model id")
         if self.restore_model_revision != RESTORE_MODEL_REVISION:
             raise EvaluationContractViolation("RESTORE text cache binds the wrong model revision")
+        if self.input_text_semantics != RESTORE_CANONICAL_INPUT_SEMANTICS:
+            raise EvaluationContractViolation("RESTORE text cache input semantics drifted")
         if dict(self.generation_config) != RESTORE_GENERATION_CONFIG.to_dict():
             raise EvaluationContractViolation("RESTORE text cache generation config drifted")
+        if dict(self.hf_generation_config_fields) != dict(RESTORE_HF_GENERATION_CONFIG_FIELDS):
+            raise EvaluationContractViolation("RESTORE text cache HF generation config drifted")
+        if dict(self.hf_model_config_generation_fields) != dict(
+            RESTORE_HF_MODEL_CONFIG_GENERATION_FIELDS
+        ):
+            raise EvaluationContractViolation("RESTORE text cache model generation fields drifted")
+        if self.restore_model_config_sha256 != RESTORE_MODEL_CONFIG_SHA256:
+            raise EvaluationContractViolation("RESTORE text cache model config artifact drifted")
+        if self.restore_model_generation_config_sha256 != RESTORE_MODEL_GENERATION_CONFIG_SHA256:
+            raise EvaluationContractViolation("RESTORE text cache generation config artifact drifted")
         if dict(self.tokenizer_contract) != RESTORE_TOKENIZER_CONTRACT.to_dict():
             raise EvaluationContractViolation("RESTORE text cache tokenizer contract drifted")
         if dict(self.tokenizer_artifact_sha256s) != dict(RESTORE_TOKENIZER_ARTIFACT_SHA256S):
@@ -191,10 +217,15 @@ class RestoreTextCacheRequest:
             "input_row_count": self.input_row_count,
             "ordered_id_digest": self.ordered_id_digest,
             "input_text_digest": self.input_text_digest,
+            "input_text_semantics": self.input_text_semantics,
             "restore_batch_size": self.restore_batch_size,
             "restore_model_id": self.restore_model_id,
             "restore_model_revision": self.restore_model_revision,
             "generation_config": dict(self.generation_config),
+            "hf_generation_config_fields": dict(self.hf_generation_config_fields),
+            "hf_model_config_generation_fields": dict(self.hf_model_config_generation_fields),
+            "restore_model_config_sha256": self.restore_model_config_sha256,
+            "restore_model_generation_config_sha256": self.restore_model_generation_config_sha256,
             "tokenizer_contract": dict(self.tokenizer_contract),
             "tokenizer_artifact_sha256s": dict(self.tokenizer_artifact_sha256s),
         }
