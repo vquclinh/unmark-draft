@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import json
 import pathlib
 import sys
 
@@ -36,8 +37,13 @@ from unmark.stage1.contracts import (
 from unmark.stage1.protocol import (
     ADAPTER_TRAINABLE_PARAMETERS,
     CORRUPTION_SEED,
+    FUSION_IDS,
     GRID_CONSISTENCY_OBJECTIVE_ID,
+    HISTORICAL_FUSION_ID,
     HISTORICAL_OBJECTIVE_ID,
+    RELATION_LOSS,
+    RELATION_METRIC,
+    RELATION_SPACE,
     INITIAL_MAX_UPDATES,
     LAMBDA_GRID,
     OBJECTIVE_IDS,
@@ -89,6 +95,57 @@ def calls_in(node: ast.AST) -> list[str]:
         for n in ast.walk(node)
         if isinstance(n, ast.Call)
     ]
+
+
+LOCKED_IDENTITY_TOKENS = frozenset(
+    {*OBJECTIVE_IDS, *FUSION_IDS, RELATION_SPACE, RELATION_METRIC, RELATION_LOSS}
+)
+"""Every string a loss payload is allowed to contain.
+
+The payload's ONLY legitimate strings are locked identity tokens. Anything else
+-- a chunk id, a corpus fragment, a file path, a tokenizer artifact -- is raw
+text that must never travel into a log, so the check is a closed vocabulary
+rather than `isinstance(value, str)`.
+"""
+
+JSON_SCALARS = (str, int, float, bool, type(None))
+"""What a serialized Stage-1 payload may hold. `bool` is listed explicitly even
+though it is an `int` subclass, so the permitted set is readable."""
+
+
+def assert_json_safe(value, path: str = "payload") -> None:
+    """Recursively refuse anything a JSON artifact could not faithfully carry.
+
+    Explicitly rejects `torch.Tensor` and any other runtime object: a payload
+    that holds a live tensor keeps an autograd graph and a CUDA allocation alive
+    for as long as the log line does, and silently fails to serialise.
+
+    Strings are additionally constrained to `LOCKED_IDENTITY_TOKENS`, which is
+    what keeps the "no raw text" guarantee from degrading into "no non-strings".
+    """
+    if torch is not None and isinstance(value, torch.Tensor):
+        raise AssertionError(f"{path} is a torch.Tensor; payloads carry numbers, not tensors")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            assert isinstance(key, str), f"{path} has a non-string key {key!r}"
+            assert_json_safe(item, f"{path}[{key!r}]")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            assert_json_safe(item, f"{path}[{index}]")
+        return
+    assert isinstance(value, JSON_SCALARS), (
+        f"{path} is {type(value).__name__}, which is not a JSON scalar"
+    )
+    if isinstance(value, float):
+        assert value == value and value not in (float("inf"), float("-inf")), (
+            f"{path} is {value!r}: a payload must not carry NaN or Inf"
+        )
+    if isinstance(value, str):
+        assert value in LOCKED_IDENTITY_TOKENS, (
+            f"{path} carries the string {value!r}, which is not a locked identity "
+            "token. Payloads must never contain raw text."
+        )
 
 
 def code_only(name: str) -> str:
@@ -822,13 +879,36 @@ def test_runtime_the_two_pooled_terms_equal_the_historical_objectives():
 
 @requires_torch
 def test_runtime_the_result_dict_carries_the_identity_and_no_raw_text():
+    """The payload states WHICH objective ran, and carries nothing unsafe.
+
+    The value-type assertion used to read `isinstance(v, (int, float, str))`.
+    That was written when `ObjectiveIdentity.to_dict()` held two keys; since C2
+    it durably carries `lambda_grd` and the nested `relational` specification,
+    both legitimately `None` for a non-relational objective. `None` is valid JSON
+    and correct provenance, so the stale check was testing the wrong invariant --
+    the real one is JSON-safety plus a closed string vocabulary.
+    """
     _, _, objective, _ = build_grid_stack()
     payload = objective(synthetic_batch()).to_dict()
+
+    # 1. The scientific identity this result belongs to.
     assert payload["objective_id"] == "grid-consistency-v1"
     assert payload["lambda_grid"] == 1.0
-    assert set(payload) >= {"loss", "loss_align", "loss_clean", "loss_grid",
-                            "mean_distance_grid"}
-    assert all(isinstance(v, (int, float, str)) for v in payload.values())
+    assert payload["lambda_grd"] is None, "C3 must not claim a relational weight"
+    assert payload["relational"] is None, "C3 must not claim a relational spec"
+    assert payload["lambda_align"] == payload["lambda_clean"] == 1.0
+
+    # 2. The terms and diagnostics a V2-GC run must report.
+    assert set(payload) >= {
+        "loss", "loss_align", "loss_clean", "loss_grid",
+        "mean_distance_align", "mean_distance_clean", "mean_distance_grid",
+        "batch_size",
+    }
+    assert payload["batch_size"] == 2
+
+    # 3. Nothing unsafe: no tensors, no runtime objects, no NaN, no raw text.
+    assert_json_safe(payload)
+    assert json.loads(json.dumps(payload, allow_nan=False, sort_keys=True)) == payload
 
 
 # -- zero new parameters, three encoder forwards ----------------------------
@@ -1133,28 +1213,94 @@ def test_the_shared_constructor_dispatches_on_the_objective_identity():
 
 @requires_torch
 def test_runtime_the_shared_constructor_builds_each_candidates_objective():
-    """One dispatch, exercised for every registered candidate."""
+    """One dispatch, exercised for every registered candidate.
+
+    Each candidate is given an adapter built for ITS OWN fusion, through the
+    authoritative candidate-aware path (`fresh_adapter(..., fusion_id)`). The
+    earlier version reused one historical-fusion adapter for every candidate,
+    which C1 made invalid: production correctly refuses a `v2_scf` candidate
+    holding a `historical-fusion-v1` adapter, and that refusal is the guard --
+    covered below by its own negative test -- not something to work around here.
+    """
     from unmark.modeling.adapter import UnmarkEncoder
     from unmark.stage1.candidates import CANDIDATES
     from unmark.stage1.execute import build_candidate_objective
+    from unmark.stage1.initialisation import fresh_adapter
     from unmark.stage1.objective import Stage1Objective
     from unmark.stage1.objective_grid import GridConsistencyObjective
+    from unmark.stage1.objective_relational import RelationalDistillationObjective
 
-    encoder, adapter, _, _ = build_grid_stack()
+    expected = {
+        "lr_pilot": (HISTORICAL_FUSION_ID, Stage1Objective),
+        "r_phase1": (HISTORICAL_FUSION_ID, Stage1Objective),
+        "final_main": (HISTORICAL_FUSION_ID, Stage1Objective),
+        "v2_scf": ("scale-calibrated-fusion-v1", Stage1Objective),
+        "v2_grd": (HISTORICAL_FUSION_ID, RelationalDistillationObjective),
+        "v2_gc": (HISTORICAL_FUSION_ID, GridConsistencyObjective),
+    }
+    assert {c.stage for c in CANDIDATES} == set(expected), (
+        "a candidate was registered without an expectation here"
+    )
+
+    encoder, _, _, _ = build_grid_stack()
     weights = ObjectiveWeights(lambda_align=1.0, lambda_clean=1.0)
     for candidate in CANDIDATES:
-        built = build_candidate_objective(
-            UnmarkEncoder(encoder, adapter), candidate, weights
+        fusion_id, objective_type = expected[candidate.stage]
+        assert candidate.fusion.fusion_id == fusion_id, candidate.stage
+
+        # The candidate's OWN architecture, from the candidate's own identity.
+        adapter = fresh_adapter(16, 51800, candidate.fusion.fusion_id)
+        assert adapter.config.fusion_id == fusion_id
+        wrapper = UnmarkEncoder(encoder, adapter)
+
+        built = build_candidate_objective(wrapper, candidate, weights)
+        assert type(built) is objective_type, (
+            f"{candidate.stage}: built {type(built).__name__}, expected "
+            f"{objective_type.__name__}"
         )
         if candidate.objective is GRID_CONSISTENCY_OBJECTIVE:
-            assert isinstance(built, GridConsistencyObjective), candidate.stage
             assert built.weights.lambda_grid == 1.0
         else:
-            assert isinstance(built, Stage1Objective), candidate.stage
             assert not isinstance(built, GridConsistencyObjective), candidate.stage
-        # Whichever was built, the parameter set is identical.
+        # Whichever was built, the parameter set is identical: no candidate adds
+        # a parameter, whatever its fusion or its objective.
         assert sum(p.numel() for p in built.parameters()) == sum(
-            p.numel() for p in UnmarkEncoder(encoder, adapter).parameters()
+            p.numel() for p in wrapper.parameters()
+        )
+
+
+@requires_torch
+def test_runtime_a_mismatched_fusion_fails_closed():
+    """The production guard the stale test above was tripping over. It stays.
+
+    A C1 candidate handed a historical-fusion adapter must be refused: the two
+    adapters are shape-compatible, so building the objective anyway would train
+    `v2_scf`'s provenance over the historical mixture rule and the artifact would
+    describe a model that was never run.
+    """
+    from unmark.modeling.adapter import UnmarkEncoder
+    from unmark.stage1.candidates import candidate_for_stage
+    from unmark.stage1.execute import build_candidate_objective
+    from unmark.stage1.initialisation import fresh_adapter
+
+    encoder, _, _, _ = build_grid_stack()
+    weights = ObjectiveWeights(lambda_align=1.0, lambda_clean=1.0)
+    historical_adapter = fresh_adapter(16, 51800, HISTORICAL_FUSION_ID)
+
+    with pytest.raises(Stage1ContractViolation, match="implements fusion"):
+        build_candidate_objective(
+            UnmarkEncoder(encoder, historical_adapter),
+            candidate_for_stage("v2_scf"),
+            weights,
+        )
+
+    # ... and the reverse: a scale-calibrated adapter under a historical stage.
+    calibrated = fresh_adapter(16, 51800, "scale-calibrated-fusion-v1")
+    with pytest.raises(Stage1ContractViolation, match="implements fusion"):
+        build_candidate_objective(
+            UnmarkEncoder(encoder, calibrated),
+            candidate_for_stage("lr_pilot"),
+            weights,
         )
 
 
