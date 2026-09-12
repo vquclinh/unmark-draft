@@ -1,0 +1,646 @@
+{
+  "dataset": {
+    "changed_from_historical_stage2": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "label_mapping": {
+      "classification": "scientific_identity",
+      "value": {
+        "negative": 0,
+        "neutral": 1,
+        "positive": 2
+      }
+    },
+    "name": {
+      "classification": "scientific_identity",
+      "value": "UIT-VSFC"
+    },
+    "num_labels": {
+      "classification": "scientific_identity",
+      "value": 3
+    },
+    "task": {
+      "classification": "scientific_identity",
+      "value": "sentiment"
+    },
+    "version": {
+      "classification": "scientific_identity",
+      "value": "1.0"
+    }
+  },
+  "frozen_representation": {
+    "adapter_eval_mode": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "adapter_requires_grad": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "adapter_trainable_parameters": {
+      "classification": "scientific_identity",
+      "note": "frozen here; the count is the Stage-1 locked architecture and is identical across fusions -- which is precisely why the fusion id must be verified",
+      "value": 3551232
+    },
+    "encoder_checkpoint": {
+      "classification": "scientific_identity",
+      "value": "vinai/phobert-base"
+    },
+    "encoder_eval_mode": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "encoder_requires_grad": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "encoder_revision": {
+      "classification": "scientific_identity",
+      "value": "01daacda68afe13d83023d16ec647239e344a1e6"
+    },
+    "hidden_size": {
+      "classification": "scientific_identity",
+      "value": 768
+    },
+    "max_length": {
+      "classification": "scientific_protocol",
+      "value": 256
+    },
+    "mixed_precision": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "padding": {
+      "classification": "scientific_protocol",
+      "value": "max_length"
+    },
+    "precision": {
+      "classification": "scientific_protocol",
+      "value": "FP32"
+    },
+    "representation_dtype": {
+      "classification": "scientific_protocol",
+      "value": "torch.float32"
+    },
+    "restoration": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "syllable_inventory_classifier": {
+      "classification": "safety_gate",
+      "note": "the corrected Stage-2 input path: make_classifier(load_inventory()) must be supplied. Without it every tone label collapses to NA and tone-only corruption cannot reach tone_ids (Audit 059). classifier=None is refused by require_resolved_tone_channel.",
+      "value": "REQUIRED"
+    },
+    "token_grid_invariance": {
+      "classification": "safety_gate",
+      "value": "REQUIRED"
+    },
+    "tokenizer_change": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "trainable_parameters_in_stage2": {
+      "classification": "safety_gate",
+      "value": "classification head only"
+    },
+    "truncation": {
+      "classification": "scientific_protocol",
+      "value": true
+    },
+    "word_segmenter": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  },
+  "head": {
+    "activation": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "architecture": {
+      "classification": "scientific_protocol",
+      "value": "linear"
+    },
+    "dropout": {
+      "classification": "scientific_protocol",
+      "value": 0.0
+    },
+    "hidden_layers": {
+      "classification": "scientific_protocol",
+      "value": 0
+    },
+    "init_bias": {
+      "classification": "scientific_protocol",
+      "value": "torch.nn.init.zeros_"
+    },
+    "init_weight": {
+      "classification": "scientific_protocol",
+      "value": "torch.nn.init.xavier_uniform_"
+    },
+    "layernorm": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "loss": {
+      "classification": "scientific_protocol",
+      "value": "cross_entropy"
+    },
+    "loss_class_weights": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "loss_label_smoothing": {
+      "classification": "scientific_protocol",
+      "value": 0.0
+    },
+    "loss_reduction": {
+      "classification": "scientific_protocol",
+      "value": "mean"
+    },
+    "shape": {
+      "classification": "scientific_protocol",
+      "value": "Linear(768, 3, bias=True)"
+    }
+  },
+  "head_checkpoint_selection": {
+    "after_selection": {
+      "classification": "safety_gate",
+      "value": "head frozen"
+    },
+    "best_seed_selection": {
+      "classification": "safety_gate",
+      "note": "all five heads are retained and reported; no seed may be dropped because a result looks bad",
+      "value": false
+    },
+    "cadence": {
+      "classification": "scientific_protocol",
+      "value": "after each of the 30 epochs"
+    },
+    "corrupted_dev_may_influence_selection": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "evaluated_on": {
+      "classification": "safety_gate",
+      "value": "clean FULL protocol-dev"
+    },
+    "full_schedule_required": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "rule": {
+      "classification": "scientific_protocol",
+      "value": "highest macro_f1, then highest accuracy, then earliest epoch"
+    },
+    "scope": {
+      "classification": "scientific_protocol",
+      "value": "per seed, independently"
+    },
+    "training_data": {
+      "classification": "safety_gate",
+      "value": "CLEAN protocol-train only"
+    }
+  },
+  "measurement": {
+    "conditions": {
+      "classification": "scientific_protocol",
+      "value": [
+        "FULL",
+        "P25",
+        "P50",
+        "P75",
+        "P100",
+        "STRIP_ALL"
+      ]
+    },
+    "corruption_determinism": {
+      "classification": "scientific_protocol",
+      "note": "keyed by sample_id, never row order",
+      "value": "unmark.corruption.corrupt with purpose=SCIENTIFIC"
+    },
+    "corruption_seed": {
+      "classification": "scientific_identity",
+      "note": "the SAME frozen realisation the corrected historical Stage-2 measurement uses (D-S2-002). Reused, not re-chosen: a new realisation could not be shown not to have been cherry-picked.",
+      "value": 19225
+    },
+    "corruption_seed_pinned": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "excluded_conditions": {
+      "classification": "safety_gate",
+      "value": [
+        "VARIANT"
+      ]
+    },
+    "explicit_authorisation_required": {
+      "classification": "safety_gate",
+      "note": "measurement is a LATER phase; the runner refuses to read official validation until the clean campaign is complete and the boundary is explicitly authorised",
+      "value": true
+    },
+    "may_influence_head_training_or_selection": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "may_select": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "occurs_only_after": {
+      "classification": "safety_gate",
+      "value": "all five clean V2-SCF heads are complete and frozen"
+    },
+    "split": {
+      "classification": "safety_gate",
+      "value": "measurement-dev (official validation)"
+    }
+  },
+  "notes": [
+    "POST-HOC EXPLORATORY Stage-2 protocol for the UNMARK-v2 C1 / V2-SCF scale-calibrated-fusion candidate. Frozen BEFORE any V2-SCF Stage-2 result exists, and before any V2-SCF head is trained.",
+    "This protocol is ADDITIVE. It does not modify, weaken, extend or reinterpret the frozen historical dual-finalist protocol (stage2-dual-finalist-protocol-v1). The historical campaign remains exactly ['UNMARK-A', 'UNMARK-B']; V2-SCF is NOT a third arm.",
+    "Every head-protocol value below is REUSED UNCHANGED from the corrected historical Stage-2 head protocol. No Stage-2 hyperparameter is introduced, retuned, or made conditional on a V2-SCF result.",
+    "Official UIT-VSFC validation has already been seen historically, so nothing produced under this protocol is untouched confirmatory evaluation. Official UIT-VSFC TEST remains SEALED and structurally unreachable.",
+    "classification marks each field: scientific_identity | scientific_protocol | safety_gate | operational_provenance."
+  ],
+  "optimization": {
+    "amsgrad": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "batch_size": {
+      "classification": "scientific_protocol",
+      "value": 128
+    },
+    "betas": {
+      "classification": "scientific_protocol",
+      "value": [
+        0.9,
+        0.999
+      ]
+    },
+    "drop_last": {
+      "classification": "scientific_protocol",
+      "value": false
+    },
+    "early_stopping": {
+      "classification": "safety_gate",
+      "note": "all 30 epochs must run; a truncated score list is what early stopping looks like downstream",
+      "value": false
+    },
+    "epochs": {
+      "classification": "scientific_protocol",
+      "value": 30
+    },
+    "eps": {
+      "classification": "scientific_protocol",
+      "value": 1e-08
+    },
+    "gradient_accumulation_steps": {
+      "classification": "scientific_protocol",
+      "value": 1
+    },
+    "gradient_clipping": {
+      "classification": "scientific_protocol",
+      "value": null
+    },
+    "learning_rate": {
+      "classification": "scientific_protocol",
+      "note": "inherited unchanged from the corrected historical Stage-2 protocol; there is no V2-SCF LR pilot",
+      "value": 0.01
+    },
+    "lr_schedule": {
+      "classification": "scientific_protocol",
+      "value": "CONSTANT"
+    },
+    "new_lr_pilot_permitted": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "optimizer": {
+      "classification": "scientific_protocol",
+      "value": "AdamW"
+    },
+    "warmup_steps": {
+      "classification": "scientific_protocol",
+      "value": 0
+    },
+    "weight_decay_bias": {
+      "classification": "scientific_protocol",
+      "value": 0.0
+    },
+    "weight_decay_weight": {
+      "classification": "scientific_protocol",
+      "value": 0.01
+    }
+  },
+  "pathway": {
+    "historical_arm_count": {
+      "classification": "safety_gate",
+      "value": 2
+    },
+    "historical_arms": {
+      "classification": "scientific_identity",
+      "value": [
+        "UNMARK-A",
+        "UNMARK-B"
+      ]
+    },
+    "is_a_third_historical_arm": {
+      "classification": "safety_gate",
+      "note": "Stage2UnmarkArm remains a two-member enum; require_stage2_unmark_arm rejects this pathway id by construction",
+      "value": false
+    },
+    "pathway_id": {
+      "classification": "scientific_identity",
+      "value": "UNMARK-V2-SCF"
+    },
+    "reuses_historical_ab_caches": {
+      "classification": "safety_gate",
+      "note": "a separate cache schema, separate on-disk filenames and a separate key type; neither can be loaded as the other",
+      "value": false
+    },
+    "reuses_historical_ab_heads": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "selection_between_scf_and_ab": {
+      "classification": "safety_gate",
+      "note": "no winner rule, no ranking, no tie-break, no promotion",
+      "value": null
+    }
+  },
+  "pooling": {
+    "pilot_permitted": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "strategy": {
+      "classification": "scientific_protocol",
+      "value": "FIRST_TOKEN"
+    },
+    "token": {
+      "classification": "scientific_protocol",
+      "value": "<s>"
+    }
+  },
+  "post_measurement_lock": {
+    "change_pooling_lr_head_seeds_or_epoch_rule_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "drop_seed_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "open_official_test": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "reopen_stage1_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "replace_the_stage1_checkpoint_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "retune_any_stage2_hyperparameter_on_result": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  },
+  "reporting": {
+    "best_seed_selection": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "heads_reported": {
+      "classification": "scientific_protocol",
+      "value": "all five seeds, separately and in aggregate"
+    },
+    "must_be_labelled_posthoc_exploratory": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "p_value": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "ranks_scf_against_historical_arms": {
+      "classification": "safety_gate",
+      "note": "the historical A/B campaign is closed and carries both arms without a winner; a post-hoc candidate may not be ranked into it",
+      "value": false
+    },
+    "significance_test": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "tie_break": {
+      "classification": "safety_gate",
+      "value": null
+    },
+    "winner_rule": {
+      "classification": "safety_gate",
+      "value": null
+    }
+  },
+  "runner_schema_version": "stage2-v2-scf-posthoc-v1",
+  "schema_version": "stage2-v2-scf-posthoc-protocol-v1",
+  "scientific_status": {
+    "confirmatory_claim_permitted": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "official_test_used": {
+      "classification": "safety_gate",
+      "note": "TEST is sealed and has no route",
+      "value": false
+    },
+    "official_validation_previously_seen": {
+      "classification": "safety_gate",
+      "note": "official validation has been read historically; a V2-SCF measurement is therefore not blind and must be reported as post-hoc",
+      "value": true
+    },
+    "posthoc_exploratory": {
+      "classification": "safety_gate",
+      "note": "this is exploratory post-hoc work; it may not be presented as untouched confirmatory evaluation",
+      "value": true
+    },
+    "stage1_retraining_required": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "stage2_hyperparameter_retuned_after_seeing_scf": {
+      "classification": "safety_gate",
+      "note": "forbidden: every value is inherited from the corrected historical protocol",
+      "value": false
+    }
+  },
+  "seeds": {
+    "head_seed_count": {
+      "classification": "scientific_identity",
+      "value": 5
+    },
+    "head_seeds": {
+      "classification": "scientific_identity",
+      "note": "exactly the frozen five, reused unchanged from the historical Stage-2 campaign",
+      "value": [
+        53148,
+        59945,
+        42941,
+        720,
+        9428
+      ]
+    },
+    "minibatch_order": {
+      "classification": "scientific_protocol",
+      "note": "dedicated generator, not the ambient RNG",
+      "value": "seed * 1000 + epoch"
+    },
+    "new_seeds_created": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  },
+  "splits": {
+    "official_test": {
+      "classification": "safety_gate",
+      "note": "structurally unreachable: Preg1Role has no OFFICIAL_TEST member and no function in the V2-SCF pathway takes a split argument",
+      "value": "SEALED"
+    },
+    "official_validation_role": {
+      "classification": "safety_gate",
+      "note": "read ONLY at the authorised measurement boundary, AFTER all five clean heads are complete; reporting only, never selection",
+      "value": "measurement-dev"
+    },
+    "protocol_dev_role": {
+      "classification": "safety_gate",
+      "note": "clean FULL only; no corrupted score may influence head checkpoint selection",
+      "value": "head checkpoint selection only"
+    },
+    "protocol_train_role": {
+      "classification": "scientific_protocol",
+      "value": "CLEAN head training only"
+    },
+    "selection_rows": {
+      "classification": "scientific_identity",
+      "note": "protocol-dev",
+      "value": 2285
+    },
+    "split_seed": {
+      "classification": "scientific_identity",
+      "value": 17486
+    },
+    "splitter": {
+      "classification": "scientific_protocol",
+      "value": "unchanged from the historical Stage-2 protocol"
+    },
+    "training_rows": {
+      "classification": "scientific_identity",
+      "note": "protocol-train",
+      "value": 9139
+    }
+  },
+  "stage1_source": {
+    "adapter_construction": {
+      "classification": "safety_gate",
+      "note": "the authoritative Stage-1 fusion dispatch; the equation is never restated in the Stage-2 layer",
+      "value": "unmark.stage1.reconstruct.reconstruct_adapter"
+    },
+    "adapter_state_load": {
+      "classification": "safety_gate",
+      "value": "strict=True"
+    },
+    "checkpoint_name": {
+      "classification": "scientific_identity",
+      "value": "training-checkpoint-best.pt"
+    },
+    "checkpoint_sha256": {
+      "classification": "scientific_identity",
+      "value": "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685"
+    },
+    "durable_checkpoint_path": {
+      "classification": "operational_provenance",
+      "note": "operational only; the scientific binding is the sha256",
+      "value": "stage1-training/8de83f0da8d2-g4-blackwell-unified-wandb-20260912T010344Z/v2-scf/run-seed36930/_checkpoint/training-checkpoint-best.pt"
+    },
+    "fusion_id": {
+      "classification": "scientific_identity",
+      "note": "scale = ||e|| / clamp(||f||, 1e-8); f_cal = scale * f; z = g*f_cal + (1-g)*e. The tensors are shape-compatible with the historical adapter, so the fusion identity is load-bearing and is verified before the adapter is built.",
+      "value": "scale-calibrated-fusion-v1"
+    },
+    "held_out_worst_case_score": {
+      "classification": "scientific_identity",
+      "value": 0.08116862134875966
+    },
+    "init_seed": {
+      "classification": "scientific_identity",
+      "value": 51800
+    },
+    "learning_rate": {
+      "classification": "scientific_identity",
+      "value": 0.0001
+    },
+    "objective_id": {
+      "classification": "scientific_identity",
+      "note": "the HISTORICAL objective: C1 varies the fusion, not the loss",
+      "value": "align-clean-pooled-v1"
+    },
+    "r": {
+      "classification": "scientific_identity",
+      "value": 1.0
+    },
+    "run_seed": {
+      "classification": "scientific_identity",
+      "value": 36930
+    },
+    "selected_update": {
+      "classification": "scientific_identity",
+      "note": "chosen inside Stage-1 by the locked held-out rule; no downstream score took part and none may",
+      "value": 8000
+    },
+    "source_repository_head": {
+      "classification": "scientific_identity",
+      "value": "8de83f0da8d2b38f312e2ff16cb78ebcf9e8e526"
+    },
+    "stage": {
+      "classification": "scientific_identity",
+      "value": "v2_scf"
+    },
+    "stage_artifact_name": {
+      "classification": "scientific_identity",
+      "value": "v2_scf.json"
+    },
+    "stage_artifact_sha256": {
+      "classification": "scientific_identity",
+      "value": "19a5bf4cb4b7793bee9e51292f62e7b42baf38c64026ad52fc177de40fb05695"
+    }
+  },
+  "state": {
+    "official_test_read": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "official_validation_read_by_this_campaign": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "protocol_frozen_before_results": {
+      "classification": "safety_gate",
+      "value": true
+    },
+    "scf_clean_heads_complete": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "scf_measurement_performed": {
+      "classification": "safety_gate",
+      "value": false
+    },
+    "scf_stage2_training_started": {
+      "classification": "safety_gate",
+      "value": false
+    }
+  }
+}

@@ -36,6 +36,12 @@ IMPORTERS = (
     "unmark/evaluation/preg1_split.py",
     "unmark/evaluation/stage2_dual_finalist.py",
     "unmark/evaluation/stage2_head_campaign.py",
+    # Audit 071: the additive post-hoc V2-SCF Stage-2 pathway. It reuses the
+    # pre-G1 protocol constants rather than restating them, so it is subject to
+    # the same committed-tree consistency contract as every other importer.
+    "unmark/evaluation/stage2_scf_pathway.py",
+    "unmark/evaluation/stage2_scf_campaign.py",
+    "unmark/evaluation/stage2_scf_measurement.py",
     "unmark/evaluation/__init__.py",
     "scripts/preg1_head_diagnostic.py",
     "scripts/preg1_dataset_profile.py",
