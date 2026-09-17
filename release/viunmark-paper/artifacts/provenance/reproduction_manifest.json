@@ -1,0 +1,51 @@
+{
+  "schema_version": "viunmark-reproduction-manifest-v1",
+  "public_code_license": "UNRESOLVED",
+  "source_research_head": "368fad497111a30acf0407fdb0b0f2f60315b8d4",
+  "method_protocol_recovery_not_bit_exact_execution_recovery": true,
+  "external_assets": [
+    {
+      "name": "stage1_gate_checkpoint",
+      "relative_path": "checkpoints/viunmark_gate.pt",
+      "sha256": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "stage1_scale_checkpoint",
+      "relative_path": "checkpoints/viunmark_scale.pt",
+      "sha256": "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "viunmark_final",
+      "relative_path": "results/viunmark-final.json",
+      "sha256": "0f0801b19945ba60537865a32663eed3468f0b4c7968511ddd7d4608a164911a",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "viunmark_official_validation_evidence",
+      "relative_path": "results/viunmark-official-validation.json",
+      "sha256": "a2d9db0e964b48a0084ac2db4173cc585489c5ca04d166516a0cc7f109015a34",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "viunmark_official_test_evidence",
+      "relative_path": "results/viunmark-official-test.json",
+      "sha256": "7f996fdaadbacd075d407dc4aeea529c824f3df9d476f6f928bad16bfe1269d2",
+      "present_in_public_repo": false
+    }
+  ],
+  "scientific_invariants": {
+    "heads_per_branch": 5,
+    "within_branch_logit_ensemble": "MEAN",
+    "best_seed_selection": false,
+    "branch_weights": {
+      "phobert_readout": 0.5,
+      "gate_robust_readout": 0.25,
+      "scale_unweighted_readout": 0.125,
+      "scale_weighted_readout": 0.125
+    },
+    "uit_vsfc_viunmark_class_1_bias": 1.25,
+    "parent_biases_stacked": false
+  }
+}

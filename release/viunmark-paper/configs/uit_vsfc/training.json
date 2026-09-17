@@ -1,0 +1,9 @@
+{
+  "schema_version": "viunmark-uit-vsfc-training-config-v1",
+  "policy": "PUBLIC_REPRODUCTION_IMPLEMENTATION_REQUIRES_AUTHOR_REVIEW",
+  "notes": [
+    "Protocol-level readout training facts are recovered.",
+    "Historical bit-exact retraining is not fully recovered.",
+    "No public executable training policy is silently chosen here."
+  ]
+}

@@ -1,0 +1,362 @@
+{
+  "schema_version": "viunmark-historical-aliases-v1",
+  "notes": [
+    "HISTORICAL PROVENANCE ONLY. Every identifier in 'aliases' is a research-development label from the post-hoc ViUnMark investigation. None of them is public API.",
+    "Public-facing code uses the descriptive and Python names. The historical identifiers may appear only in this file, in reproduction/migration tests, in comments explicitly marked as historical aliases, and in audits explaining provenance.",
+    "Historical research modules that already use these identifiers are immutable provenance and are not renamed."
+  ],
+  "public_api": false,
+  "aliases": [
+    {
+      "historical_id": "UNMARK-A",
+      "descriptive_name": "ViUnMark-Gate",
+      "python_name": "ViUnMarkGate / ViUnMarkGateConfig",
+      "kind": "stage1_adapter",
+      "public_api": true,
+      "note": "Stage-I adapter with gated fusion z = g*f + (1-g)*e."
+    },
+    {
+      "historical_id": "V2-SCF",
+      "descriptive_name": "ViUnMark-Scale",
+      "python_name": "ViUnMarkScale / ViUnMarkScaleConfig",
+      "kind": "stage1_adapter",
+      "public_api": true,
+      "note": "Stage-I adapter with scale-calibrated gated fusion."
+    },
+    {
+      "historical_id": "R4-W-MLP",
+      "descriptive_name": "Gate Robust Readout",
+      "python_name": "GateReadoutConfig",
+      "kind": "stage2_readout",
+      "public_api": true,
+      "note": "ViUnMark-Gate, MASKED_MEAN, sqrt-inverse-frequency CE, robust MLP."
+    },
+    {
+      "historical_id": "R6-U-MLP",
+      "descriptive_name": "Scale Unweighted Readout",
+      "python_name": "ScaleUnweightedReadoutConfig",
+      "kind": "stage2_readout",
+      "public_api": true,
+      "note": "ViUnMark-Scale, CONCAT [FT;MM], unweighted CE, robust MLP."
+    },
+    {
+      "historical_id": "R6-W-MLP",
+      "descriptive_name": "Scale Weighted Readout",
+      "python_name": "ScaleWeightedReadoutConfig",
+      "kind": "stage2_readout",
+      "public_api": true,
+      "note": "ViUnMark-Scale, CONCAT [FT;MM], sqrt-inverse-frequency CE, robust MLP."
+    },
+    {
+      "historical_id": "VANILLA CAT-U-MLP",
+      "descriptive_name": "PhoBERT Readout",
+      "python_name": "PhoBERTReadoutConfig",
+      "kind": "stage2_readout",
+      "public_api": true,
+      "note": "native PhoBERT, CONCAT [FT;MM], unweighted CE, robust MLP."
+    },
+    {
+      "historical_id": "VANILLA",
+      "descriptive_name": "native PhoBERT pathway",
+      "python_name": "Pathway.PHOBERT",
+      "kind": "pathway",
+      "public_api": true,
+      "note": "frozen PhoBERT on canonicalised observed text, no adapter."
+    },
+    {
+      "historical_id": "SYS1",
+      "descriptive_name": "Adapted-Only Fusion",
+      "python_name": "AdaptedOnlyFusionConfig",
+      "kind": "system",
+      "public_api": true,
+      "note": "DIAGNOSTIC / ABLATION ONLY. Not the headline method."
+    },
+    {
+      "historical_id": "SYS2-1",
+      "descriptive_name": "PhoBERT Robust Readout Selection",
+      "python_name": null,
+      "kind": "historical_development_stage",
+      "public_api": false,
+      "note": "Historical development stage that selected the robust native PhoBERT readout. NOT a public system. Its standalone +0.75 class-1 calibration is NOT inherited by ViUnMark."
+    },
+    {
+      "historical_id": "SYS2-2",
+      "descriptive_name": "ViUnMark",
+      "python_name": "ViUnMark / ViUnMarkConfig",
+      "kind": "system",
+      "public_api": true,
+      "note": "The final proposed system."
+    },
+    {
+      "historical_id": "D1",
+      "descriptive_name": "Scale Pathway Preflight",
+      "python_name": null,
+      "kind": "analysis",
+      "public_api": false,
+      "note": "API/runtime/checkpoint-structure preflight. Not a scientific result: no model load, no forward, no training, no validation read, no test read. Its role is covered by configuration validation and tests; there is no user-facing module."
+    },
+    {
+      "historical_id": "D2",
+      "descriptive_name": "Checkpoint-Free Pooling Bridge",
+      "python_name": "diagnostics.pooling_bridge",
+      "kind": "analysis",
+      "public_api": true,
+      "note": "FIRST_TOKEN vs MASKED_MEAN from the SAME encoder forward, checkpoint-free, no Stage-II head."
+    },
+    {
+      "historical_id": "D3",
+      "descriptive_name": "Matched-Head Pooling Comparison",
+      "python_name": "diagnostics.pooling_comparison",
+      "kind": "analysis",
+      "public_api": true,
+      "note": "Controlled learned-head FIRST_TOKEN vs MASKED_MEAN comparison."
+    },
+    {
+      "historical_id": "D4",
+      "descriptive_name": "Native-Adapted Decision Geometry",
+      "python_name": "diagnostics.decision_geometry",
+      "kind": "analysis",
+      "public_api": true,
+      "note": "Whether the adapted pathway preserves native PhoBERT decision geometry."
+    },
+    {
+      "historical_id": "COMP-D1",
+      "descriptive_name": "Matched-Recipe Complementarity Analysis",
+      "python_name": "diagnostics.complementarity",
+      "kind": "analysis",
+      "public_api": true,
+      "note": "Naive averaging under a matched downstream recipe."
+    },
+    {
+      "historical_id": "COMP-D2",
+      "descriptive_name": "Robustness Gain Factorization",
+      "python_name": "diagnostics.factorization",
+      "kind": "analysis",
+      "public_api": true,
+      "note": "Sequential isolation of robustness gains from the matched pair to final ViUnMark."
+    },
+    {
+      "historical_id": "FT",
+      "descriptive_name": "FIRST_TOKEN",
+      "python_name": "ReadoutKind.FIRST_TOKEN",
+      "kind": "readout_component",
+      "public_api": true,
+      "note": "hidden[:, 0, :]"
+    },
+    {
+      "historical_id": "MM",
+      "descriptive_name": "MASKED_MEAN",
+      "python_name": "ReadoutKind.MASKED_MEAN",
+      "kind": "readout_component",
+      "public_api": true,
+      "note": "attention-masked mean excluding tokenizer-authoritative special tokens"
+    },
+    {
+      "historical_id": "CAT",
+      "descriptive_name": "CONCAT",
+      "python_name": "ReadoutKind.CONCAT",
+      "kind": "readout_component",
+      "public_api": true,
+      "note": "concat([FIRST_TOKEN, MASKED_MEAN], dim=-1), order exactly [FT ; MM]"
+    },
+    {
+      "historical_id": "U",
+      "descriptive_name": "UNWEIGHTED_CROSS_ENTROPY",
+      "python_name": "LossKind.UNWEIGHTED_CROSS_ENTROPY",
+      "kind": "loss_component",
+      "public_api": true,
+      "note": "unweighted cross entropy"
+    },
+    {
+      "historical_id": "W",
+      "descriptive_name": "SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+      "python_name": "LossKind.SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+      "kind": "loss_component",
+      "public_api": true,
+      "note": "raw[c] = 1/sqrt(train_count[c]); weight[c] = raw[c]/mean(raw)"
+    },
+    {
+      "historical_id": "AUGMENTED_6COND",
+      "descriptive_name": "AUGMENTED_SIX_CONDITIONS",
+      "python_name": "TrainingDistribution.AUGMENTED_SIX_CONDITIONS",
+      "kind": "training_distribution",
+      "public_api": true,
+      "note": "FULL, P25, P50, P75, P100, STRIP_ALL"
+    },
+    {
+      "historical_id": "V2_U",
+      "descriptive_name": "Scale Unweighted branch ensemble",
+      "python_name": "LogitStream.SCALE_UNWEIGHTED_READOUT",
+      "kind": "branch_ensemble",
+      "public_api": true,
+      "note": "historical protocol wording: mean logits over five R6-U-MLP selected heads."
+    },
+    {
+      "historical_id": "V2_W",
+      "descriptive_name": "Scale Weighted branch ensemble",
+      "python_name": "LogitStream.SCALE_WEIGHTED_READOUT",
+      "kind": "branch_ensemble",
+      "public_api": true,
+      "note": "historical protocol wording: mean logits over five R6-W-MLP selected heads."
+    },
+    {
+      "historical_id": "seed_ensemble",
+      "descriptive_name": "within-branch head-logit mean",
+      "python_name": "ensemble_branch",
+      "kind": "ensemble_rule",
+      "public_api": true,
+      "note": "historical protocol field (VANILLA seed_ensemble = 5): the branch raw logit is the arithmetic mean of its five head logits. It is NOT five separate final systems."
+    },
+    {
+      "historical_id": "OPT3",
+      "descriptive_name": "adapted-pathway robust readout optimization",
+      "python_name": null,
+      "kind": "historical_development_stage",
+      "public_api": false,
+      "note": "Historical stage that trained the ViUnMark-Gate and ViUnMark-Scale robust MLP readouts. Its training recipe is recorded as method.robust_mlp_training_recipe; its protocol and final artifact are adapted_robust_readout_optimization_protocol / _final."
+    },
+    {
+      "historical_id": "OPT parent freeze",
+      "descriptive_name": "Stage-II optimization parent freeze",
+      "python_name": null,
+      "kind": "historical_protocol",
+      "public_api": false,
+      "note": "file s2-opt-protocol-freeze-v1.json; records the scientific corruption seed. Lineage key stage2_optimization_parent_freeze."
+    },
+    {
+      "historical_id": "OPT0",
+      "descriptive_name": "Stage-II representation bank",
+      "python_name": null,
+      "kind": "historical_development_stage",
+      "public_api": false,
+      "note": "file s2-opt0-representation-bank-final-v1.json; records the representation-bank identity, the corruption seed, base-grid invariance and cross-pathway input identity. Lineage key stage2_representation_bank_final."
+    },
+    {
+      "historical_id": "OPT1",
+      "descriptive_name": "Stage-II Readout and Augmentation Screen",
+      "python_name": null,
+      "kind": "historical_development_stage",
+      "public_api": false,
+      "note": "Six candidates R1-R6 over readout (MASKED_MEAN, L2_MASKED_MEAN, [FIRST_TOKEN;MASKED_MEAN]) x training distribution (CLEAN_ONLY, AUGMENTED_6COND); common head Linear(input_dim, 3, bias=True); unweighted cross entropy; candidate ranking across all five seeds; no best-seed selection. Protocol lineage key stage2_readout_and_augmentation_screen_protocol."
+    },
+    {
+      "historical_id": "OPT2",
+      "descriptive_name": "Stage-II Class-Balance Loss Optimization",
+      "python_name": null,
+      "kind": "historical_development_stage",
+      "public_api": false,
+      "note": "Class-balance stage over the promoted bases R4 and R6 with loss variants U (UNWEIGHTED_CE), W (SQRT_INV_FREQ_WEIGHTED_CE) and F (FOCAL_GAMMA_2, gamma 2.0), under the existing shared class-1 calibration protocol. Protocol lineage key stage2_class_balance_loss_optimization_protocol."
+    },
+    {
+      "historical_id": "R1",
+      "descriptive_name": "screen candidate 1: MASKED_MEAN, CLEAN_ONLY",
+      "python_name": null,
+      "kind": "historical_screen_candidate",
+      "public_api": false,
+      "note": "Stage-II Readout and Augmentation Screen."
+    },
+    {
+      "historical_id": "R2",
+      "descriptive_name": "screen candidate 2: L2_MASKED_MEAN, CLEAN_ONLY",
+      "python_name": null,
+      "kind": "historical_screen_candidate",
+      "public_api": false,
+      "note": "Stage-II Readout and Augmentation Screen."
+    },
+    {
+      "historical_id": "R3",
+      "descriptive_name": "screen candidate 3: [FIRST_TOKEN;MASKED_MEAN], CLEAN_ONLY",
+      "python_name": null,
+      "kind": "historical_screen_candidate",
+      "public_api": false,
+      "note": "Stage-II Readout and Augmentation Screen."
+    },
+    {
+      "historical_id": "R4",
+      "descriptive_name": "screen candidate 4: MASKED_MEAN, AUGMENTED_6COND",
+      "python_name": null,
+      "kind": "historical_screen_candidate",
+      "public_api": false,
+      "note": "Stage-II Readout and Augmentation Screen; promoted to the class-balance stage; base of the Gate Robust Readout."
+    },
+    {
+      "historical_id": "R5",
+      "descriptive_name": "screen candidate 5: L2_MASKED_MEAN, AUGMENTED_6COND",
+      "python_name": null,
+      "kind": "historical_screen_candidate",
+      "public_api": false,
+      "note": "Stage-II Readout and Augmentation Screen."
+    },
+    {
+      "historical_id": "R6",
+      "descriptive_name": "screen candidate 6: [FIRST_TOKEN;MASKED_MEAN], AUGMENTED_6COND",
+      "python_name": null,
+      "kind": "historical_screen_candidate",
+      "public_api": false,
+      "note": "Stage-II Readout and Augmentation Screen; promoted to the class-balance stage; base of the Scale Unweighted and Scale Weighted Readouts."
+    },
+    {
+      "historical_id": "F",
+      "descriptive_name": "FOCAL_GAMMA_2",
+      "python_name": null,
+      "kind": "loss_component",
+      "public_api": false,
+      "note": "focal loss with gamma 2.0; screened in the class-balance stage; not part of the final system and not a public loss."
+    },
+    {
+      "historical_id": "SQRT_INV_FREQ_WEIGHTED_CE",
+      "descriptive_name": "SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+      "python_name": "LossKind.SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+      "kind": "loss_component",
+      "public_api": true,
+      "note": "historical loss name; rule raw[c] = 1/sqrt(train_count[c]), normalised to mean 1."
+    },
+    {
+      "historical_id": "cross_arm_input_identity",
+      "descriptive_name": "cross-pathway input identity",
+      "python_name": "require_cross_pathway_input_identity",
+      "kind": "input_rule",
+      "public_api": true,
+      "note": "historical bank field: Gate and Scale receive the same corrupted realization."
+    },
+    {
+      "historical_id": "full_condition_api_seed",
+      "descriptive_name": "FULL-condition API placeholder",
+      "python_name": "FULL_CONDITION_API_SEED",
+      "kind": "input_rule",
+      "public_api": true,
+      "note": "historical value 0; an API placeholder for the no-corruption FULL condition, NOT a scientific corruption seed."
+    }
+  ],
+  "identifier_families": [
+    {
+      "historical_family": "R1 ... R6",
+      "status": "recovered: the six Stage-II Readout and Augmentation Screen candidates; only R4-W-MLP, R6-U-MLP and R6-W-MLP are part of the final system; none is public"
+    },
+    {
+      "historical_family": "OPT*",
+      "status": "historical Stage-II optimization stages, all recovered: OPT0 representation bank, OPT1 Stage-II Readout and Augmentation Screen, OPT2 Stage-II Class-Balance Loss Optimization, OPT3 adapted-pathway robust readout optimization"
+    },
+    {
+      "historical_family": "D1 ... D4, COMP-D1, COMP-D2",
+      "status": "historical analysis identifiers; replaced by the descriptive names above"
+    }
+  ],
+  "lineage_keys": {
+    "stage1_gate_checkpoint": "UNMARK-A Stage-I checkpoint",
+    "stage1_scale_checkpoint": "V2-SCF Stage-I checkpoint",
+    "adapted_robust_readout_optimization_final": "OPT3 final",
+    "adapted_robust_readout_optimization_protocol": "OPT3 protocol",
+    "stage2_optimization_parent_freeze": "OPT parent freeze (s2-opt-protocol-freeze-v1.json)",
+    "stage2_representation_bank_final": "OPT0 representation bank final (s2-opt0-representation-bank-final-v1.json)",
+    "stage2_readout_and_augmentation_screen_protocol": "OPT1 protocol",
+    "stage2_class_balance_loss_optimization_protocol": "OPT2 protocol",
+    "phobert_robust_readout_protocol": "native PhoBERT robust-readout protocol (s2-sys2-1-protocol-v1.json)",
+    "adapted_only_fusion_final": "SYS1 final",
+    "phobert_robust_readout_selection_final": "SYS2-1",
+    "viunmark_protocol": "SYS2-2 protocol",
+    "viunmark_final": "SYS2-2 final",
+    "viunmark_official_validation_evidence": "SYS2-2 official-validation evidence",
+    "viunmark_official_test_evidence": "SYS2-2 official-TEST evidence"
+  }
+}

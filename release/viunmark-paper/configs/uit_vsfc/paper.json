@@ -1,0 +1,16 @@
+{
+  "schema_version": "viunmark-uit-vsfc-paper-config-v1",
+  "dataset": {
+    "name": "UIT-VSFC",
+    "version": "1.0",
+    "label_names": ["negative", "neutral", "positive"],
+    "label_mapping": {"negative": 0, "neutral": 1, "positive": 2}
+  },
+  "paths": {
+    "data_root": "datasets/uit_vsfc",
+    "asset_root": "assets/uit_vsfc",
+    "output_root": "outputs/uit_vsfc"
+  },
+  "mode": "frozen",
+  "provenance_manifest": "artifacts/provenance/reproduction_manifest.json"
+}

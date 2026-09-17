@@ -1,0 +1,2653 @@
+{
+  "dataset_specific_values": [
+    "UIT-VSFC class-1 additive bias +1.25",
+    "Adapted-Only diagnostic bias +0.75",
+    "UIT-VSFC corruption seed 19225",
+    "UIT-VSFC class-count weight vector"
+  ],
+  "external_assets_required": [
+    "UIT-VSFC data",
+    "Stage-I checkpoints",
+    "Stage-II readout heads/logits",
+    "frozen result evidence"
+  ],
+  "historical_aliases_provenance_only": true,
+  "records": [
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": ".gitignore",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": ".gitignore"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "README.md",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": "README.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "configs/corruption/default.yaml"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "configs/uit_vsfc/paper.json",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "configs/data/uvw_2026.json"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "configs/linguistics/vietnamese_syllables.yaml"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "configs/linguistics/vncorenlp_v1.2.json"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "configs/restore/nrl_vit5_base.yaml"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/001-g-minus1-environment-policy.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/002-b1a-orthography-core.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/003-b2-deterministic-corruption.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/004-b2-eligibility-safety-followup.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/005-b3a-vietnamese-syllable-eligibility.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/006-b3b0-phobert-input-contract.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/007-b3b0-colab-probe-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/008-b3b0-vncorenlp-manifest-hardening.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/009-b3b0-provenance-closure.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/010-b3b0-tokenizer-revision-verification.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/011-b3b1a-input-path-and-alignment-preflight.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/012-b3b1b-whitespace-chunk-alignment-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/013-b3b1c-alignment-validation-and-channel-projection.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/014-b4a-neural-adapter-contract-preflight.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/015-b4b-neural-adapter-implementation-preflight.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/016-b4b-real-model-provenance-and-position-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/017-b4b-real-phobert-final-closure.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/018-stage1-objective-and-data-path-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/019-stage1-real-phobert-diagnostic-closure.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/020-minimal-stage2-g1-evaluation-harness.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/021-pre-g1-dataset-profile-and-protocol-precommit.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/022-uit-vsfc-real-data-profile-integrity-closure.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/023-pre-g1-internal-split-materializer-and-fail-closed-contract.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/024-preg1-frozen-head-trainer-and-evaluator.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/025-preg1-executable-diagnostic-runner.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/026-preg1-paired-measurement-runner.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/027-preg1-base-only-own-lr-sensitivity.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/028-stage1-scientific-config-review.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/029-stage1-runner-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/030-pretrain-repository-wide-audit.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/031-final-pretraining-full-repository-review.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/032-second-independent-full-repository-pretrain-review.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/033-consolidated-material-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/034-final-post-repair-full-repository-review.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/035-torch-resume-test-fixture-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/036-final-committed-pre-cuda-repository-review.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/037-stale-training-resume-test-schema-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/038-cuda-discovered-mid-continuation-test-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/039-small-authoritative-cuda-acceptance.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/040-stage1-structured-telemetry-wandb-observability.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/041-cuda-telemetry-equivalence-fixture-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/042-cuda-telemetry-equivalence-root-cause.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/043-real-stage1-max-length-overflow-root-cause.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/044-stage1-phobert-run-grid-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/045-stage1-lr-pilot-author-override.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/046-stage1-r-phase1-operational-acceleration.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/047-stage1-r-phase1-resource-bounded-author-amendment.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/048-stage1-finalist-freeze-pre-downstream-adjudication.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/049-stage2-dual-finalist-protocol-freeze.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/050-stage2-dual-finalist-infrastructure-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/051-stage2-head-campaign-runner-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/052-stage2-real-clean-cache-materialization-pre-training-acceptance.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/053-stage2-clean-10-head-campaign-runtime-closeout.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/054-stage2-measurement-corruption-seed-freeze.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/055-stage2-measurement-guard-runtime-test-fixture-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/056-stage2-measurement-guard-runtime-acceptance-closeout.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/057-stage2-real-measurement-notebook-preparation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/058-stage2-measurement-manifest-binding-runtime-correction.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/059-stage2-tone-channel-eligibility-runtime-bug.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/060-stage2-tone-channel-l4-runtime-acceptance-closeout.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/061-stage2-corrected-clean-campaign-closeout.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/062-stage2-author-arm-selection-and-vanilla-anchor-preparation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/063-stage2-vanilla-upper-floor-anchor-results.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/064-stage2-restore-baseline-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/065-stage1-v2-gc-grid-consistency-scientific-audit.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/066-stage1-v2-gc-hard-cap-and-smoke-dispatch-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/067-stage1-v2-scf-scale-calibrated-fusion-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/068-stage1-v2-grd-geometry-relational-distillation-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/069-first-colab-gpu-gate-test-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/070-preflight-5a-provenance-text-repair.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/071-stage2-v2-scf-posthoc-pathway-implementation.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/072-sa-vlsp2016-external-evaluation-repository-reconnaissance.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/audits/073-final-viunmark-public-facing-system-recovery.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/colab/inspect_r_phase1_failed_run_cell.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/colab/regenerate_lr_pilot_author_override_cell.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/colab/regenerate_r_phase1_resource_bounded_author_override_cell.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/colab/run_r_phase1_accelerated_cell.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/b3b0-input-contract-result.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/b3b1-manual-alignment-result.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/b3b2-channel-projection-result.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/b4b-phobert-adapter-integration-result.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/preg1-uit-vsfc-internal-split.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/preg1-uit-vsfc-real-profile-result.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/stage1-objective-data-path-preflight.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/stage1-prepared-corpus-profile-result.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/experiments/stage1-real-phobert-diagnostic-result.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/decisions.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/neural-adapter.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/orthography.md"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/restore-baseline-protocol.json"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/stage1-adapter-finalists.json"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/stage1-final-freeze.json"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/stage2-dual-finalist-protocol.json"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/provenance.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "docs/spec/stage2-v2-scf-posthoc-protocol.json"
+    },
+    {
+      "action": "COPY_EXACT",
+      "classification": "HISTORICAL_MACHINE_READABLE_ARTIFACT",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "artifacts/historical/configs/viunmark-final-system-v1.json",
+      "reason": "exact authoritative machine-readable provenance copied",
+      "source_path": "docs/spec/viunmark-final-system-v1.json"
+    },
+    {
+      "action": "COPY_EXACT",
+      "classification": "HISTORICAL_MACHINE_READABLE_ARTIFACT",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "artifacts/provenance/historical_aliases.json",
+      "reason": "exact authoritative machine-readable provenance copied",
+      "source_path": "docs/spec/viunmark-historical-aliases-v1.json"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "pyproject.toml",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": "pyproject.toml"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "requirements.txt",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": "requirements/base.txt"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "requirements.txt",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": "requirements/dev.txt"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "requirements.txt",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": "requirements/experiment.txt"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_CONFIG",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "requirements.txt",
+      "reason": "public packaging/configuration rewritten for release",
+      "source_path": "requirements/monitoring.txt"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/b2/.gitkeep"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/b3a/.gitkeep"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/b3b0/.gitkeep"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/b3b1/.gitkeep"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/b4b/.gitkeep"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/g0/.gitkeep"
+    },
+    {
+      "action": "OMIT",
+      "classification": "GENERATED_OR_CACHE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "generated placeholder/cache not needed for release",
+      "source_path": "results/g_minus1/.gitkeep"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/b2_corruption_self_check.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/b3a_eligibility_check.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/b3b0_phobert_input_probe.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/b3b1_phobert_alignment_probe.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/b3b2_channel_projection_probe.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/b4b_phobert_adapter_probe.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/baselines/restore_e22_postprocess.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/baselines/restore_stage2.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/fetch_vietnamese_syllable_inventory.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/g0_orthography_check.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/g_minus1_restore_smoke.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/materialize_preg1_split.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/preg1_dataset_profile.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/preg1_head_diagnostic.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_blocker_probe.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_length_contract_scan.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_prepare_benchmark.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_pretrain_measurements.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_runner.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_tokenizer_probe.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_verify_finalist_checkpoint.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "scripts/stage1_wandb_monitor.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "BINARY_OR_EXTERNAL_ASSET",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "binary or external asset not included in source export",
+      "source_path": "stage1-real-phobert-diagnostic-results.zip"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/baselines/restore/test_restore_contracts.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/baselines/restore/test_restore_e22_postprocess.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "DATASET_OR_DATA_DERIVATIVE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "dataset-like fixture or derivative not required for public method",
+      "source_path": "tests/fixtures/vietnamese_syllables_sample.txt"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_adapter_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_alignment_contracts.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_b4b_provenance_and_positions.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_channel_projection.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_corruption.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_evaluation_harness.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_linguistics_eligibility.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_manual_alignment.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_neural_adapter.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_orthography_decompose.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_orthography_signature.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_preg1_head.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_preg1_import_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_preg1_profiling.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_preg1_runner.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_preg1_split.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_restore_smoke_utils.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_artifact_identity.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_checkpoint.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_chunking.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_contamination_prefilter.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_corpus.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_corpus_verification.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_corruption_scope.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_cuda_resume_equivalence.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_device_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_device_contract_runtime.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_final_freeze.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_finalist_checkpoint_torch.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_finalist_freeze.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_fused_r_phase1.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_inventory_preflight.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_length_contract_scanner.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_lengths.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_measurement_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_name_resolution.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_non_vietnamese_orthography.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_parallel.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_parallel_preparation.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_phobert_run_grid_repair.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_prepare_cli.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_pretrain_audit.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_pretrain_measurements.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_provenance_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_r_phase1_amendment.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_r_phase1_reissue_cell.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_repository_provenance.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_resume_state_machine.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_resume_state_machine_torch.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_run_independence.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_run_independence_runtime.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_runner_cli_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_runner_contract.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_schedule.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_source_coordinates.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_telemetry.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_telemetry_equivalence_torch.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_torch_contracts.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_training_resume.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_training_resume_state.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_v2_gc.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_v2_gc_budget.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_v2_grd.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_v2_provenance_text.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_v2_scf.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_validation_measurement.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage1_validation_preparation.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_campaign.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_campaign_torch.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_dual_finalist_infra.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_head_campaign.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_head_campaign_torch.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_scf_campaign.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_scf_pathway.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_stage2_tone_channel_regression.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_diagnostics.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_diagnostics.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_fusion.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_fusion.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_historical_integrity.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_historical_integrity.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_method.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_method.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_naming.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_naming.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_provenance.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_provenance.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_torch.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_torch.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "PUBLIC_TEST",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "tests/test_training.py",
+      "reason": "behavioral coverage ported or summarized into public tests",
+      "source_path": "tests/test_viunmark_training.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": "docs/method.md",
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark-proposal.md"
+    },
+    {
+      "action": "OMIT",
+      "classification": "BINARY_OR_EXTERNAL_ASSET",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "binary or external asset not included in source export",
+      "source_path": "unmark-proposal.pdf"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/__init__.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/alignment/__init__.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/alignment/channels.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/alignment/contracts.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/alignment/manual.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/alignment/probe_models.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/alignment/spans.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/__init__.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/__init__.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/cache.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/config.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/diagnostics.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/evidence.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/model.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "EXPERIMENTAL_NOT_SELECTED",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "not part of final ViUnMark paper method",
+      "source_path": "unmark/baselines/restore/stage2.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/corruption/__init__.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/corruption/conditions.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/corruption/corrupt.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/corruption/deterministic.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/corruption/eligibility.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/corruption/models.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/__init__.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/contracts.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/metrics.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/pathways.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/preg1_head.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/preg1_protocol.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/preg1_split.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/profiling.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/stage2_campaign.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/stage2_dual_finalist.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/stage2_head_campaign.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/stage2_scf_campaign.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/stage2_scf_measurement.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/evaluation/stage2_scf_pathway.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/gates/__init__.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/gates/g_minus1.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/linguistics/__init__.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/linguistics/classify.py"
+    },
+    {
+      "action": "OMIT",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/linguistics/inventory.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/modeling/__init__.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/modeling/adapter.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/modeling/collate.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/modeling/config.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/modeling/contracts.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/modeling/pooling.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/__init__.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/canonical.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/decompose.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/marks.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/models.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/placement.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/signature.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/orthography/units.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/__init__.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/artifact.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/candidates.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/checkpoint.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/chunking.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/contracts.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/corpus.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/data.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/device.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/execute.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/finalists.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/fused.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/initialisation.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/lengths.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/manifest.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/objective.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/objective_grid.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/objective_relational.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/optim.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/parallel.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/preflight.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/preparation.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/protocol.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/r_phase1_amendment.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/reconstruct.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/sampler.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/selection.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/telemetry.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/trainer.py"
+    },
+    {
+      "action": "SUMMARIZE",
+      "classification": "RESEARCH_ONLY_PROVENANCE",
+      "dependency_notes": "not in public runtime dependency closure",
+      "public_destination": null,
+      "reason": "research history summarized; not part of public runtime",
+      "source_path": "unmark/stage1/validation.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/__init__.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/__init__.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/config.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/config.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/diagnostics/__init__.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/diagnostics/__init__.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/diagnostics/complementarity.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/diagnostics/complementarity.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/diagnostics/decision_geometry.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/diagnostics/decision_geometry.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/diagnostics/factorization.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/diagnostics/factorization.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/diagnostics/pooling_bridge.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/diagnostics/pooling_bridge.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/diagnostics/pooling_comparison.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/diagnostics/pooling_comparison.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/fusion.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/fusion.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/heads.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/heads.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/corruption.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/inputs.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/losses.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/losses.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/provenance.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/provenance.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/readouts.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/readout.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/system.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/system.py"
+    },
+    {
+      "action": "PORT",
+      "classification": "CORE_PUBLIC_CODE",
+      "dependency_notes": "self-contained public package; no runtime dependency on parent research repo",
+      "public_destination": "src/viunmark/training.py",
+      "reason": "minimum method behavior ported under clean viunmark namespace",
+      "source_path": "unmark/viunmark/training.py"
+    }
+  ],
+  "schema_version": "viunmark-repository-migration-manifest-v1",
+  "source_head": "368fad497111a30acf0407fdb0b0f2f60315b8d4",
+  "summary_by_action": {
+    "COPY_EXACT": 2,
+    "OMIT": 42,
+    "PORT": 51,
+    "SUMMARIZE": 232
+  },
+  "summary_by_classification": {
+    "BINARY_OR_EXTERNAL_ASSET": 2,
+    "CORE_PUBLIC_CODE": 36,
+    "DATASET_OR_DATA_DERIVATIVE": 1,
+    "EXPERIMENTAL_NOT_SELECTED": 8,
+    "GENERATED_OR_CACHE": 7,
+    "HISTORICAL_MACHINE_READABLE_ARTIFACT": 2,
+    "PUBLIC_CONFIG": 7,
+    "PUBLIC_TEST": 86,
+    "RESEARCH_ONLY_PROVENANCE": 178
+  },
+  "total_tracked_files": 327
+}

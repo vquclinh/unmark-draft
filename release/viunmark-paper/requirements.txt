@@ -1,0 +1,5 @@
+# Core package is stdlib-only.
+# Install torch only when running tensor/model checks or training readouts:
+#   pip install torch
+pytest
+nbformat

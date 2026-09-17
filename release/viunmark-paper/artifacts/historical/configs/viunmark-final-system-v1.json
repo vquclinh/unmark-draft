@@ -1,0 +1,780 @@
+{
+  "schema_version": "viunmark-final-system-v1",
+  "notes": [
+    "RECOVERED, NOT NEWLY SELECTED. This file formalises a ViUnMark system that was already executed and sealed in durable evidence outside Git. No model, readout, loss, fusion weight, calibration value or head was selected, searched, trained or re-estimated to write it.",
+    "Section 'method' is the reusable, dataset-independent method. Section 'uit_vsfc_reproduction' holds dataset-specific reproduction facts, including calibration values, which are NOT defaults for any other dataset.",
+    "Historical research identifiers are NOT used here. They are mapped in docs/spec/viunmark-historical-aliases-v1.json, which is not public API.",
+    "Only artifact identities (sha256) are recorded. No prediction, dataset row, or text is copied into Git."
+  ],
+  "status": {
+    "recovered_not_newly_selected": true,
+    "new_model_selection": false,
+    "new_hyperparameter_search": false,
+    "new_training": false,
+    "validation_read": false,
+    "test_read": false,
+    "test_tuning": false,
+    "test_recalibration": false,
+    "post_test_retuning": false,
+    "recovery": {
+      "p0": "RESOLVED",
+      "final_inference_definition": "RECOVERED",
+      "adapted_readout_training_policy": "RECOVERED_AT_PROTOCOL_LEVEL",
+      "phobert_readout_training_policy": "SUBSTANTIALLY_RECOVERED",
+      "historical_bit_exact_retraining": "NOT_FULLY_RECOVERED",
+      "phobert_bit_exact_retraining": "NOT_RECOVERED",
+      "cross_entropy_reduction": "UNRESOLVED",
+      "scientific_corruption_seed": "RECOVERED",
+      "cross_pathway_input_identity": "REQUIRED",
+      "weighted_ce_rule": "RECOVERED",
+      "stage2_development_stage_semantics": "RECOVERED",
+      "adapted_readout_policy_components": {
+        "mlp_initialization": "RECOVERED",
+        "optimizer_policy": "RECOVERED",
+        "augmented_train_construction": "RECOVERED",
+        "deterministic_batch_stream": "RECOVERED",
+        "dropout_seed_policy": "RECOVERED",
+        "checkpoint_selection": "RECOVERED"
+      },
+      "distinction": "method/protocol recovery is not bit-exact historical execution recovery"
+    }
+  },
+  "method": {
+    "stage1": {
+      "encoder": {
+        "checkpoint": "vinai/phobert-base",
+        "revision": "01daacda68afe13d83023d16ec647239e344a1e6",
+        "frozen": true,
+        "precision": "fp32"
+      },
+      "shared_adapter_architecture": {
+        "hidden_size": 768,
+        "tone_rows": 7,
+        "letter_rows": 5,
+        "fusion_input": "q = concat[e, tone, letter]",
+        "fusion": "f = LayerNorm(Linear(3d, d)(q))",
+        "gate": "g = sigmoid(Linear(3d, d)(q))",
+        "gate_weight_initial": 0.0,
+        "gate_bias_initial": "logit(0.01)",
+        "trainable_parameters": 3551232
+      },
+      "objective": {
+        "objective_id": "align-clean-pooled-v1",
+        "equation": "L = L_align + L_clean",
+        "distance": "cosine",
+        "pooling": "attention-masked mean over non-special tokens"
+      },
+      "corpus": {
+        "dataset": "undertheseanlp/UVW-2026",
+        "revision": "a0a79294e4568137e25828bb3f2a4cde8546e1fb",
+        "labels_used": false
+      },
+      "pathways": {
+        "viunmark_gate": {
+          "public_name": "ViUnMark-Gate",
+          "fusion_id": "historical-fusion-v1",
+          "equation": "z = g * f + (1 - g) * e"
+        },
+        "viunmark_scale": {
+          "public_name": "ViUnMark-Scale",
+          "fusion_id": "scale-calibrated-fusion-v1",
+          "equation": "scale = ||e||_2 / max(||f||_2, 1e-8); z = g * (scale * f) + (1 - g) * e"
+        }
+      }
+    },
+    "readouts": {
+      "FIRST_TOKEN": {
+        "definition": "hidden[:, 0, :]",
+        "feature_dim_phobert_base": 768
+      },
+      "MASKED_MEAN": {
+        "definition": "attention-masked mean over tokens that are neither padding nor tokenizer-authoritative special tokens",
+        "feature_dim_phobert_base": 768
+      },
+      "CONCAT": {
+        "definition": "concat([FIRST_TOKEN, MASKED_MEAN], dim=-1)",
+        "order": [
+          "FIRST_TOKEN",
+          "MASKED_MEAN"
+        ],
+        "same_encoder_forward_required": true,
+        "feature_dim_phobert_base": 1536
+      }
+    },
+    "robust_mlp_head": {
+      "layers": [
+        "LayerNorm(input_dim)",
+        "Linear(input_dim, 256)",
+        "GELU",
+        "Dropout(p=0.1)",
+        "Linear(256, num_labels)"
+      ],
+      "hidden_dim": 256,
+      "dropout": 0.1,
+      "parameter_formula": "2*d + (256*d + 256) + (256*n + n)",
+      "parameters_num_labels_3": {
+        "input_dim_768": 199171,
+        "input_dim_1536": 397315
+      }
+    },
+    "losses": {
+      "UNWEIGHTED_CROSS_ENTROPY": {
+        "class_weights": null
+      },
+      "SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY": {
+        "rule": "raw_weight[c] = 1 / sqrt(train_count[c]); weight[c] = raw_weight[c] / mean(raw_weight)",
+        "counts_source": "the training split's per-class counts; recompute for every dataset",
+        "scale_invariant_in_counts": true,
+        "also_frozen_by": "phobert_robust_readout_protocol"
+      }
+    },
+    "training_distribution": {
+      "AUGMENTED_SIX_CONDITIONS": {
+        "conditions": [
+          "FULL",
+          "P25",
+          "P50",
+          "P75",
+          "P100",
+          "STRIP_ALL"
+        ],
+        "corruption_implementation": "unmark.corruption (unchanged)"
+      }
+    },
+    "branches": {
+      "gate_robust_readout": {
+        "pathway": "viunmark_gate",
+        "readout": "MASKED_MEAN",
+        "input_dim": 768,
+        "training_distribution": "AUGMENTED_SIX_CONDITIONS",
+        "loss": "SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+        "head": "robust_mlp_head"
+      },
+      "scale_unweighted_readout": {
+        "pathway": "viunmark_scale",
+        "readout": "CONCAT",
+        "input_dim": 1536,
+        "training_distribution": "AUGMENTED_SIX_CONDITIONS",
+        "loss": "UNWEIGHTED_CROSS_ENTROPY",
+        "head": "robust_mlp_head"
+      },
+      "scale_weighted_readout": {
+        "pathway": "viunmark_scale",
+        "readout": "CONCAT",
+        "input_dim": 1536,
+        "training_distribution": "AUGMENTED_SIX_CONDITIONS",
+        "loss": "SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+        "head": "robust_mlp_head"
+      },
+      "phobert_readout": {
+        "pathway": "phobert",
+        "readout": "CONCAT",
+        "input_dim": 1536,
+        "training_distribution": "AUGMENTED_SIX_CONDITIONS",
+        "loss": "UNWEIGHTED_CROSS_ENTROPY",
+        "head": "robust_mlp_head"
+      }
+    },
+    "fusion_graph": {
+      "operates_on": "RAW branch logits, each the arithmetic mean of that branch's head logits",
+      "branch_raw": "mean(logits of the branch's heads), equal weight per head",
+      "scale": "0.5 * scale_unweighted_readout + 0.5 * scale_weighted_readout",
+      "adapted_only_raw": "0.5 * gate_robust_readout + 0.5 * scale",
+      "viunmark_raw": "0.5 * adapted_only_raw + 0.5 * phobert_readout",
+      "expanded_weights": {
+        "adapted_only_raw": {
+          "gate_robust_readout": 0.5,
+          "scale_unweighted_readout": 0.25,
+          "scale_weighted_readout": 0.25
+        },
+        "viunmark_raw": {
+          "phobert_readout": 0.5,
+          "gate_robust_readout": 0.25,
+          "scale_unweighted_readout": 0.125,
+          "scale_weighted_readout": 0.125
+        }
+      },
+      "expanded_per_head_weights_with_five_heads_per_branch": {
+        "adapted_only_raw": {
+          "gate_robust_readout": 0.1,
+          "scale_unweighted_readout": 0.05,
+          "scale_weighted_readout": 0.05
+        },
+        "viunmark_raw": {
+          "phobert_readout": 0.1,
+          "gate_robust_readout": 0.05,
+          "scale_unweighted_readout": 0.025,
+          "scale_weighted_readout": 0.025
+        }
+      }
+    },
+    "systems": {
+      "viunmark": {
+        "role": "final proposed system"
+      },
+      "adapted_only_fusion": {
+        "role": "diagnostic / ablation only"
+      }
+    },
+    "operational_identity": {
+      "hardware": "not part of the method"
+    },
+    "calibration": {
+      "form": "one additive logit bias on at most one class index",
+      "applied": "once, after raw fusion, to the system output only",
+      "parent_biases_stacked": false,
+      "dataset_specific": true,
+      "generic_default": "identity (no bias)"
+    },
+    "head_ensemble": {
+      "heads_per_branch_seed_set": "one head per head seed; every branch uses the SAME head seed set",
+      "within_branch_logit_ensemble": "MEAN",
+      "best_seed_selection": false,
+      "fusion_happens_after_within_branch_mean": true,
+      "final_system_replicate_count": 1,
+      "procedure": "for each branch: average the logits of its heads (one per head seed) into one RAW branch logit stream; fuse the four RAW branch streams hierarchically; apply the system calibration once"
+    },
+    "input_identity": {
+      "cross_pathway_input_identity": "REQUIRED",
+      "base_grid_invariance": "REQUIRED",
+      "rule": "ViUnMark-Gate and ViUnMark-Scale receive the SAME corrupted realization for the same dataset, role, sample_id, condition and scientific corruption seed; corruption is drawn once and shared, never redrawn per pathway",
+      "scientific_corruption_seed": "frozen per protocol; no method default",
+      "full_condition": "no corruption; the API takes a non-scientific integer placeholder"
+    },
+    "robust_mlp_training_recipe": {
+      "evidence_scope": [
+        "gate_robust_readout",
+        "scale_unweighted_readout",
+        "scale_weighted_readout"
+      ],
+      "recovery_level": "PROTOCOL_LEVEL",
+      "initialization": {
+        "LayerNorm": {
+          "weight": 1.0,
+          "bias": 0.0
+        },
+        "Linear": {
+          "weight": "xavier_uniform",
+          "bias": 0.0
+        }
+      },
+      "optimizer": {
+        "name": "AdamW",
+        "learning_rate": 0.01,
+        "betas": [
+          0.9,
+          0.999
+        ],
+        "eps": 1e-08,
+        "weight_decay": {
+          "matrix_weights": 0.01,
+          "biases_vectors_layernorm": 0.0
+        }
+      },
+      "budget": {
+        "batch_size": 128,
+        "max_optimizer_updates": 2160,
+        "selection_boundaries": 30,
+        "updates_per_boundary": 72
+      },
+      "augmented_training_set": {
+        "concatenation": "condition-major",
+        "condition_order": [
+          "FULL",
+          "P25",
+          "P50",
+          "P75",
+          "P100",
+          "STRIP_ALL"
+        ],
+        "row_order_within_condition": "training split order, preserved",
+        "labels": "training labels repeated once per condition",
+        "rows": "training rows * 6"
+      },
+      "batch_stream": {
+        "cycle_index_start": 1,
+        "cycle_seed": "seed * 1000 + cycle_index",
+        "cycles": "continue until max_optimizer_updates is exhausted"
+      },
+      "dropout_seed": "seed * 100000 + optimizer_update",
+      "checkpoint_selection": {
+        "scope": "per head (per seed)",
+        "data": "protocol-dev",
+        "evaluated_every_optimizer_updates": 72,
+        "primary": "six-condition Macro-F1 mean",
+        "tie_breaks": [
+          "worst-condition Macro-F1",
+          "FULL Macro-F1",
+          "earlier selection boundary"
+        ]
+      },
+      "precision": {
+        "dtype": "float32",
+        "amp": false,
+        "tf32": false
+      },
+      "cross_entropy_reduction": {
+        "status": "UNRESOLVED",
+        "reason": "the runner that trained these heads is not in the repository; every repository cross-entropy call trains a single unweighted linear head and cannot stand in for it"
+      },
+      "implementation_details_not_stated": [
+        "the permutation algorithm inside a cycle and the handling of a partial final batch",
+        "how the head-initialisation random stream is seeded",
+        "how dropout_seed is applied, and whether optimizer_update counts from 0 or 1",
+        "state_dict key layout of the historical head files"
+      ]
+    },
+    "phobert_readout_training": {
+      "evidence": "phobert_robust_readout_protocol",
+      "policy_status": "SUBSTANTIALLY_RECOVERED",
+      "bit_exact_retraining": "NOT_RECOVERED",
+      "confirmed": {
+        "head_architecture": [
+          "LayerNorm(input_dim)",
+          "Linear(input_dim, 256)",
+          "GELU",
+          "Dropout(p=0.1)",
+          "Linear(256, num_labels)"
+        ],
+        "initialization": {
+          "LayerNorm": {
+            "weight": 1.0,
+            "bias": 0.0
+          },
+          "Linear": {
+            "weight": "xavier_uniform",
+            "bias": 0.0
+          }
+        },
+        "optimizer_name": "AdamW",
+        "learning_rate": 0.01,
+        "matrix_weight_decay": 0.01,
+        "bias_and_vector_weight_decay": 0.0,
+        "budget": {
+          "batch_size": 128,
+          "max_optimizer_updates": 2160,
+          "selection_boundaries": 30,
+          "updates_per_boundary": 72
+        },
+        "six_condition_training_order": {
+          "mode": "six-condition augmented",
+          "condition_order": [
+            "FULL",
+            "P25",
+            "P50",
+            "P75",
+            "P100",
+            "STRIP_ALL"
+          ]
+        },
+        "seeds": "five head seeds; values in uit_vsfc_reproduction.stage2_head_training.phobert_readout_heads",
+        "best_seed_selection": false,
+        "precision": {
+          "dtype": "float32",
+          "amp": false,
+          "tf32": false
+        },
+        "checkpoint_selection": {
+          "scope": "per seed",
+          "data": "protocol-dev",
+          "primary": "six-condition Macro-F1 mean",
+          "tie_breaks": [
+            "worst-condition Macro-F1",
+            "FULL Macro-F1",
+            "earlier selection boundary"
+          ]
+        },
+        "selected_candidate": {
+          "readout": "CONCAT",
+          "concat_order": [
+            "FIRST_TOKEN",
+            "MASKED_MEAN"
+          ],
+          "input_dim": 1536,
+          "loss": "UNWEIGHTED_CROSS_ENTROPY",
+          "head": "robust_mlp_head"
+        },
+        "deployment": "uniform mean logits over all five selected heads"
+      },
+      "not_established_by_protocol": [
+        "adamw_betas",
+        "adamw_eps",
+        "augmented_concatenation_implementation",
+        "cycle_seed",
+        "dropout_seed",
+        "cross_entropy_reduction",
+        "initialization_rng_stream",
+        "partial_final_batch",
+        "state_dict_layout"
+      ],
+      "note": "fields established only for the adapted-pathway heads are NOT promoted to this branch"
+    }
+  },
+  "uit_vsfc_reproduction": {
+    "dataset": {
+      "name": "UIT-VSFC",
+      "version": "1.0",
+      "task": "sentiment"
+    },
+    "label_names": [
+      "negative",
+      "neutral",
+      "positive"
+    ],
+    "head_seeds": [
+      53148,
+      59945,
+      42941,
+      720,
+      9428
+    ],
+    "heads_per_branch": 5,
+    "final_branches": 4,
+    "final_head_count": 20,
+    "final_system_is_20_head_ensemble": true,
+    "stage1_checkpoints": {
+      "viunmark_gate": {
+        "sha256": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91",
+        "selected_update": 3500,
+        "fusion_id": "historical-fusion-v1",
+        "source_repository_head": "7773c77b1df92a6e685dac13c49765ce974f84d8"
+      },
+      "viunmark_scale": {
+        "sha256": "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685",
+        "selected_update": 8000,
+        "fusion_id": "scale-calibrated-fusion-v1",
+        "source_repository_head": "8de83f0da8d2b38f312e2ff16cb78ebcf9e8e526"
+      }
+    },
+    "corruption": {
+      "conditions": [
+        "FULL",
+        "P25",
+        "P50",
+        "P75",
+        "P100",
+        "STRIP_ALL"
+      ],
+      "scientific_corruption_seed": 19225,
+      "full_condition_api_seed": {
+        "value": 0,
+        "scientific": false,
+        "meaning": "API placeholder for FULL, the no-corruption condition"
+      },
+      "eligibility_policy": "VIETNAMESE_SYLLABLE_INVENTORY",
+      "inventory_sha256": "78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2",
+      "inventory_source_revision": "135a4d9716e49a981624474156d6f247b9b46f6a",
+      "max_length": 256,
+      "evidence": [
+        "stage2_optimization_parent_freeze",
+        "stage2_representation_bank_final"
+      ]
+    },
+    "representation_bank": {
+      "dtype": "torch.float32",
+      "hidden_size": 768,
+      "max_length": 256,
+      "first_token_source": "repository Stage-2 extractor (unmark.evaluation.stage2_dual_finalist.stage2_first_token_representation)",
+      "masked_mean_source": "Stage-1 masked_mean_non_special (unmark.modeling.pooling.masked_mean_non_special)",
+      "special_tokens_mask_source": "authoritative Stage-2 collator (unmark.evaluation.stage2_dual_finalist.collate_stage2_unmark_batch)",
+      "same_encoder_forward": true,
+      "base_grid_invariance": true,
+      "cross_pathway_input_identity": true,
+      "evidence": "stage2_representation_bank_final"
+    },
+    "weighted_loss": {
+      "protocol_train_class_counts": {
+        "negative": 4259,
+        "neutral": 366,
+        "positive": 4514
+      },
+      "weight_vector": [
+        0.5573523044586182,
+        1.9012669324874878,
+        0.5413808226585388
+      ],
+      "weight_vector_arithmetic": "float32 evaluation of the rule"
+    },
+    "augmented_training_set": {
+      "protocol_train_rows": 9139,
+      "augmented_rows": 54834
+    },
+    "selected_heads": {
+      "gate_robust_readout": [
+        {
+          "seed": 53148,
+          "selected_boundary": 13,
+          "sha256": "8d068ec69f4c67b9117197ef52141c97038844ca2a8db65066cbb107b3ccfca3"
+        },
+        {
+          "seed": 59945,
+          "selected_boundary": 14,
+          "sha256": "cdf52d615d7bc5f0bcf64af9ba51a98b9313753657abee1aff5e7b16706435db"
+        },
+        {
+          "seed": 42941,
+          "selected_boundary": 14,
+          "sha256": "00e7a00c293c565ee8ecff0f8d862126733df76729e261a4430a9a584c8d89f8"
+        },
+        {
+          "seed": 720,
+          "selected_boundary": 12,
+          "sha256": "0e8ce86edad10199a1e6b670b792d3442a2528d5a371388eefca9612157ccdc4"
+        },
+        {
+          "seed": 9428,
+          "selected_boundary": 20,
+          "sha256": "c6409f9d74c38619e956dd5698e6c968c7eef139261d5473ffb7bf9319725cc9"
+        }
+      ],
+      "scale_unweighted_readout": [
+        {
+          "seed": 53148,
+          "selected_boundary": 22,
+          "sha256": "be5448e72285cf8563fb9235f570c281f149d52290d3974e3c82ee23fdc8bb7b"
+        },
+        {
+          "seed": 59945,
+          "selected_boundary": 24,
+          "sha256": "9eace3bb3b22568154eda12aef02b2727bc2f5c33fb8f71d1f7154c546e5d291"
+        },
+        {
+          "seed": 42941,
+          "selected_boundary": 14,
+          "sha256": "877defe241573f728e3a659a03ff5e6d39e04bc9de2a9876f85f81b32e07edae"
+        },
+        {
+          "seed": 720,
+          "selected_boundary": 27,
+          "sha256": "484818e703a9084ba8594addec629a8c0ba7d5588dce897ee75eec3c4d4ae291"
+        },
+        {
+          "seed": 9428,
+          "selected_boundary": 26,
+          "sha256": "c1db40e71518a044c81b9f556b166b8fdba8a05040e05c2189ba23724ba55c7f"
+        }
+      ],
+      "scale_weighted_readout": [
+        {
+          "seed": 53148,
+          "selected_boundary": 19,
+          "sha256": "481471e02a92c99b7a78c714ed80986c35ad9d7d74d97f81170ebc8a9b021971"
+        },
+        {
+          "seed": 59945,
+          "selected_boundary": 15,
+          "sha256": "ba75892a9e03e81fd096ba168e5b0ebf563f77916d5a514d8e70e4b9c3a7901b"
+        },
+        {
+          "seed": 42941,
+          "selected_boundary": 25,
+          "sha256": "dc04eeb9972b97b3ec8f849d320fd38ec5821d5c36179890a7e051849aaaace7"
+        },
+        {
+          "seed": 720,
+          "selected_boundary": 30,
+          "sha256": "942a7380aa9f86a7df10ca210a5787aa0d6cc5c3862534fecd78997858644189"
+        },
+        {
+          "seed": 9428,
+          "selected_boundary": 22,
+          "sha256": "c9066d857f3a0ff3ca7bd9a6b20dfac5c179e79db147ffa3ac31ca7e90e165d2"
+        }
+      ],
+      "phobert_readout": [
+        {
+          "seed": 53148,
+          "selected_boundary": 17,
+          "sha256": "94f8238f391f498bab69449ed0f623281315068d4575a481bb6951c0cdbd2431"
+        },
+        {
+          "seed": 59945,
+          "selected_boundary": 24,
+          "sha256": "e2b7315ec6ac623e253f355126a9ba1a7908f5d47f437f7ed1736b8ac04c0ab8"
+        },
+        {
+          "seed": 42941,
+          "selected_boundary": 12,
+          "sha256": "5f4503709e2574ea5af6f400a23d7506462d930d22db8bc4990c37830d76d868"
+        },
+        {
+          "seed": 720,
+          "selected_boundary": 26,
+          "sha256": "c13f5905c78d8620f959690bc990d347acb57881693c6167107d3abfc25b9bc3"
+        },
+        {
+          "seed": 9428,
+          "selected_boundary": 27,
+          "sha256": "84451b7a34128a17dad9f16eb3e7d06beec16cea113b1cdfac3d9d9e703d115b"
+        }
+      ]
+    },
+    "head_counts": {
+      "gate_robust_readout": 5,
+      "scale_unweighted_readout": 5,
+      "scale_weighted_readout": 5,
+      "phobert_readout": 5,
+      "total": 20
+    },
+    "total_stage2_parameters": 6955580,
+    "stage2_head_training": {
+      "adapted_pathway_heads": {
+        "streams": [
+          "gate_robust_readout",
+          "scale_unweighted_readout",
+          "scale_weighted_readout"
+        ],
+        "recipe": "method.robust_mlp_training_recipe",
+        "architecture_confirmed_by_frozen_artifact": true,
+        "best_seed_selection": false,
+        "evidence": "adapted_robust_readout_optimization_protocol"
+      },
+      "phobert_readout_heads": {
+        "streams": [
+          "phobert_readout"
+        ],
+        "recipe": "method.phobert_readout_training (substantially recovered)",
+        "seeds": [
+          53148,
+          59945,
+          42941,
+          720,
+          9428
+        ],
+        "best_seed_selection": false,
+        "deployment": "uniform mean logits over all five selected heads",
+        "evidence": "phobert_robust_readout_protocol"
+      },
+      "selected_boundary_note": "boundaries are 1-based over 30; boundary b is evaluated at optimizer update 72 * b for the adapted-pathway heads"
+    },
+    "system_selection": {
+      "scientific_status": "posthoc-exploratory",
+      "systems_selected": [
+        "adapted_only_fusion",
+        "viunmark"
+      ],
+      "selection_data": "protocol-dev only",
+      "primary_criterion": "six-condition Macro-F1 mean",
+      "tie_breaks": [
+        "worst-condition Macro-F1",
+        "FULL Macro-F1",
+        "smaller absolute class-1 bias",
+        "fewer deployed/selected heads"
+      ],
+      "official_validation": {
+        "selection": false,
+        "tuning": false,
+        "recalibration": false
+      },
+      "official_test": {
+        "training": false,
+        "selection": false,
+        "tuning": false,
+        "recalibration": false,
+        "post_test_retuning": false
+      }
+    },
+    "calibration": {
+      "viunmark": {
+        "class_index": 1,
+        "label_name": "neutral",
+        "additive_logit_bias": 1.25
+      },
+      "adapted_only_fusion": {
+        "class_index": 1,
+        "label_name": "neutral",
+        "additive_logit_bias": 0.75,
+        "role": "diagnostic"
+      },
+      "phobert_readout_standalone_development_stage": {
+        "class_index": 1,
+        "label_name": "neutral",
+        "additive_logit_bias": 0.75,
+        "inherited_by_viunmark": false
+      }
+    },
+    "artifact_lineage": {
+      "stage1_gate_checkpoint": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91",
+      "stage1_scale_checkpoint": "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685",
+      "adapted_robust_readout_optimization_final": "8f78de272bd0f5046cbb76053148c74febc6af280dd632bae9a8cd2aa9e2835c",
+      "adapted_only_fusion_final": "d520e792df6df1284411fb397a9b15bcd035406868b8b94e1884b54f53fbd5f4",
+      "phobert_robust_readout_selection_final": "d6eeecbf9f8c13cb0cdc89d47c2a1d122d4c2b9b6e9887563dad6f4aa9a0530e",
+      "viunmark_protocol": "f1d3887307ae5ad36abdb7ea307d89af2488933d6e8b1fe25dd01b388089e121",
+      "viunmark_final": "0f0801b19945ba60537865a32663eed3468f0b4c7968511ddd7d4608a164911a",
+      "viunmark_official_validation_evidence": "a2d9db0e964b48a0084ac2db4173cc585489c5ca04d166516a0cc7f109015a34",
+      "viunmark_official_test_evidence": "7f996fdaadbacd075d407dc4aeea529c824f3df9d476f6f928bad16bfe1269d2"
+    },
+    "protocol_lineage": {
+      "stage2_optimization_parent_freeze": "f07fa83b38063b81a237eed68f59d2ddda45cd46ff283b7398587af486a8c900",
+      "stage2_representation_bank_final": "0044ba7bda8caa2aabbfbcb2a30fe3bff224d988c5806417c76822715917da50",
+      "stage2_readout_and_augmentation_screen_protocol": "3fbb1b3dc581df123ca3f0f40bd293f3964aba17995cd5b2385e0eae923169e8",
+      "stage2_class_balance_loss_optimization_protocol": "c802a1b277c6fd48b7d76588737a7abf9e6058c3421d9f0e94adea2c5ea7a4b2",
+      "adapted_robust_readout_optimization_protocol": "b39bb40df5495479e3ba55ddb25ca45e19990deb8be6230b8f0b65b45eb91689",
+      "phobert_robust_readout_protocol": "e2b6dcff0cb131d5bd10b51eded6c4fe35141bdc04328503018c662d07738cab"
+    },
+    "development_stages": {
+      "stage2_readout_and_augmentation_screen": {
+        "protocol": "stage2_readout_and_augmentation_screen_protocol",
+        "candidates": [
+          {
+            "index": 1,
+            "readout": "MASKED_MEAN",
+            "training_distribution": "CLEAN_ONLY"
+          },
+          {
+            "index": 2,
+            "readout": "L2_MASKED_MEAN",
+            "training_distribution": "CLEAN_ONLY"
+          },
+          {
+            "index": 3,
+            "readout": "CONCAT",
+            "training_distribution": "CLEAN_ONLY"
+          },
+          {
+            "index": 4,
+            "readout": "MASKED_MEAN",
+            "training_distribution": "AUGMENTED_SIX_CONDITIONS"
+          },
+          {
+            "index": 5,
+            "readout": "L2_MASKED_MEAN",
+            "training_distribution": "AUGMENTED_SIX_CONDITIONS"
+          },
+          {
+            "index": 6,
+            "readout": "CONCAT",
+            "training_distribution": "AUGMENTED_SIX_CONDITIONS"
+          }
+        ],
+        "concat_order": [
+          "FIRST_TOKEN",
+          "MASKED_MEAN"
+        ],
+        "head": "Linear(input_dim, 3, bias=True)",
+        "loss": "UNWEIGHTED_CROSS_ENTROPY",
+        "candidate_ranking": "across all five seeds",
+        "best_seed_selection": false
+      },
+      "stage2_class_balance_loss_optimization": {
+        "protocol": "stage2_class_balance_loss_optimization_protocol",
+        "promoted_screen_candidates": [
+          4,
+          6
+        ],
+        "loss_variants": [
+          "UNWEIGHTED_CROSS_ENTROPY",
+          "SQRT_INVERSE_FREQUENCY_CROSS_ENTROPY",
+          "FOCAL"
+        ],
+        "focal_gamma": 2.0,
+        "calibration": "the existing shared class-1 calibration protocol"
+      }
+    },
+    "artifact_location": "outside Git; identities only"
+  },
+  "historical_aliases": {
+    "spec": "docs/spec/viunmark-historical-aliases-v1.json",
+    "public_api": false
+  }
+}

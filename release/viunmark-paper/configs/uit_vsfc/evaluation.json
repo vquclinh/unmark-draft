@@ -1,0 +1,7 @@
+{
+  "schema_version": "viunmark-uit-vsfc-evaluation-config-v1",
+  "primary_metric": "Macro-F1",
+  "secondary_metric": "Accuracy",
+  "conditions": ["FULL", "P25", "P50", "P75", "P100", "STRIP_ALL"],
+  "prediction_seal_required": true
+}
