@@ -683,12 +683,15 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
         offset = phoner.SIX_CONDITIONS.index(condition)
         f1 = 0.5 + 0.01 * offset
         return {
-            "entity_true_positive": 10 + offset,
-            "entity_false_positive": 2,
-            "entity_false_negative": 3,
-            "entity_precision": f1,
-            "entity_recall": f1,
-            "entity_micro_f1": f1,
+            seed: {
+                "entity_true_positive": 10 + offset,
+                "entity_false_positive": 2,
+                "entity_false_negative": 3,
+                "entity_precision": f1,
+                "entity_recall": f1,
+                "entity_micro_f1": f1,
+            }
+            for seed in phoner.PHONER_FINAL_SEEDS
         }
 
     def forbidden(*args, **kwargs):
@@ -704,7 +707,7 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
     monkeypatch.setattr(RUNNER, "load_pathway", fake_load_pathway)
     monkeypatch.setattr(RUNNER, "load_probe_checkpoint", fake_load_probe)
     monkeypatch.setattr(RUNNER, "FrozenTokenProbe", FakeProbe)
-    monkeypatch.setattr(RUNNER, "evaluate_dev", fake_evaluate)
+    monkeypatch.setattr(RUNNER, "evaluate_dev_fanout", fake_evaluate)
     monkeypatch.setattr(RUNNER, "repository_head", lambda: "test-head")
     monkeypatch.setattr(torch.optim, "AdamW", forbidden)
     monkeypatch.setattr(torch, "save", forbidden)
@@ -725,6 +728,113 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
     assert (train_results.read_bytes(), train_results.stat().st_mtime_ns) == train_before
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         RUNNER.stage_dev_evaluate(args, phoner.PhoNERCrossTaskConfig())
+
+
+@requires_torch
+def test_dev_evaluate_fanout_is_exactly_equivalent_to_reference_seed_loop(monkeypatch):
+    cfg = phoner.PhoNERCrossTaskConfig()
+    label_to_id = {"O": 0, "B-LOC": 1, "B-DISEASE": 2}
+    id_to_label = {index: label for label, index in label_to_id.items()}
+    examples = [object(), object()]
+    device = torch.device("cpu")
+    counts = {"hidden": 0}
+
+    class FakeProbe:
+        def __init__(self, label_id):
+            self.label_id = label_id
+
+        def eval(self):
+            return self
+
+        def __call__(self, hidden):
+            logits = torch.zeros(hidden.shape[0], hidden.shape[1], len(label_to_id))
+            logits[:, :, self.label_id] = 10.0
+            return logits
+
+    def fake_encode(chunk, **kwargs):
+        return tuple(
+            types.SimpleNamespace(
+                words=("token_a", "token_b"),
+                labels=("B-LOC", "O"),
+                word_ids=(None, 0, 1, None),
+            )
+            for _ in chunk
+        )
+
+    def fake_collate(encoded, pad_token_id):
+        return {"batch_size": len(encoded)}
+
+    def fake_hidden(pathway, loaded, batch, device):
+        counts["hidden"] += 1
+        return torch.zeros(batch["batch_size"], 4, 1)
+
+    monkeypatch.setattr(RUNNER, "encode_examples", fake_encode)
+    monkeypatch.setattr(RUNNER, "collate_tokenized_ner_batch", fake_collate)
+    monkeypatch.setattr(RUNNER, "pathway_hidden_states", fake_hidden)
+    heads = {
+        seed: (FakeProbe(index % len(label_to_id)), label_to_id, id_to_label)
+        for index, seed in enumerate(phoner.PHONER_FINAL_SEEDS)
+    }
+
+    reference_records = []
+    counts["hidden"] = 0
+    for pathway in cfg.pathways:
+        for seed in phoner.PHONER_FINAL_SEEDS:
+            probe, seed_label_to_id, seed_id_to_label = heads[seed]
+            for condition in cfg.conditions:
+                reference_records.append(
+                    {
+                        "pathway": pathway.value,
+                        "seed": seed,
+                        "condition": condition,
+                        **RUNNER.evaluate_dev(
+                            examples,
+                            pathway=pathway,
+                            loaded=object(),
+                            probe=probe,
+                            tokenizer=StubPhoBERTTokenizer(),
+                            label_to_id=seed_label_to_id,
+                            id_to_label=seed_id_to_label,
+                            config=cfg,
+                            classifier=None,
+                            condition=condition,
+                            device=device,
+                        ),
+                    }
+                )
+    reference_hidden_calls = counts["hidden"]
+
+    fanout_by_key = {}
+    counts["hidden"] = 0
+    for pathway in cfg.pathways:
+        for condition in cfg.conditions:
+            by_seed = RUNNER.evaluate_dev_fanout(
+                examples,
+                pathway=pathway,
+                loaded=object(),
+                heads=heads,
+                tokenizer=StubPhoBERTTokenizer(),
+                config=cfg,
+                classifier=None,
+                condition=condition,
+                device=device,
+            )
+            for seed in phoner.PHONER_FINAL_SEEDS:
+                fanout_by_key[(pathway.value, seed, condition)] = {
+                    "pathway": pathway.value,
+                    "seed": seed,
+                    "condition": condition,
+                    **by_seed[seed],
+                }
+    fanout_records = [
+        fanout_by_key[(pathway.value, seed, condition)]
+        for pathway, seed, condition in RUNNER.dev_evaluation_plan(cfg)
+    ]
+
+    assert reference_records == fanout_records
+    assert RUNNER.summarize_five_seed_scores(reference_records) == RUNNER.summarize_five_seed_scores(fanout_records)
+    assert reference_hidden_calls == 90
+    assert counts["hidden"] == 18
 
 
 def test_entity_level_f1_exact_span_and_type():

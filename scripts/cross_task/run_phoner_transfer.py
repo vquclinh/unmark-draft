@@ -497,6 +497,62 @@ def evaluate_dev(
     return score.to_dict()
 
 
+def evaluate_dev_fanout(
+    examples: Sequence[Any],
+    *,
+    pathway: PhoNERPathway,
+    loaded: Any,
+    heads: Mapping[int, tuple[Any, dict[str, int], dict[int, str]]],
+    tokenizer: Any,
+    config: PhoNERCrossTaskConfig,
+    classifier: Any,
+    condition: str,
+    device: Any,
+) -> dict[int, dict[str, Any]]:
+    import torch
+
+    if tuple(heads) != PHONER_FINAL_SEEDS:
+        raise SystemExit("fan-out evaluation requires the frozen five seeds in protocol order")
+    first_label_to_id: dict[str, int] | None = None
+    for seed, (probe, label_to_id, _id_to_label) in heads.items():
+        probe.eval()
+        if first_label_to_id is None:
+            first_label_to_id = label_to_id
+        elif label_to_id != first_label_to_id:
+            raise SystemExit(f"seed {seed} label inventory differs inside fan-out evaluation")
+    if first_label_to_id is None:
+        raise SystemExit("no frozen probe heads supplied for fan-out evaluation")
+
+    gold_by_seed: dict[int, list[Sequence[str]]] = {seed: [] for seed in heads}
+    predicted_by_seed: dict[int, list[Sequence[str]]] = {seed: [] for seed in heads}
+    for chunk in batched(list(examples), config.probe_policy.batch_size):
+        encoded = encode_examples(
+            chunk,
+            pathway=pathway,
+            condition=condition,
+            tokenizer=tokenizer,
+            label_to_id=first_label_to_id,
+            config=config,
+            classifier=classifier,
+        )
+        batch = collate_tokenized_ner_batch(encoded, pad_token_id=tokenizer.pad_token_id)
+        hidden = pathway_hidden_states(pathway, loaded, batch, device)
+        for seed, (probe, _label_to_id, id_to_label) in heads.items():
+            with torch.no_grad():
+                logits = probe(hidden.to(device))
+                pred_ids = logits.argmax(dim=-1).detach().cpu().tolist()
+            for item, ids in zip(encoded, pred_ids):
+                predicted_by_seed[seed].append(
+                    ids_to_word_predictions(ids, item.word_ids, id_to_label, num_words=len(item.words))
+                )
+                if item.labels is not None:
+                    gold_by_seed[seed].append(item.labels)
+    return {
+        seed: EntityF1.from_sequences(gold_by_seed[seed], predicted_by_seed[seed]).to_dict()
+        for seed in heads
+    }
+
+
 def train_one(
     train_examples: Sequence[Any],
     dev_examples: Sequence[Any],
@@ -766,9 +822,9 @@ def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
     runtime_inventory, inventory_identity, inventory_report = load_inventory_inputs()
     classifier = make_classifier(runtime_inventory)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    total = len(dev_evaluation_plan(config))
-    completed = 0
-    records: list[dict[str, Any]] = []
+    total_encoder_passes = len(config.pathways) * len(config.conditions)
+    completed_encoder_passes = 0
+    records_by_key: dict[tuple[str, int, str], dict[str, Any]] = {}
     for pathway in config.pathways:
         loaded = load_pathway(pathway, args, inventory_identity=inventory_identity)
         if pathway is PhoNERPathway.PHOBERT_NATIVE:
@@ -776,6 +832,7 @@ def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
         else:
             loaded.encoder.to(device)
             loaded.adapter.to(device)
+        heads: dict[int, tuple[Any, dict[str, int], dict[int, str]]] = {}
         for seed in PHONER_FINAL_SEEDS:
             head_entry = head_by_key[(pathway.value, seed)]
             checkpoint_path = output_dirs["root"] / str(head_entry["relative_checkpoint_path"])
@@ -783,34 +840,38 @@ def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
             probe, label_to_id, id_to_label = load_probe_for_evaluation(payload, device=device)
             if label_to_id != train_label_to_id:
                 raise SystemExit(f"{checkpoint_path} label inventory does not match TRAIN-derived labels")
-            for condition in config.conditions:
-                completed += 1
-                print(
-                    f"[dev-evaluate {completed}/{total}] pathway={pathway.value} "
-                    f"seed={seed} condition={condition}",
-                    flush=True,
-                )
-                metrics = evaluate_dev(
-                    dev,
-                    pathway=pathway,
-                    loaded=loaded,
-                    probe=probe,
-                    tokenizer=tokenizer,
-                    label_to_id=label_to_id,
-                    id_to_label=id_to_label,
-                    config=config,
-                    classifier=classifier,
-                    condition=condition,
-                    device=device,
-                )
-                records.append(
-                    {
-                        "pathway": pathway.value,
-                        "seed": seed,
-                        "condition": condition,
-                        **metrics,
-                    }
-                )
+            heads[seed] = (probe, label_to_id, id_to_label)
+        for condition in config.conditions:
+            completed_encoder_passes += 1
+            print(
+                f"[dev-evaluate encoder {completed_encoder_passes}/{total_encoder_passes}] "
+                f"pathway={pathway.value} condition={condition}",
+                flush=True,
+            )
+            metrics_by_seed = evaluate_dev_fanout(
+                dev,
+                pathway=pathway,
+                loaded=loaded,
+                heads=heads,
+                tokenizer=tokenizer,
+                config=config,
+                classifier=classifier,
+                condition=condition,
+                device=device,
+            )
+            f1s = " ".join(
+                f"seed-{seed}={metrics_by_seed[seed]['entity_micro_f1']:.6f}"
+                for seed in PHONER_FINAL_SEEDS
+            )
+            print(f"[dev-evaluate encoder {completed_encoder_passes}/{total_encoder_passes}] {f1s}", flush=True)
+            for seed in PHONER_FINAL_SEEDS:
+                records_by_key[(pathway.value, seed, condition)] = {
+                    "pathway": pathway.value,
+                    "seed": seed,
+                    "condition": condition,
+                    **metrics_by_seed[seed],
+                }
+        for probe, _label_to_id, _id_to_label in heads.values():
             probe.cpu()
         if pathway is PhoNERPathway.PHOBERT_NATIVE:
             loaded.cpu()
@@ -820,7 +881,11 @@ def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    if completed != 90 or len(records) != 90:
+    records = [
+        records_by_key[(pathway.value, seed, condition)]
+        for pathway, seed, condition in dev_evaluation_plan(config)
+    ]
+    if completed_encoder_passes != total_encoder_passes or len(records) != 90:
         raise SystemExit(f"DEV evaluation must produce exactly 90 records, got {len(records)}")
     result = {
         "schema_version": DEV_EVALUATE_SCHEMA,

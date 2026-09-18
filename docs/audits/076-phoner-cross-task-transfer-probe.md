@@ -366,6 +366,81 @@ STAGE1_RETRAINING=NO
 UIT_VSFC_RETUNING=NO
 ```
 
+## Dev-Evaluate Fan-Out Optimization Addendum
+
+This addendum records an execution-only optimization after the repaired
+`dev-evaluate` path was started and interrupted for performance.
+
+Runtime observation:
+
+- The first repaired `dev-evaluate` implementation was load-only, but it still
+  ran the full encoder separately for every `(pathway, seed, condition)`.
+- That created 90 full DEV encoder passes.
+- The run was interrupted because execution was prohibitively slow.
+- Partial corrupted DEV metrics were exposed during runtime inspection: `YES`.
+- No scientific model, protocol, hyperparameter, seed, corruption semantics,
+  condition order, label handling, metric definition, checkpoint-selection rule
+  or checkpoint state was changed because of those partial metrics.
+
+Optimization:
+
+- For a fixed pathway, condition and DEV batch, encoder/adaptor hidden states are
+  identical across the five frozen seed heads.
+- `dev-evaluate` now streams each DEV batch through the encoder once for each
+  `(pathway, condition)` and fans the hidden tensor out to all five frozen token
+  probes.
+- Expensive encoder work is reduced from 90 logical full DEV passes to 18
+  pathway-condition passes.
+- The output still contains exactly 90 logical metric records in the same
+  pathway/seed/condition order, with the same EntityF1 implementation and the
+  same summary calculations.
+- No hidden-state cache is persisted; the optimization is streaming only.
+
+Equivalence evidence:
+
+- Focused tests compare the old reference seed loop against the fan-out path on
+  deterministic synthetic fixtures.
+- They assert exact equality of entity TP/FP/FN, precision, recall, micro-F1,
+  all 90 record identities/order, Corrupt Avg, All-6, FULL-to-STRIP drop and
+  retention summaries.
+- The same fixture asserts hidden-state calls drop from 90 to 18.
+- Side-effect tests confirm selected head checkpoints, `train_dev_results.json`
+  and `frozen_protocol.json` remain untouched, TEST is not read, and optimizer,
+  backward and checkpoint-save paths are not reachable from `dev-evaluate`.
+
+Actual real corrupted DEV evaluation status in this task:
+
+- `NOT RUN`.
+
+Post-optimization local verification:
+
+```text
+pytest -q tests/test_phoner_cross_task_transfer.py
+37 passed, 3 skipped in 0.93s
+
+pytest -q tests/test_viunmark_training.py::test_the_repository_has_no_other_cross_entropy_call_site
+1 passed in 0.46s
+
+python -m py_compile unmark/cross_task/phoner_transfer.py scripts/cross_task/run_phoner_transfer.py
+passed
+
+pytest -q
+7 failed, 5093 passed, 276 skipped in 140.95s
+```
+
+The seven full-suite failures are the known Stage-1 multiprocessing forkserver
+sandbox failures in `tests/test_stage1_parallel.py`
+(`PermissionError: [Errno 1] Operation not permitted`). No PhoNER cross-task
+test failed.
+
+```text
+PHONER_TEST_READ=NO
+PHONER_TEST_SCORING=NO
+PHONER_TEST_TUNING=NO
+STAGE1_RETRAINING=NO
+UIT_VSFC_RETUNING=NO
+```
+
 ## Dev-Evaluate Dispatch Repair Addendum
 
 This addendum records an implementation/provenance repair at HEAD
