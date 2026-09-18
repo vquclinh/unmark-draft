@@ -9,18 +9,16 @@ import sys
 def main() -> int:
     parser = argparse.ArgumentParser(description="Official high-level UIT-VSFC reproduction driver.")
     parser.add_argument("--config", default="configs/uit_vsfc/paper.json")
-    parser.add_argument("--mode", choices=["frozen", "retrain-readouts"], default="frozen")
+    parser.add_argument("--mode", choices=["frozen"], default="frozen")
     parser.add_argument(
         "--stage",
-        choices=["verify", "prepare", "representations", "train-readouts", "predict", "score", "diagnostics", "all"],
+        choices=["verify", "diagnostics"],
         default="verify",
     )
     args = parser.parse_args()
-    if args.stage in ("verify", "all"):
+    if args.stage == "verify":
         return subprocess.call([sys.executable, "scripts/verify_assets.py", "--config", args.config])
-    if args.mode == "retrain-readouts":
-        return subprocess.call([sys.executable, "scripts/train_readouts.py", "--config", args.config])
-    raise SystemExit(f"Stage {args.stage!r} needs external frozen assets and is intentionally not stubbed as a result.")
+    return subprocess.call([sys.executable, "scripts/run_diagnostic.py", "--analysis", "scale-preflight"])
 
 
 if __name__ == "__main__":

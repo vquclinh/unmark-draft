@@ -3,36 +3,357 @@
   "public_code_license": "UNRESOLVED",
   "source_research_head": "368fad497111a30acf0407fdb0b0f2f60315b8d4",
   "method_protocol_recovery_not_bit_exact_execution_recovery": true,
-  "external_assets": [
+  "required_model_asset_count": 22,
+  "stage1_checkpoint_count": 2,
+  "stage2_head_count": 20,
+  "model_assets": [
     {
-      "name": "stage1_gate_checkpoint",
-      "relative_path": "checkpoints/viunmark_gate.pt",
+      "name": "viunmark_gate_stage1_checkpoint",
+      "role": "stage1_checkpoint",
+      "pathway": "ViUnMark-Gate",
+      "relative_path": "checkpoints/stage1/viunmark_gate.pt",
       "sha256": "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91",
+      "selected_update": 3500,
+      "asset_type": "pytorch_checkpoint",
+      "present_in_public_repo": false,
+      "source_repository_head": "7773c77b1df92a6e685dac13c49765ce974f84d8"
+    },
+    {
+      "name": "viunmark_scale_stage1_checkpoint",
+      "role": "stage1_checkpoint",
+      "pathway": "ViUnMark-Scale",
+      "relative_path": "checkpoints/stage1/viunmark_scale.pt",
+      "sha256": "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685",
+      "selected_update": 8000,
+      "asset_type": "pytorch_checkpoint",
+      "present_in_public_repo": false,
+      "source_repository_head": "8de83f0da8d2b38f312e2ff16cb78ebcf9e8e526"
+    },
+    {
+      "name": "gate_robust_readout_seed_53148_boundary_13",
+      "role": "stage2_readout_head",
+      "branch": "Gate Robust Readout",
+      "stream": "gate_robust_readout",
+      "relative_path": "checkpoints/stage2/gate_robust_readout/seed-53148-boundary-13.pt",
+      "sha256": "8d068ec69f4c67b9117197ef52141c97038844ca2a8db65066cbb107b3ccfca3",
+      "selected_seed": 53148,
+      "selected_boundary": 13,
+      "asset_type": "pytorch_state_dict",
       "present_in_public_repo": false
     },
     {
-      "name": "stage1_scale_checkpoint",
-      "relative_path": "checkpoints/viunmark_scale.pt",
-      "sha256": "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685",
+      "name": "gate_robust_readout_seed_59945_boundary_14",
+      "role": "stage2_readout_head",
+      "branch": "Gate Robust Readout",
+      "stream": "gate_robust_readout",
+      "relative_path": "checkpoints/stage2/gate_robust_readout/seed-59945-boundary-14.pt",
+      "sha256": "cdf52d615d7bc5f0bcf64af9ba51a98b9313753657abee1aff5e7b16706435db",
+      "selected_seed": 59945,
+      "selected_boundary": 14,
+      "asset_type": "pytorch_state_dict",
       "present_in_public_repo": false
+    },
+    {
+      "name": "gate_robust_readout_seed_42941_boundary_14",
+      "role": "stage2_readout_head",
+      "branch": "Gate Robust Readout",
+      "stream": "gate_robust_readout",
+      "relative_path": "checkpoints/stage2/gate_robust_readout/seed-42941-boundary-14.pt",
+      "sha256": "00e7a00c293c565ee8ecff0f8d862126733df76729e261a4430a9a584c8d89f8",
+      "selected_seed": 42941,
+      "selected_boundary": 14,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "gate_robust_readout_seed_720_boundary_12",
+      "role": "stage2_readout_head",
+      "branch": "Gate Robust Readout",
+      "stream": "gate_robust_readout",
+      "relative_path": "checkpoints/stage2/gate_robust_readout/seed-720-boundary-12.pt",
+      "sha256": "0e8ce86edad10199a1e6b670b792d3442a2528d5a371388eefca9612157ccdc4",
+      "selected_seed": 720,
+      "selected_boundary": 12,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "gate_robust_readout_seed_9428_boundary_20",
+      "role": "stage2_readout_head",
+      "branch": "Gate Robust Readout",
+      "stream": "gate_robust_readout",
+      "relative_path": "checkpoints/stage2/gate_robust_readout/seed-9428-boundary-20.pt",
+      "sha256": "c6409f9d74c38619e956dd5698e6c968c7eef139261d5473ffb7bf9319725cc9",
+      "selected_seed": 9428,
+      "selected_boundary": 20,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_unweighted_readout_seed_53148_boundary_22",
+      "role": "stage2_readout_head",
+      "branch": "Scale Unweighted Readout",
+      "stream": "scale_unweighted_readout",
+      "relative_path": "checkpoints/stage2/scale_unweighted_readout/seed-53148-boundary-22.pt",
+      "sha256": "be5448e72285cf8563fb9235f570c281f149d52290d3974e3c82ee23fdc8bb7b",
+      "selected_seed": 53148,
+      "selected_boundary": 22,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_unweighted_readout_seed_59945_boundary_24",
+      "role": "stage2_readout_head",
+      "branch": "Scale Unweighted Readout",
+      "stream": "scale_unweighted_readout",
+      "relative_path": "checkpoints/stage2/scale_unweighted_readout/seed-59945-boundary-24.pt",
+      "sha256": "9eace3bb3b22568154eda12aef02b2727bc2f5c33fb8f71d1f7154c546e5d291",
+      "selected_seed": 59945,
+      "selected_boundary": 24,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_unweighted_readout_seed_42941_boundary_14",
+      "role": "stage2_readout_head",
+      "branch": "Scale Unweighted Readout",
+      "stream": "scale_unweighted_readout",
+      "relative_path": "checkpoints/stage2/scale_unweighted_readout/seed-42941-boundary-14.pt",
+      "sha256": "877defe241573f728e3a659a03ff5e6d39e04bc9de2a9876f85f81b32e07edae",
+      "selected_seed": 42941,
+      "selected_boundary": 14,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_unweighted_readout_seed_720_boundary_27",
+      "role": "stage2_readout_head",
+      "branch": "Scale Unweighted Readout",
+      "stream": "scale_unweighted_readout",
+      "relative_path": "checkpoints/stage2/scale_unweighted_readout/seed-720-boundary-27.pt",
+      "sha256": "484818e703a9084ba8594addec629a8c0ba7d5588dce897ee75eec3c4d4ae291",
+      "selected_seed": 720,
+      "selected_boundary": 27,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_unweighted_readout_seed_9428_boundary_26",
+      "role": "stage2_readout_head",
+      "branch": "Scale Unweighted Readout",
+      "stream": "scale_unweighted_readout",
+      "relative_path": "checkpoints/stage2/scale_unweighted_readout/seed-9428-boundary-26.pt",
+      "sha256": "c1db40e71518a044c81b9f556b166b8fdba8a05040e05c2189ba23724ba55c7f",
+      "selected_seed": 9428,
+      "selected_boundary": 26,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_weighted_readout_seed_53148_boundary_19",
+      "role": "stage2_readout_head",
+      "branch": "Scale Weighted Readout",
+      "stream": "scale_weighted_readout",
+      "relative_path": "checkpoints/stage2/scale_weighted_readout/seed-53148-boundary-19.pt",
+      "sha256": "481471e02a92c99b7a78c714ed80986c35ad9d7d74d97f81170ebc8a9b021971",
+      "selected_seed": 53148,
+      "selected_boundary": 19,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_weighted_readout_seed_59945_boundary_15",
+      "role": "stage2_readout_head",
+      "branch": "Scale Weighted Readout",
+      "stream": "scale_weighted_readout",
+      "relative_path": "checkpoints/stage2/scale_weighted_readout/seed-59945-boundary-15.pt",
+      "sha256": "ba75892a9e03e81fd096ba168e5b0ebf563f77916d5a514d8e70e4b9c3a7901b",
+      "selected_seed": 59945,
+      "selected_boundary": 15,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_weighted_readout_seed_42941_boundary_25",
+      "role": "stage2_readout_head",
+      "branch": "Scale Weighted Readout",
+      "stream": "scale_weighted_readout",
+      "relative_path": "checkpoints/stage2/scale_weighted_readout/seed-42941-boundary-25.pt",
+      "sha256": "dc04eeb9972b97b3ec8f849d320fd38ec5821d5c36179890a7e051849aaaace7",
+      "selected_seed": 42941,
+      "selected_boundary": 25,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_weighted_readout_seed_720_boundary_30",
+      "role": "stage2_readout_head",
+      "branch": "Scale Weighted Readout",
+      "stream": "scale_weighted_readout",
+      "relative_path": "checkpoints/stage2/scale_weighted_readout/seed-720-boundary-30.pt",
+      "sha256": "942a7380aa9f86a7df10ca210a5787aa0d6cc5c3862534fecd78997858644189",
+      "selected_seed": 720,
+      "selected_boundary": 30,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "scale_weighted_readout_seed_9428_boundary_22",
+      "role": "stage2_readout_head",
+      "branch": "Scale Weighted Readout",
+      "stream": "scale_weighted_readout",
+      "relative_path": "checkpoints/stage2/scale_weighted_readout/seed-9428-boundary-22.pt",
+      "sha256": "c9066d857f3a0ff3ca7bd9a6b20dfac5c179e79db147ffa3ac31ca7e90e165d2",
+      "selected_seed": 9428,
+      "selected_boundary": 22,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "phobert_readout_seed_53148_boundary_17",
+      "role": "stage2_readout_head",
+      "branch": "PhoBERT Readout",
+      "stream": "phobert_readout",
+      "relative_path": "checkpoints/stage2/phobert_readout/seed-53148-boundary-17.pt",
+      "sha256": "94f8238f391f498bab69449ed0f623281315068d4575a481bb6951c0cdbd2431",
+      "selected_seed": 53148,
+      "selected_boundary": 17,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "phobert_readout_seed_59945_boundary_24",
+      "role": "stage2_readout_head",
+      "branch": "PhoBERT Readout",
+      "stream": "phobert_readout",
+      "relative_path": "checkpoints/stage2/phobert_readout/seed-59945-boundary-24.pt",
+      "sha256": "e2b7315ec6ac623e253f355126a9ba1a7908f5d47f437f7ed1736b8ac04c0ab8",
+      "selected_seed": 59945,
+      "selected_boundary": 24,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "phobert_readout_seed_42941_boundary_12",
+      "role": "stage2_readout_head",
+      "branch": "PhoBERT Readout",
+      "stream": "phobert_readout",
+      "relative_path": "checkpoints/stage2/phobert_readout/seed-42941-boundary-12.pt",
+      "sha256": "5f4503709e2574ea5af6f400a23d7506462d930d22db8bc4990c37830d76d868",
+      "selected_seed": 42941,
+      "selected_boundary": 12,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "phobert_readout_seed_720_boundary_26",
+      "role": "stage2_readout_head",
+      "branch": "PhoBERT Readout",
+      "stream": "phobert_readout",
+      "relative_path": "checkpoints/stage2/phobert_readout/seed-720-boundary-26.pt",
+      "sha256": "c13f5905c78d8620f959690bc990d347acb57881693c6167107d3abfc25b9bc3",
+      "selected_seed": 720,
+      "selected_boundary": 26,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    },
+    {
+      "name": "phobert_readout_seed_9428_boundary_27",
+      "role": "stage2_readout_head",
+      "branch": "PhoBERT Readout",
+      "stream": "phobert_readout",
+      "relative_path": "checkpoints/stage2/phobert_readout/seed-9428-boundary-27.pt",
+      "sha256": "84451b7a34128a17dad9f16eb3e7d06beec16cea113b1cdfac3d9d9e703d115b",
+      "selected_seed": 9428,
+      "selected_boundary": 27,
+      "asset_type": "pytorch_state_dict",
+      "present_in_public_repo": false
+    }
+  ],
+  "result_artifacts": [
+    {
+      "name": "adapted_robust_readout_optimization_final",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/adapted_robust_readout_optimization_final.json",
+      "sha256": "8f78de272bd0f5046cbb76053148c74febc6af280dd632bae9a8cd2aa9e2835c",
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
+    },
+    {
+      "name": "adapted_only_fusion_final",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/adapted_only_fusion_final.json",
+      "sha256": "d520e792df6df1284411fb397a9b15bcd035406868b8b94e1884b54f53fbd5f4",
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
+    },
+    {
+      "name": "phobert_robust_readout_selection_final",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/phobert_robust_readout_selection_final.json",
+      "sha256": "d6eeecbf9f8c13cb0cdc89d47c2a1d122d4c2b9b6e9887563dad6f4aa9a0530e",
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
+    },
+    {
+      "name": "viunmark_protocol",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/viunmark_protocol.json",
+      "sha256": "f1d3887307ae5ad36abdb7ea307d89af2488933d6e8b1fe25dd01b388089e121",
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
     },
     {
       "name": "viunmark_final",
-      "relative_path": "results/viunmark-final.json",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/viunmark_final.json",
       "sha256": "0f0801b19945ba60537865a32663eed3468f0b4c7968511ddd7d4608a164911a",
-      "present_in_public_repo": false
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
     },
     {
       "name": "viunmark_official_validation_evidence",
-      "relative_path": "results/viunmark-official-validation.json",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/viunmark_official_validation_evidence.json",
       "sha256": "a2d9db0e964b48a0084ac2db4173cc585489c5ca04d166516a0cc7f109015a34",
-      "present_in_public_repo": false
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
     },
     {
       "name": "viunmark_official_test_evidence",
-      "relative_path": "results/viunmark-official-test.json",
+      "role": "frozen_result_or_evidence",
+      "relative_path": "results/uit_vsfc/viunmark_official_test_evidence.json",
       "sha256": "7f996fdaadbacd075d407dc4aeea529c824f3df9d476f6f928bad16bfe1269d2",
-      "present_in_public_repo": false
+      "present_in_public_repo": false,
+      "source_file_available_in_current_repository": false,
+      "expected_metrics": [
+        "Macro-F1",
+        "Accuracy"
+      ]
     }
   ],
   "scientific_invariants": {

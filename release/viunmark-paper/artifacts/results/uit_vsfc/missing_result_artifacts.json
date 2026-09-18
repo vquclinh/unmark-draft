@@ -1,0 +1,63 @@
+{
+  "schema_version": "viunmark-missing-result-artifacts-v1",
+  "status": "canonical_numeric_result_files_not_present_in_current_git_repository",
+  "policy": "Do not hand-enter paper metrics without an author-supplied canonical source artifact.",
+  "artifacts": [
+    {
+      "name": "adapted_robust_readout_optimization_final",
+      "artifact_role": "diagnostic/result evidence",
+      "known_sha256": "8f78de272bd0f5046cbb76053148c74febc6af280dd632bae9a8cd2aa9e2835c",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact historical artifact or confirms this evidence remains provenance-only."
+    },
+    {
+      "name": "adapted_only_fusion_final",
+      "artifact_role": "Adapted-Only Fusion result evidence",
+      "known_sha256": "d520e792df6df1284411fb397a9b15bcd035406868b8b94e1884b54f53fbd5f4",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact historical artifact before frozen-result tables are published."
+    },
+    {
+      "name": "phobert_robust_readout_selection_final",
+      "artifact_role": "PhoBERT Readout result evidence",
+      "known_sha256": "d6eeecbf9f8c13cb0cdc89d47c2a1d122d4c2b9b6e9887563dad6f4aa9a0530e",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact historical artifact before frozen-result tables are published."
+    },
+    {
+      "name": "viunmark_protocol",
+      "artifact_role": "ViUnMark protocol evidence",
+      "known_sha256": "f1d3887307ae5ad36abdb7ea307d89af2488933d6e8b1fe25dd01b388089e121",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact protocol artifact if it should be distributed."
+    },
+    {
+      "name": "viunmark_final",
+      "artifact_role": "final ViUnMark frozen result record",
+      "known_sha256": "0f0801b19945ba60537865a32663eed3468f0b4c7968511ddd7d4608a164911a",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact canonical result artifact before README/docs table rendering is enabled."
+    },
+    {
+      "name": "viunmark_official_validation_evidence",
+      "artifact_role": "official validation evidence",
+      "known_sha256": "a2d9db0e964b48a0084ac2db4173cc585489c5ca04d166516a0cc7f109015a34",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact evidence artifact; public code must not read validation labels to reconstruct it."
+    },
+    {
+      "name": "viunmark_official_test_evidence",
+      "artifact_role": "official test evidence",
+      "known_sha256": "7f996fdaadbacd075d407dc4aeea529c824f3df9d476f6f928bad16bfe1269d2",
+      "expected_metrics": ["Macro-F1", "Accuracy"],
+      "source_file_available_in_current_repository": false,
+      "action_needed": "Author supplies the exact evidence artifact; public code must not read test labels to reconstruct it."
+    }
+  ]
+}

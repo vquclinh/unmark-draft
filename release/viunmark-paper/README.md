@@ -18,9 +18,20 @@ readout training experiments.
 
 Raw UIT-VSFC data and model checkpoints are not included. Set paths in
 `configs/uit_vsfc/paper.json`; frozen asset identities are listed in
-`artifacts/provenance/reproduction_manifest.json`.
+`artifacts/provenance/reproduction_manifest.json`. The frozen ViUnMark asset
+contract requires 22 external model files: two Stage-I checkpoints and twenty
+Stage-II readout heads.
 
 ## Quick Reproduction
+
+Inspect the required public asset layout:
+
+```bash
+python scripts/verify_assets.py --config configs/uit_vsfc/paper.json --manifest-only
+```
+
+After the author-supplied assets are present under the configured asset root,
+run the actual verifier:
 
 ```bash
 python scripts/verify_assets.py --config configs/uit_vsfc/paper.json
@@ -30,13 +41,22 @@ python scripts/reproduce_uit_vsfc.py --config configs/uit_vsfc/paper.json --mode
 Frozen prediction generation requires the external checkpoint/result assets
 identified in the manifest. Prediction generation and scoring are separate:
 `scripts/predict.py` does not read labels, and `scripts/score_predictions.py`
-scores an already sealed prediction artifact.
+requires an already sealed prediction artifact:
+
+```bash
+python scripts/score_predictions.py \
+  --predictions outputs/uit_vsfc/predictions.csv \
+  --prediction-manifest outputs/uit_vsfc/predictions.seal.json \
+  --labels datasets/uit_vsfc/labels.csv \
+  --output outputs/uit_vsfc/scores.json
+```
 
 ## Readout Retraining
 
 The recovered policy supports protocol-level Stage-II/readout retraining. It is
-not a claim of bit-exact historical retraining; the public runner stops until an
-author-reviewed executable policy is supplied.
+not a claim of bit-exact historical retraining. The executable public runner does
+not currently advertise readout retraining, because the remaining historical
+details require author review before release.
 
 ## Diagnostics
 
@@ -54,7 +74,9 @@ Available analyses are `scale-preflight`, `pooling-bridge`,
 Macro-F1 is primary and Accuracy is secondary. Numeric result artifacts are not
 committed in the research repository; this export records the SHA-256 identities
 of frozen evidence and reserves `artifacts/results/uit_vsfc/` for released
-machine-readable result tables.
+machine-readable result tables. Tables should be rendered from canonical
+machine-readable result files with `scripts/render_results_table.py`; do not
+hand-enter metrics in the docs.
 
 ## Structure
 

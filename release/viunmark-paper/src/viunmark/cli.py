@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from viunmark.provenance import load_reproduction_manifest, load_uit_vsfc_reproduction
+from viunmark.assets import verify_from_config
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
-    manifest = load_reproduction_manifest()
-    reproduction = load_uit_vsfc_reproduction()
-    print(json.dumps({
-        "status": "ok",
-        "dataset": "UIT-VSFC",
-        "heads": reproduction.head_count,
-        "external_assets": manifest["external_assets"],
-    }, indent=2, sort_keys=True))
+    report = verify_from_config(args.config, manifest_only=args.manifest_only)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    if report["status"] not in {"ok", "manifest_only"}:
+        print(
+            f"asset verification failed: {len(report['missing'])} missing, "
+            f"{len(report['mismatched'])} sha256 mismatched; "
+            "run with --manifest-only to inspect expected paths",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -44,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     verify = sub.add_parser("verify-assets")
     verify.add_argument("--config", type=Path, default=Path("configs/uit_vsfc/paper.json"))
+    verify.add_argument("--manifest-only", action="store_true")
     verify.set_defaults(func=_cmd_verify)
     diag = sub.add_parser("diagnostic")
     diag.add_argument(

@@ -54,7 +54,7 @@ def test_public_surface_has_no_research_identifiers_outside_provenance():
 
 
 def test_no_parent_repo_imports_or_symlinks():
-    for path in (ROOT / "src").rglob("*.py"):
+    for path in list((ROOT / "src").rglob("*.py")) + list((ROOT / "scripts").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
         assert "from unmark" not in text
         assert "import unmark" not in text
@@ -66,3 +66,14 @@ def test_public_scripts_compile_and_notebook_is_valid_json():
         py_compile.compile(str(path), doraise=True)
     payload = json.loads((ROOT / "notebooks/ViUnMark_Reproduction.ipynb").read_text(encoding="utf-8"))
     assert payload["nbformat"] == 4
+
+
+def test_notebook_path_hygiene_and_public_orchestration():
+    notebook = (ROOT / "notebooks/ViUnMark_Reproduction.ipynb").read_text(encoding="utf-8")
+    assert "/content/drive" not in notebook
+    assert "MyDrive" not in notebook
+    assert "DATA_ROOT" in notebook
+    assert "ASSET_ROOT" in notebook
+    assert "OUTPUT_ROOT" in notebook
+    assert "scripts/verify_assets.py" in notebook
+    assert "scripts/reproduce_uit_vsfc.py" in notebook
