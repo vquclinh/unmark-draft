@@ -8,8 +8,11 @@ data, or embed personal Drive paths.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
+import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -40,15 +43,67 @@ from unmark.cross_task.phoner_transfer import (
     require_frozen_module,
     require_phobert_identity,
     require_stage_access,
+    sha256_file,
     summarize_five_seed_scores,
 )
 from unmark.linguistics import make_classifier, try_load_inventory
 from unmark.stage1.protocol import ENCODER_CHECKPOINT, ENCODER_REVISION, HIDDEN_SIZE
 
 
+FROZEN_PROBE_HEAD_SCHEMA = "phoner-frozen-probe-heads-v1"
+DEV_EVALUATE_SCHEMA = "phoner-dev-evaluate-results-v1"
+EXPECTED_FROZEN_PROBE_HEAD_SHA256: dict[str, str] = {
+    "PHOBERT_NATIVE_seed-42941_best.pt": "bbdb765a885afcb0855dcaa25d4444b91ab3fbf1ee8e14127bce4c696e4208fd",
+    "PHOBERT_NATIVE_seed-53148_best.pt": "971606d6f0f82e04c2a9892a1bb1320577739223bec303edfad44f178730a228",
+    "PHOBERT_NATIVE_seed-59945_best.pt": "ca485ad85c66058923cf1ffaaed9af676dc09d13cdd4c79cce97d165e8c3c30b",
+    "PHOBERT_NATIVE_seed-720_best.pt": "6ad51575fd04ec31e1bdd291d2d363be23748bc20cca91a3d2575f91c825508b",
+    "PHOBERT_NATIVE_seed-9428_best.pt": "bd7c688bccca42f618ef9b9955b35b03496f82af13dc92547920ea6ac8f0d640",
+    "VIUNMARK_GATE_seed-42941_best.pt": "a8e8fcffa5b2be02dc794296df31aedaf2c3bbd9a6f709edf1ef89d0063f330d",
+    "VIUNMARK_GATE_seed-53148_best.pt": "273c5a16e970084ba10056f648135ec36966ebeed1bc62e464a6e6835c3e7efd",
+    "VIUNMARK_GATE_seed-59945_best.pt": "395ce4514e741c57f20b21d9e37f1e4500eb0d238b46152bb67668d44fd8d978",
+    "VIUNMARK_GATE_seed-720_best.pt": "ddaf6ed4df283434255227024060b9be61407eb93dc594f0b68d7ec41424085b",
+    "VIUNMARK_GATE_seed-9428_best.pt": "48c2fd27101434671dc960925287dc29b89fd38459fa3b8c0f2a099d2d2af982",
+    "VIUNMARK_SCALE_seed-42941_best.pt": "78370a41cbbe014482e69efecd236a0bb2174732581c442b8427a0ed67fe5377",
+    "VIUNMARK_SCALE_seed-53148_best.pt": "982ae3d41d8d96849cce33ec782b78f196f8fb26e497bd9f8f58c26941a967d2",
+    "VIUNMARK_SCALE_seed-59945_best.pt": "97e5872c6e1b7760665f4705074e8c32cedf73fdcdffbe60981acc354d4dbd03",
+    "VIUNMARK_SCALE_seed-720_best.pt": "caa3c9575fc45feb914effb6af478d3e2c2cc691cf919b50da7fb7d5c40bd65d",
+    "VIUNMARK_SCALE_seed-9428_best.pt": "a44e45d1e328200421b3ac79f34481bb29326a7939cfc7997d4c2a8752b826c0",
+}
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_json_once(path: Path, payload: Any) -> None:
+    if path.exists():
+        raise SystemExit(f"refusing to overwrite existing artifact: {path}")
+    write_json(path, payload)
+
+
+def read_json(path: Path) -> Any:
+    if not path.exists():
+        raise SystemExit(f"required artifact is missing: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def canonical_payload_digest(payload: Mapping[str, Any]) -> str:
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def repository_head() -> str:
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout.strip()
 
 
 def batched(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
@@ -111,6 +166,182 @@ def ensure_output_dirs(output_root: str | Path) -> dict[str, Path]:
     checkpoints = root / "checkpoints"
     checkpoints.mkdir(parents=True, exist_ok=True)
     return {"root": root, "checkpoints": checkpoints}
+
+
+def frozen_protocol_path(output_root: str | Path) -> Path:
+    return Path(output_root) / "frozen_protocol.json"
+
+
+def frozen_probe_heads_path(output_root: str | Path) -> Path:
+    return Path(output_root) / "frozen_probe_heads.json"
+
+
+def dev_evaluate_results_path(output_root: str | Path) -> Path:
+    return Path(output_root) / "dev_evaluate_results.json"
+
+
+def checkpoint_file_name(pathway: PhoNERPathway, seed: int) -> str:
+    return f"{pathway.value}_seed-{seed}_best.pt"
+
+
+def selected_probe_head_plan(config: PhoNERCrossTaskConfig) -> list[tuple[PhoNERPathway, int, str]]:
+    plan = []
+    for pathway in config.pathways:
+        for seed in PHONER_FINAL_SEEDS:
+            plan.append((pathway, seed, checkpoint_file_name(pathway, seed)))
+    if len(plan) != 15:
+        raise SystemExit(f"selected probe head plan must contain exactly 15 heads, got {len(plan)}")
+    names = {name for _, _, name in plan}
+    if names != set(EXPECTED_FROZEN_PROBE_HEAD_SHA256):
+        raise SystemExit("selected probe head plan drifted from frozen SHA-256 inventory")
+    return plan
+
+
+def dev_evaluation_plan(config: PhoNERCrossTaskConfig) -> list[tuple[PhoNERPathway, int, str]]:
+    plan = [
+        (pathway, seed, condition)
+        for pathway in config.pathways
+        for seed in PHONER_FINAL_SEEDS
+        for condition in config.conditions
+    ]
+    if len(plan) != 90:
+        raise SystemExit(f"DEV evaluation plan must contain exactly 90 records, got {len(plan)}")
+    return plan
+
+
+def load_probe_checkpoint(path: Path, *, map_location: Any = "cpu") -> Mapping[str, Any]:
+    import torch
+
+    payload = torch.load(path, map_location=map_location, weights_only=False)
+    if not isinstance(payload, Mapping):
+        raise SystemExit(f"probe checkpoint is not a mapping: {path}")
+    return payload
+
+
+def load_and_verify_frozen_protocol(
+    args: argparse.Namespace,
+    config: PhoNERCrossTaskConfig,
+    tokenizer: Any,
+) -> tuple[Mapping[str, Any], Any, str]:
+    identity = build_phoner_dataset_identity(
+        args.data_root,
+        stage="freeze-protocol",
+        tokenizer=tokenizer,
+        coverage_purpose=CorruptionPurpose.SCIENTIFIC,
+    )
+    current_digest = protocol_digest(config, identity)
+    artifact = read_json(frozen_protocol_path(args.output_root))
+    if artifact.get("schema_version") != "phoner-cross-task-frozen-protocol-v1":
+        raise SystemExit("frozen_protocol.json has the wrong schema")
+    if artifact.get("protocol_frozen") is not True:
+        raise SystemExit("frozen_protocol.json does not mark protocol_frozen=true")
+    if artifact.get("config") != config.to_dict():
+        raise SystemExit("frozen_protocol.json config does not match the current protocol config")
+    if artifact.get("protocol_digest") != current_digest:
+        raise SystemExit("frozen_protocol.json protocol_digest does not match current DATA_ROOT identity")
+    if artifact.get("test_read_before_freeze") is not False:
+        raise SystemExit("frozen_protocol.json reports TEST was read before freeze")
+    if artifact.get("test_scored_before_freeze") is not False:
+        raise SystemExit("frozen_protocol.json reports TEST was scored before freeze")
+    test_identity = artifact.get("dataset_identity", {}).get("split_files", {}).get("test", {})
+    if test_identity.get("sha256") != "SEALED_UNREAD" or test_identity.get("row_count") != "SEALED_UNREAD":
+        raise SystemExit("frozen_protocol.json does not preserve the sealed TEST identity")
+    if test_identity.get("gold_labels_read") is not False:
+        raise SystemExit("frozen_protocol.json reports TEST gold labels were read")
+    return artifact, identity, current_digest
+
+
+def build_frozen_probe_heads_payload(
+    output_root: str | Path,
+    config: PhoNERCrossTaskConfig,
+    *,
+    protocol_digest_value: str,
+) -> dict[str, Any]:
+    root = Path(output_root)
+    entries = []
+    for pathway, seed, name in selected_probe_head_plan(config):
+        checkpoint_path = root / "checkpoints" / name
+        if not checkpoint_path.is_file():
+            raise SystemExit(f"selected probe checkpoint is missing: {checkpoint_path}")
+        expected_sha = EXPECTED_FROZEN_PROBE_HEAD_SHA256[name]
+        actual_sha = sha256_file(checkpoint_path)
+        if actual_sha != expected_sha:
+            raise SystemExit(
+                f"selected probe checkpoint SHA mismatch for {name}: "
+                f"expected {expected_sha}, got {actual_sha}"
+            )
+        payload = load_probe_checkpoint(checkpoint_path, map_location="cpu")
+        if payload.get("pathway") != pathway.value:
+            raise SystemExit(f"{name} records pathway {payload.get('pathway')!r}, expected {pathway.value!r}")
+        if int(payload.get("seed", -1)) != seed:
+            raise SystemExit(f"{name} records seed {payload.get('seed')!r}, expected {seed}")
+        schema = payload.get("schema_version")
+        update = payload.get("update")
+        if schema != "phoner-frozen-token-probe-checkpoint-v1":
+            raise SystemExit(f"{name} has unexpected checkpoint schema: {schema!r}")
+        if not isinstance(update, int):
+            raise SystemExit(f"{name} does not record an integer selected update")
+        entries.append(
+            {
+                "pathway": pathway.value,
+                "seed": seed,
+                "relative_checkpoint_path": f"checkpoints/{name}",
+                "sha256": actual_sha,
+                "selected_update": update,
+                "checkpoint_schema_version": schema,
+            }
+        )
+    if len(entries) != 15:
+        raise SystemExit(f"frozen_probe_heads must bind exactly 15 heads, got {len(entries)}")
+    return {
+        "schema_version": FROZEN_PROBE_HEAD_SCHEMA,
+        "repository_head": repository_head(),
+        "protocol_digest": protocol_digest_value,
+        "expected_head_count": 15,
+        "heads": entries,
+    }
+
+
+def write_frozen_probe_heads(
+    output_root: str | Path,
+    config: PhoNERCrossTaskConfig,
+    *,
+    protocol_digest_value: str,
+) -> Path:
+    path = frozen_probe_heads_path(output_root)
+    payload = build_frozen_probe_heads_payload(
+        output_root,
+        config,
+        protocol_digest_value=protocol_digest_value,
+    )
+    write_json_once(path, payload)
+    return path
+
+
+def load_and_verify_frozen_probe_heads(
+    output_root: str | Path,
+    config: PhoNERCrossTaskConfig,
+    *,
+    protocol_digest_value: str,
+) -> tuple[Mapping[str, Any], str]:
+    path = frozen_probe_heads_path(output_root)
+    artifact = read_json(path)
+    if artifact.get("schema_version") != FROZEN_PROBE_HEAD_SCHEMA:
+        raise SystemExit("frozen_probe_heads.json has the wrong schema")
+    if artifact.get("protocol_digest") != protocol_digest_value:
+        raise SystemExit("frozen_probe_heads.json protocol_digest does not match frozen_protocol.json")
+    if artifact.get("repository_head") != repository_head():
+        raise SystemExit("frozen_probe_heads.json repository HEAD does not match the current checkout")
+    if len(artifact.get("heads", [])) != 15:
+        raise SystemExit("frozen_probe_heads.json must bind exactly 15 selected heads")
+    expected = build_frozen_probe_heads_payload(
+        output_root,
+        config,
+        protocol_digest_value=protocol_digest_value,
+    )
+    if artifact.get("heads") != expected["heads"]:
+        raise SystemExit("frozen_probe_heads.json does not match the selected checkpoint files")
+    return artifact, sha256_file(path)
 
 
 def load_inventory_inputs() -> tuple[Any, Any, dict[str, Any]]:
@@ -483,6 +714,139 @@ def stage_freeze(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> Non
     )
 
 
+def stage_freeze_heads(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
+    tokenizer = load_tokenizer(args.asset_root)
+    _, _, digest = load_and_verify_frozen_protocol(args, config, tokenizer)
+    path = write_frozen_probe_heads(args.output_root, config, protocol_digest_value=digest)
+    print(f"wrote frozen probe head manifest: {path}", flush=True)
+
+
+def load_probe_for_evaluation(payload: Mapping[str, Any], *, device: Any) -> tuple[Any, dict[str, int], dict[int, str]]:
+    import torch
+
+    label_to_id = {str(k): int(v) for k, v in payload["label_to_id"].items()}
+    id_to_label = {index: label for label, index in label_to_id.items()}
+    probe = FrozenTokenProbe(HIDDEN_SIZE, len(label_to_id)).to(device)
+    probe.load_state_dict(payload["probe_state"])
+    probe.eval()
+    for parameter in probe.parameters():
+        parameter.requires_grad_(False)
+    return probe, label_to_id, id_to_label
+
+
+def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
+    import torch
+
+    output_dirs = ensure_output_dirs(args.output_root)
+    result_path = dev_evaluate_results_path(output_dirs["root"])
+    if result_path.exists():
+        raise SystemExit(f"refusing to overwrite existing artifact: {result_path}")
+
+    tokenizer = load_tokenizer(args.asset_root)
+    frozen_protocol, _, digest = load_and_verify_frozen_protocol(args, config, tokenizer)
+    frozen_heads, frozen_heads_sha256 = load_and_verify_frozen_probe_heads(
+        output_dirs["root"],
+        config,
+        protocol_digest_value=digest,
+    )
+    head_by_key = {
+        (str(row["pathway"]), int(row["seed"])): row
+        for row in frozen_heads["heads"]
+    }
+    train = parse_phoner_split(
+        args.data_root, PhoNERSplit.TRAIN, include_labels=True, stage="dev-evaluate"
+    )
+    dev = parse_phoner_split(
+        args.data_root, PhoNERSplit.DEV, include_labels=True, stage="dev-evaluate"
+    )
+    train_label_to_id = {label: index for index, label in enumerate(label_inventory_from_train(train))}
+    dev = materialize_condition_invariant_chunks(
+        dev, tokenizer, config, purpose=CorruptionPurpose.SCIENTIFIC
+    )
+    runtime_inventory, inventory_identity, inventory_report = load_inventory_inputs()
+    classifier = make_classifier(runtime_inventory)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    total = len(dev_evaluation_plan(config))
+    completed = 0
+    records: list[dict[str, Any]] = []
+    for pathway in config.pathways:
+        loaded = load_pathway(pathway, args, inventory_identity=inventory_identity)
+        if pathway is PhoNERPathway.PHOBERT_NATIVE:
+            loaded.to(device)
+        else:
+            loaded.encoder.to(device)
+            loaded.adapter.to(device)
+        for seed in PHONER_FINAL_SEEDS:
+            head_entry = head_by_key[(pathway.value, seed)]
+            checkpoint_path = output_dirs["root"] / str(head_entry["relative_checkpoint_path"])
+            payload = load_probe_checkpoint(checkpoint_path, map_location=device)
+            probe, label_to_id, id_to_label = load_probe_for_evaluation(payload, device=device)
+            if label_to_id != train_label_to_id:
+                raise SystemExit(f"{checkpoint_path} label inventory does not match TRAIN-derived labels")
+            for condition in config.conditions:
+                completed += 1
+                print(
+                    f"[dev-evaluate {completed}/{total}] pathway={pathway.value} "
+                    f"seed={seed} condition={condition}",
+                    flush=True,
+                )
+                metrics = evaluate_dev(
+                    dev,
+                    pathway=pathway,
+                    loaded=loaded,
+                    probe=probe,
+                    tokenizer=tokenizer,
+                    label_to_id=label_to_id,
+                    id_to_label=id_to_label,
+                    config=config,
+                    classifier=classifier,
+                    condition=condition,
+                    device=device,
+                )
+                records.append(
+                    {
+                        "pathway": pathway.value,
+                        "seed": seed,
+                        "condition": condition,
+                        **metrics,
+                    }
+                )
+            probe.cpu()
+        if pathway is PhoNERPathway.PHOBERT_NATIVE:
+            loaded.cpu()
+        else:
+            loaded.encoder.cpu()
+            loaded.adapter.cpu()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    if completed != 90 or len(records) != 90:
+        raise SystemExit(f"DEV evaluation must produce exactly 90 records, got {len(records)}")
+    result = {
+        "schema_version": DEV_EVALUATE_SCHEMA,
+        "repository_head": repository_head(),
+        "protocol_digest": digest,
+        "frozen_protocol_schema_version": frozen_protocol["schema_version"],
+        "frozen_probe_heads": {
+            "path": str(frozen_probe_heads_path(output_dirs["root"])),
+            "schema_version": frozen_heads["schema_version"],
+            "sha256": frozen_heads_sha256,
+            "payload_digest": canonical_payload_digest(dict(frozen_heads)),
+        },
+        "verified_stage1_identities": {
+            "phobert_checkpoint": ENCODER_CHECKPOINT,
+            "phobert_revision": ENCODER_REVISION,
+            "gate_checkpoint_sha256": config.gate_checkpoint_sha256,
+            "scale_checkpoint_sha256": config.scale_checkpoint_sha256,
+            "inventory": inventory_identity.to_dict(),
+        },
+        "inventory_preflight": inventory_report,
+        "records": records,
+        "summaries": summarize_five_seed_scores(records),
+    }
+    write_json_once(result_path, result)
+
+
 def stage_test_predict(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
     import torch
 
@@ -620,11 +984,33 @@ def stage_test_score(args: argparse.Namespace, config: PhoNERCrossTaskConfig) ->
     )
 
 
+def run_stage(stage: str, args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
+    if stage == "dataset-audit":
+        stage_audit(args, config)
+    elif stage == "smoke-train":
+        stage_train(args, config, smoke=True)
+    elif stage == "train-dev":
+        stage_train(args, config, smoke=False)
+    elif stage == "dev-evaluate":
+        stage_dev_evaluate(args, config)
+    elif stage == "freeze-protocol":
+        stage_freeze(args, config)
+    elif stage == "freeze-heads":
+        stage_freeze_heads(args, config)
+    elif stage == "test-predict":
+        stage_test_predict(args, config)
+    elif stage == "test-score":
+        stage_test_score(args, config)
+    else:  # pragma: no cover
+        raise AssertionError(stage)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the PhoNER frozen cross-task transfer probe.")
     parser.add_argument("--stage", required=True, choices=sorted({
         "audit", "dataset-audit", "smoke", "smoke-train", "train-dev",
-        "dev-evaluate", "freeze", "freeze-protocol", "test-predict", "test-score",
+        "dev-evaluate", "freeze", "freeze-protocol", "freeze-heads",
+        "test-predict", "test-score",
     }))
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--asset-root", required=True)
@@ -637,20 +1023,7 @@ def main() -> None:
 
     config = PhoNERCrossTaskConfig()
     stage = canonical_stage(args.stage)
-    if stage == "dataset-audit":
-        stage_audit(args, config)
-    elif stage == "smoke-train":
-        stage_train(args, config, smoke=True)
-    elif stage in {"train-dev", "dev-evaluate"}:
-        stage_train(args, config, smoke=False)
-    elif stage == "freeze-protocol":
-        stage_freeze(args, config)
-    elif stage == "test-predict":
-        stage_test_predict(args, config)
-    elif stage == "test-score":
-        stage_test_score(args, config)
-    else:  # pragma: no cover
-        raise AssertionError(stage)
+    run_stage(stage, args, config)
 
 
 if __name__ == "__main__":

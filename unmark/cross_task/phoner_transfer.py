@@ -101,6 +101,7 @@ _STAGE_ALIASES = {
     "dev-evaluate": "dev-evaluate",
     "freeze": "freeze-protocol",
     "freeze-protocol": "freeze-protocol",
+    "freeze-heads": "freeze-heads",
     "test-predict": "test-predict",
     "test-score": "test-score",
 }
@@ -1459,7 +1460,13 @@ def summarize_five_seed_scores(rows: Sequence[Mapping[str, Any]]) -> dict[str, A
                 f"{pathway} robustness summary does not cover five seeds: {seeds}"
             )
         metrics = {}
-        for key in ("corrupt_avg_f1", "all_6_f1", "full_to_strip_absolute_drop"):
+        summary_keys = [
+            "corrupt_avg_f1",
+            "all_6_f1",
+            "full_to_strip_absolute_drop",
+            *(f"{condition}_robustness_retention" for condition in SIX_CONDITIONS),
+        ]
+        for key in summary_keys:
             mean, sd = mean_and_sample_sd([float(row[key]) for row in group])
             metrics[f"{key}_mean"] = mean
             metrics[f"{key}_sample_sd"] = sd

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import inspect
 import json
 import pathlib
 import types
@@ -93,6 +94,82 @@ def example() -> phoner.PhoNERExample:
         word_start=0,
         word_end=5,
     )
+
+
+class FakeDatasetIdentity:
+    def to_dict(self):
+        return {
+            "dataset_id": "PhoNER_COVID19",
+            "representation": "word",
+            "split_files": {
+                "test": {
+                    "sha256": "SEALED_UNREAD",
+                    "row_count": "SEALED_UNREAD",
+                    "gold_labels_read": False,
+                }
+            },
+        }
+
+
+def runner_args(tmp_path, data_root=None):
+    return types.SimpleNamespace(
+        data_root=data_root or tmp_path / "data",
+        asset_root=tmp_path / "assets",
+        output_root=tmp_path / "out",
+        gate_checkpoint=None,
+        scale_checkpoint=None,
+        seed=phoner.PHONER_SMOKE_SEED,
+        prediction_artifact=None,
+    )
+
+
+def fake_probe_payload(pathway, seed):
+    return {
+        "schema_version": "phoner-frozen-token-probe-checkpoint-v1",
+        "pathway": pathway,
+        "seed": seed,
+        "update": 1000,
+        "probe_state": {},
+        "label_to_id": {"O": 0, "B-DISEASE": 1, "B-LOC": 2},
+    }
+
+
+def parse_checkpoint_name(name):
+    pathway, rest = name.split("_seed-", 1)
+    seed = int(rest.split("_best.pt", 1)[0])
+    return pathway, seed
+
+
+def prepare_expected_checkpoint_files(output_root):
+    checkpoint_dir = output_root / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    for name in RUNNER.EXPECTED_FROZEN_PROBE_HEAD_SHA256:
+        (checkpoint_dir / name).write_bytes(f"checkpoint:{name}".encode("utf-8"))
+    return checkpoint_dir
+
+
+def frozen_heads_artifact(output_root):
+    heads = []
+    for pathway in phoner.PhoNERCrossTaskConfig().pathways:
+        for seed in phoner.PHONER_FINAL_SEEDS:
+            name = f"{pathway.value}_seed-{seed}_best.pt"
+            heads.append(
+                {
+                    "pathway": pathway.value,
+                    "seed": seed,
+                    "relative_checkpoint_path": f"checkpoints/{name}",
+                    "sha256": RUNNER.EXPECTED_FROZEN_PROBE_HEAD_SHA256[name],
+                    "selected_update": 1000,
+                    "checkpoint_schema_version": "phoner-frozen-token-probe-checkpoint-v1",
+                }
+            )
+    return {
+        "schema_version": RUNNER.FROZEN_PROBE_HEAD_SCHEMA,
+        "repository_head": "test-head",
+        "protocol_digest": "digest",
+        "expected_head_count": 15,
+        "heads": heads,
+    }
 
 
 def test_conll_dataset_parser_and_stable_sample_ids(tmp_path):
@@ -411,6 +488,245 @@ def test_runner_test_stage_behavior_is_unchanged():
     assert "test_scores_from_sealed_predictions.json" in source
 
 
+def test_dev_evaluate_dispatch_cannot_call_stage_train(monkeypatch, tmp_path):
+    called = {}
+
+    def forbidden_train(*args, **kwargs):
+        raise AssertionError("dev-evaluate must not dispatch to stage_train")
+
+    def fake_dev(args, config):
+        called["dev"] = True
+
+    monkeypatch.setattr(RUNNER, "stage_train", forbidden_train)
+    monkeypatch.setattr(RUNNER, "stage_dev_evaluate", fake_dev)
+    RUNNER.run_stage("dev-evaluate", runner_args(tmp_path), phoner.PhoNERCrossTaskConfig())
+    assert called == {"dev": True}
+
+
+def test_train_dev_dispatch_still_calls_stage_train(monkeypatch, tmp_path):
+    called = {}
+
+    def fake_train(args, config, *, smoke):
+        called["smoke"] = smoke
+
+    def forbidden_dev(*args, **kwargs):
+        raise AssertionError("train-dev must not dispatch to stage_dev_evaluate")
+
+    monkeypatch.setattr(RUNNER, "stage_train", fake_train)
+    monkeypatch.setattr(RUNNER, "stage_dev_evaluate", forbidden_dev)
+    RUNNER.run_stage("train-dev", runner_args(tmp_path), phoner.PhoNERCrossTaskConfig())
+    assert called == {"smoke": False}
+
+
+def test_dev_evaluate_stage_source_is_load_only():
+    source = inspect.getsource(RUNNER.stage_dev_evaluate)
+    assert "AdamW" not in source
+    assert ".backward(" not in source
+    assert ".step(" not in source
+    assert "torch.save" not in source
+    assert "train_one(" not in source
+    assert "PhoNERSplit.TEST" not in source
+
+
+def test_dev_evaluate_refuses_missing_frozen_protocol(monkeypatch, tmp_path):
+    args = runner_args(tmp_path)
+    monkeypatch.setattr(RUNNER, "build_phoner_dataset_identity", lambda *a, **k: FakeDatasetIdentity())
+    with pytest.raises(SystemExit, match="frozen_protocol.json"):
+        RUNNER.load_and_verify_frozen_protocol(args, phoner.PhoNERCrossTaskConfig(), StubPhoBERTTokenizer())
+
+
+def test_dev_evaluate_refuses_missing_or_mismatching_frozen_probe_heads(monkeypatch, tmp_path):
+    args = runner_args(tmp_path)
+    monkeypatch.setattr(RUNNER, "repository_head", lambda: "test-head")
+    with pytest.raises(SystemExit, match="required artifact is missing"):
+        RUNNER.load_and_verify_frozen_probe_heads(
+            args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+        )
+    args.output_root.mkdir(parents=True)
+    (args.output_root / "frozen_probe_heads.json").write_text(
+        json.dumps({"schema_version": "wrong"}), encoding="utf-8"
+    )
+    with pytest.raises(SystemExit, match="wrong schema"):
+        RUNNER.load_and_verify_frozen_probe_heads(
+            args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+        )
+
+
+def test_frozen_probe_heads_refuses_checkpoint_sha_mismatch(monkeypatch, tmp_path):
+    args = runner_args(tmp_path)
+    prepare_expected_checkpoint_files(args.output_root)
+    monkeypatch.setattr(RUNNER, "repository_head", lambda: "test-head")
+
+    def fake_sha(path):
+        name = pathlib.Path(path).name
+        if name == "PHOBERT_NATIVE_seed-53148_best.pt":
+            return "0" * 64
+        return RUNNER.EXPECTED_FROZEN_PROBE_HEAD_SHA256[name]
+
+    def fake_load(path, *, map_location="cpu"):
+        pathway, seed = parse_checkpoint_name(pathlib.Path(path).name)
+        return fake_probe_payload(pathway, seed)
+
+    monkeypatch.setattr(RUNNER, "sha256_file", fake_sha)
+    monkeypatch.setattr(RUNNER, "load_probe_checkpoint", fake_load)
+    with pytest.raises(SystemExit, match="SHA mismatch"):
+        RUNNER.build_frozen_probe_heads_payload(
+            args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+        )
+
+
+def test_frozen_probe_heads_artifact_is_write_once(monkeypatch, tmp_path):
+    args = runner_args(tmp_path)
+    prepare_expected_checkpoint_files(args.output_root)
+    monkeypatch.setattr(RUNNER, "repository_head", lambda: "test-head")
+    monkeypatch.setattr(
+        RUNNER,
+        "sha256_file",
+        lambda path: RUNNER.EXPECTED_FROZEN_PROBE_HEAD_SHA256[pathlib.Path(path).name],
+    )
+    monkeypatch.setattr(
+        RUNNER,
+        "load_probe_checkpoint",
+        lambda path, *, map_location="cpu": fake_probe_payload(*parse_checkpoint_name(pathlib.Path(path).name)),
+    )
+    path = RUNNER.write_frozen_probe_heads(
+        args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+    )
+    assert path.is_file()
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        RUNNER.write_frozen_probe_heads(
+            args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+        )
+
+
+def test_dev_evaluation_plan_is_exact_3_by_5_by_6():
+    plan = RUNNER.dev_evaluation_plan(phoner.PhoNERCrossTaskConfig())
+    assert len(plan) == 90
+    assert {p for p, _, _ in plan} == set(phoner.PhoNERCrossTaskConfig().pathways)
+    assert {seed for _, seed, _ in plan} == set(phoner.PHONER_FINAL_SEEDS)
+    assert {condition for _, _, condition in plan} == set(phoner.SIX_CONDITIONS)
+
+
+def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_train_result_change(
+    monkeypatch, tmp_path
+):
+    if not TORCH:
+        pytest.skip("torch not installed")
+    args = runner_args(tmp_path)
+    args.data_root.mkdir(parents=True)
+    write_conll(args.data_root)
+    checkpoint_dir = prepare_expected_checkpoint_files(args.output_root)
+    before_checkpoints = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in checkpoint_dir.iterdir()
+    }
+    train_results = args.output_root / "train_dev_results.json"
+    train_results.write_text('{"do_not_touch": true}\n', encoding="utf-8")
+    train_before = (train_results.read_bytes(), train_results.stat().st_mtime_ns)
+    heads = frozen_heads_artifact(args.output_root)
+    parse_calls = []
+
+    class FakeProbe:
+        def __init__(self, *args, **kwargs):
+            self.loaded = False
+
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state):
+            self.loaded = True
+
+        def eval(self):
+            return self
+
+        def parameters(self):
+            return []
+
+        def cpu(self):
+            return self
+
+    class FakeNative:
+        def to(self, device):
+            return self
+
+        def cpu(self):
+            return self
+
+    class FakeModule:
+        def to(self, device):
+            return self
+
+        def cpu(self):
+            return self
+
+    class FakeAdapted:
+        encoder = FakeModule()
+        adapter = FakeModule()
+
+    def fake_parse(root, split, *, include_labels=True, stage):
+        parse_calls.append(split)
+        assert split is not phoner.PhoNERSplit.TEST
+        if split is phoner.PhoNERSplit.TRAIN:
+            return phoner.parse_phoner_split(root, split, include_labels=include_labels, stage=stage)
+        return phoner.parse_phoner_split(root, split, include_labels=include_labels, stage=stage)
+
+    def fake_load_probe(path, *, map_location="cpu"):
+        pathway, seed = parse_checkpoint_name(pathlib.Path(path).name)
+        return fake_probe_payload(pathway, seed)
+
+    def fake_load_pathway(pathway, args, *, inventory_identity):
+        if pathway is phoner.PhoNERPathway.PHOBERT_NATIVE:
+            return FakeNative()
+        return FakeAdapted()
+
+    def fake_evaluate(*args, condition, **kwargs):
+        offset = phoner.SIX_CONDITIONS.index(condition)
+        f1 = 0.5 + 0.01 * offset
+        return {
+            "entity_true_positive": 10 + offset,
+            "entity_false_positive": 2,
+            "entity_false_negative": 3,
+            "entity_precision": f1,
+            "entity_recall": f1,
+            "entity_micro_f1": f1,
+        }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dev-evaluate reached a training/write API")
+
+    monkeypatch.setattr(RUNNER, "load_tokenizer", lambda *a, **k: StubPhoBERTTokenizer())
+    monkeypatch.setattr(RUNNER, "load_and_verify_frozen_protocol", lambda *a, **k: ({"schema_version": "ok"}, FakeDatasetIdentity(), "digest"))
+    monkeypatch.setattr(RUNNER, "load_and_verify_frozen_probe_heads", lambda *a, **k: (heads, "heads-sha"))
+    monkeypatch.setattr(RUNNER, "parse_phoner_split", fake_parse)
+    monkeypatch.setattr(RUNNER, "materialize_condition_invariant_chunks", lambda rows, *a, **k: rows)
+    monkeypatch.setattr(RUNNER, "load_inventory_inputs", lambda: (object(), inventory_identity(), {"ok": True}))
+    monkeypatch.setattr(RUNNER, "make_classifier", lambda inventory: None)
+    monkeypatch.setattr(RUNNER, "load_pathway", fake_load_pathway)
+    monkeypatch.setattr(RUNNER, "load_probe_checkpoint", fake_load_probe)
+    monkeypatch.setattr(RUNNER, "FrozenTokenProbe", FakeProbe)
+    monkeypatch.setattr(RUNNER, "evaluate_dev", fake_evaluate)
+    monkeypatch.setattr(RUNNER, "repository_head", lambda: "test-head")
+    monkeypatch.setattr(torch.optim, "AdamW", forbidden)
+    monkeypatch.setattr(torch, "save", forbidden)
+
+    RUNNER.stage_dev_evaluate(args, phoner.PhoNERCrossTaskConfig())
+
+    result_path = args.output_root / "dev_evaluate_results.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["schema_version"] == RUNNER.DEV_EVALUATE_SCHEMA
+    assert len(result["records"]) == 90
+    assert result["frozen_probe_heads"]["sha256"] == "heads-sha"
+    assert "FULL_robustness_retention_mean" in result["summaries"]["robustness"]["PHOBERT_NATIVE"]
+    assert phoner.PhoNERSplit.TEST not in parse_calls
+    for path in checkpoint_dir.iterdir():
+        before_bytes, before_mtime = before_checkpoints[path.name]
+        assert path.read_bytes() == before_bytes
+        assert path.stat().st_mtime_ns == before_mtime
+    assert (train_results.read_bytes(), train_results.stat().st_mtime_ns) == train_before
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        RUNNER.stage_dev_evaluate(args, phoner.PhoNERCrossTaskConfig())
+
+
 def test_entity_level_f1_exact_span_and_type():
     gold = [["B-PER", "I-PER", "O", "B-LOC"], ["B-DISEASE"]]
     pred = [["B-PER", "I-PER", "O", "B-ORG"], ["O"]]
@@ -513,7 +829,7 @@ def test_runner_exposes_required_stages_and_roots():
     }
     for flag in ("--data-root", "--asset-root", "--output-root"):
         assert flag in strings
-    for stage in ("audit", "smoke", "train-dev", "freeze", "test-predict", "test-score"):
+    for stage in ("audit", "smoke", "train-dev", "dev-evaluate", "freeze", "freeze-heads", "test-predict", "test-score"):
         assert stage in source
     assert "/content/drive" not in source
     assert "MyDrive" not in source

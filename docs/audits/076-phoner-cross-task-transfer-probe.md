@@ -366,6 +366,97 @@ STAGE1_RETRAINING=NO
 UIT_VSFC_RETUNING=NO
 ```
 
+## Dev-Evaluate Dispatch Repair Addendum
+
+This addendum records an implementation/provenance repair at HEAD
+`326e874171464970293bd08929debffc6c6f5ee1`.
+
+Root cause:
+
+- `scripts/cross_task/run_phoner_transfer.py` dispatched both `train-dev` and
+  `dev-evaluate` to `stage_train(args, config, smoke=False)`.
+- Therefore `--stage dev-evaluate` constructed `AdamW`, called `backward()` and
+  `optimizer.step()`, evaluated only DEV/FULL for checkpoint selection, and
+  could overwrite the selected `.pt` probe checkpoints.
+
+Observed post-freeze incident:
+
+- An accidental post-freeze `dev-evaluate` execution occurred through the faulty
+  dispatch.
+- Corrupted DEV metrics exposed: `NO`.
+- PhoNER TEST read/scoring/tuning: `NO`.
+- Stage-I retraining: `NO`.
+- UIT-VSFC retuning: `NO`.
+- A read-only pre-run inspection had captured all 15 selected probe checkpoint
+  SHA-256 values. Every current checkpoint remains byte-identical to that
+  inspection, so the scientific selected-checkpoint state is recovered exactly.
+
+Recovered selected probe head identities:
+
+```text
+PHOBERT_NATIVE_seed-42941_best.pt  bbdb765a885afcb0855dcaa25d4444b91ab3fbf1ee8e14127bce4c696e4208fd
+PHOBERT_NATIVE_seed-53148_best.pt  971606d6f0f82e04c2a9892a1bb1320577739223bec303edfad44f178730a228
+PHOBERT_NATIVE_seed-59945_best.pt  ca485ad85c66058923cf1ffaaed9af676dc09d13cdd4c79cce97d165e8c3c30b
+PHOBERT_NATIVE_seed-720_best.pt    6ad51575fd04ec31e1bdd291d2d363be23748bc20cca91a3d2575f91c825508b
+PHOBERT_NATIVE_seed-9428_best.pt   bd7c688bccca42f618ef9b9955b35b03496f82af13dc92547920ea6ac8f0d640
+VIUNMARK_GATE_seed-42941_best.pt   a8e8fcffa5b2be02dc794296df31aedaf2c3bbd9a6f709edf1ef89d0063f330d
+VIUNMARK_GATE_seed-53148_best.pt   273c5a16e970084ba10056f648135ec36966ebeed1bc62e464a6e6835c3e7efd
+VIUNMARK_GATE_seed-59945_best.pt   395ce4514e741c57f20b21d9e37f1e4500eb0d238b46152bb67668d44fd8d978
+VIUNMARK_GATE_seed-720_best.pt     ddaf6ed4df283434255227024060b9be61407eb93dc594f0b68d7ec41424085b
+VIUNMARK_GATE_seed-9428_best.pt    48c2fd27101434671dc960925287dc29b89fd38459fa3b8c0f2a099d2d2af982
+VIUNMARK_SCALE_seed-42941_best.pt  78370a41cbbe014482e69efecd236a0bb2174732581c442b8427a0ed67fe5377
+VIUNMARK_SCALE_seed-53148_best.pt  982ae3d41d8d96849cce33ec782b78f196f8fb26e497bd9f8f58c26941a967d2
+VIUNMARK_SCALE_seed-59945_best.pt  97e5872c6e1b7760665f4705074e8c32cedf73fdcdffbe60981acc354d4dbd03
+VIUNMARK_SCALE_seed-720_best.pt    caa3c9575fc45feb914effb6af478d3e2c2cc691cf919b50da7fb7d5c40bd65d
+VIUNMARK_SCALE_seed-9428_best.pt   a44e45d1e328200421b3ac79f34481bb29326a7939cfc7997d4c2a8752b826c0
+```
+
+Repair:
+
+- `train-dev` and `dev-evaluate` now dispatch separately.
+- `dev-evaluate` is load-only: it requires `frozen_protocol.json`, requires a
+  write-once `frozen_probe_heads.json`, verifies all 15 checkpoint SHA-256
+  identities before evaluation, reads TRAIN/DEV only, and writes the separate
+  write-once `dev_evaluate_results.json`.
+- The selected-head freeze artifact is an addendum artifact; the already
+  existing `frozen_protocol.json` is not overwritten.
+- The repair does not alter any scientific protocol constant, hyperparameter,
+  model architecture, seed, corruption semantics, checkpoint-selection rule,
+  metric definition, or Stage-I checkpoint.
+
+Actual corrupted DEV evaluation status:
+
+- `NOT RUN` in this repair task.
+
+Post-repair local verification:
+
+```text
+pytest -q tests/test_phoner_cross_task_transfer.py
+37 passed, 2 skipped in 0.94s
+
+pytest -q tests/test_viunmark_training.py::test_the_repository_has_no_other_cross_entropy_call_site
+1 passed in 0.51s
+
+python -m py_compile unmark/cross_task/phoner_transfer.py scripts/cross_task/run_phoner_transfer.py
+passed
+
+pytest -q
+7 failed, 5093 passed, 275 skipped in 147.03s
+```
+
+The seven full-suite failures are the known Stage-1 multiprocessing forkserver
+sandbox failures in `tests/test_stage1_parallel.py`
+(`PermissionError: [Errno 1] Operation not permitted`). No PhoNER cross-task
+test failed.
+
+```text
+PHONER_TEST_READ=NO
+PHONER_TEST_SCORING=NO
+PHONER_TEST_TUNING=NO
+STAGE1_RETRAINING=NO
+UIT_VSFC_RETUNING=NO
+```
+
 ## Final Git Status
 
 At audit write time:
