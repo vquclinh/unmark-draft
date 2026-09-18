@@ -34,6 +34,7 @@ from unmark.cross_task.phoner_transfer import (
     corruption_summary_metrics,
     encode_adapted_example,
     encode_native_example,
+    find_phoner_split_file,
     ids_to_word_predictions,
     label_inventory_from_train,
     materialize_condition_invariant_chunks,
@@ -93,6 +94,14 @@ def canonical_payload_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def frozen_protocol_static_digest(artifact: Mapping[str, Any]) -> str:
+    dataset_identity = artifact.get("dataset_identity")
+    config = artifact.get("config")
+    if not isinstance(dataset_identity, Mapping) or not isinstance(config, Mapping):
+        raise SystemExit("frozen_protocol.json must contain config and dataset_identity mappings")
+    return canonical_payload_digest({"config": config, "dataset_identity": dataset_identity})
+
+
 def repository_head() -> str:
     root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
@@ -104,6 +113,30 @@ def repository_head() -> str:
         stderr=subprocess.PIPE,
     )
     return result.stdout.strip()
+
+
+def repository_status_short() -> str:
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=root,
+        text=True,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout
+
+
+def require_clean_execution_tree() -> str:
+    head = repository_head()
+    status = repository_status_short()
+    if status.strip():
+        raise SystemExit(
+            "dev-evaluate requires a clean execution tree; git status --short:\n"
+            f"{status.rstrip()}"
+        )
+    return head
 
 
 def batched(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
@@ -159,6 +192,19 @@ def default_gate_checkpoint(asset_root: Path) -> Path:
 
 def default_scale_checkpoint(asset_root: Path) -> Path:
     return asset_root / "stage1" / "viunmark_scale.pt"
+
+
+def verify_stage1_checkpoint_bytes(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> dict[str, str]:
+    gate_checkpoint = Path(args.gate_checkpoint or default_gate_checkpoint(Path(args.asset_root)))
+    scale_checkpoint = Path(args.scale_checkpoint or default_scale_checkpoint(Path(args.asset_root)))
+    return {
+        "gate_checkpoint_sha256": require_checkpoint_sha256(
+            gate_checkpoint, config.gate_checkpoint_sha256, label="ViUnMark-Gate"
+        ),
+        "scale_checkpoint_sha256": require_checkpoint_sha256(
+            scale_checkpoint, config.scale_checkpoint_sha256, label="ViUnMark-Scale"
+        ),
+    }
 
 
 def ensure_output_dirs(output_root: str | Path) -> dict[str, Path]:
@@ -218,27 +264,22 @@ def load_probe_checkpoint(path: Path, *, map_location: Any = "cpu") -> Mapping[s
     return payload
 
 
-def load_and_verify_frozen_protocol(
-    args: argparse.Namespace,
+def load_and_verify_frozen_protocol_artifact(
+    output_root: str | Path,
     config: PhoNERCrossTaskConfig,
-    tokenizer: Any,
-) -> tuple[Mapping[str, Any], Any, str]:
-    identity = build_phoner_dataset_identity(
-        args.data_root,
-        stage="freeze-protocol",
-        tokenizer=tokenizer,
-        coverage_purpose=CorruptionPurpose.SCIENTIFIC,
-    )
-    current_digest = protocol_digest(config, identity)
-    artifact = read_json(frozen_protocol_path(args.output_root))
+) -> tuple[Mapping[str, Any], str]:
+    artifact = read_json(frozen_protocol_path(output_root))
+    expected_digest = artifact.get("protocol_digest")
+    if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+        raise SystemExit("frozen_protocol.json does not record a valid protocol_digest")
     if artifact.get("schema_version") != "phoner-cross-task-frozen-protocol-v1":
         raise SystemExit("frozen_protocol.json has the wrong schema")
     if artifact.get("protocol_frozen") is not True:
         raise SystemExit("frozen_protocol.json does not mark protocol_frozen=true")
     if artifact.get("config") != config.to_dict():
         raise SystemExit("frozen_protocol.json config does not match the current protocol config")
-    if artifact.get("protocol_digest") != current_digest:
-        raise SystemExit("frozen_protocol.json protocol_digest does not match current DATA_ROOT identity")
+    if expected_digest != frozen_protocol_static_digest(artifact):
+        raise SystemExit("frozen_protocol.json protocol_digest is not coherent with its frozen config/dataset identity")
     if artifact.get("test_read_before_freeze") is not False:
         raise SystemExit("frozen_protocol.json reports TEST was read before freeze")
     if artifact.get("test_scored_before_freeze") is not False:
@@ -248,7 +289,67 @@ def load_and_verify_frozen_protocol(
         raise SystemExit("frozen_protocol.json does not preserve the sealed TEST identity")
     if test_identity.get("gold_labels_read") is not False:
         raise SystemExit("frozen_protocol.json reports TEST gold labels were read")
-    return artifact, identity, current_digest
+    return artifact, expected_digest
+
+
+def verify_local_train_dev_identity(
+    args: argparse.Namespace,
+    frozen_protocol: Mapping[str, Any],
+) -> tuple[Sequence[Any], Sequence[Any], dict[str, int]]:
+    dataset_identity = frozen_protocol.get("dataset_identity")
+    if not isinstance(dataset_identity, Mapping):
+        raise SystemExit("frozen_protocol.json has no dataset_identity mapping")
+    split_files = dataset_identity.get("split_files")
+    if not isinstance(split_files, Mapping):
+        raise SystemExit("frozen_protocol.json has no split_files mapping")
+
+    parsed: dict[PhoNERSplit, Sequence[Any]] = {}
+    for split in (PhoNERSplit.TRAIN, PhoNERSplit.DEV):
+        frozen = split_files.get(split.value)
+        if not isinstance(frozen, Mapping):
+            raise SystemExit(f"frozen_protocol.json has no {split.value} split identity")
+        path, fmt = find_phoner_split_file(args.data_root, split)
+        if frozen.get("format") != fmt:
+            raise SystemExit(f"{split.value} file format {fmt!r} differs from frozen protocol")
+        observed_sha = sha256_file(path)
+        if frozen.get("sha256") != observed_sha:
+            raise SystemExit(
+                f"{split.value} file SHA mismatch: expected {frozen.get('sha256')}, got {observed_sha}"
+            )
+        rows = parse_phoner_split(
+            args.data_root, split, include_labels=True, stage="dev-evaluate"
+        )
+        if int(frozen.get("row_count", -1)) != len(rows):
+            raise SystemExit(
+                f"{split.value} row count mismatch: expected {frozen.get('row_count')}, got {len(rows)}"
+            )
+        parsed[split] = rows
+
+    train = parsed[PhoNERSplit.TRAIN]
+    train_labels = tuple(label_inventory_from_train(train))
+    frozen_labels = tuple(dataset_identity.get("entity_label_inventory", ()))
+    if train_labels != frozen_labels:
+        raise SystemExit("TRAIN-derived label inventory differs from frozen protocol")
+    label_to_id = {label: index for index, label in enumerate(train_labels)}
+    return train, parsed[PhoNERSplit.DEV], label_to_id
+
+
+def load_and_verify_frozen_protocol(
+    args: argparse.Namespace,
+    config: PhoNERCrossTaskConfig,
+    tokenizer: Any,
+) -> tuple[Mapping[str, Any], Any, str]:
+    artifact, digest = load_and_verify_frozen_protocol_artifact(args.output_root, config)
+    identity = build_phoner_dataset_identity(
+        args.data_root,
+        stage="freeze-protocol",
+        tokenizer=tokenizer,
+        coverage_purpose=CorruptionPurpose.SCIENTIFIC,
+    )
+    current_digest = protocol_digest(config, identity)
+    if digest != current_digest:
+        raise SystemExit("frozen_protocol.json protocol_digest does not match current DATA_ROOT identity")
+    return artifact, identity, digest
 
 
 def build_frozen_probe_heads_payload(
@@ -330,8 +431,9 @@ def load_and_verify_frozen_probe_heads(
         raise SystemExit("frozen_probe_heads.json has the wrong schema")
     if artifact.get("protocol_digest") != protocol_digest_value:
         raise SystemExit("frozen_probe_heads.json protocol_digest does not match frozen_protocol.json")
-    if artifact.get("repository_head") != repository_head():
-        raise SystemExit("frozen_probe_heads.json repository HEAD does not match the current checkout")
+    producer_head = artifact.get("repository_head")
+    if not isinstance(producer_head, str) or len(producer_head) != 40:
+        raise SystemExit("frozen_probe_heads.json does not record a valid producer repository HEAD")
     if len(artifact.get("heads", [])) != 15:
         raise SystemExit("frozen_probe_heads.json must bind exactly 15 selected heads")
     expected = build_frozen_probe_heads_payload(
@@ -793,32 +895,37 @@ def load_probe_for_evaluation(payload: Mapping[str, Any], *, device: Any) -> tup
 def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
     import torch
 
+    print("[dev-evaluate preflight] checking write-once result target", flush=True)
     output_dirs = ensure_output_dirs(args.output_root)
     result_path = dev_evaluate_results_path(output_dirs["root"])
     if result_path.exists():
         raise SystemExit(f"refusing to overwrite existing artifact: {result_path}")
 
-    tokenizer = load_tokenizer(args.asset_root)
-    frozen_protocol, _, digest = load_and_verify_frozen_protocol(args, config, tokenizer)
+    print("[dev-evaluate preflight] checking clean execution checkout", flush=True)
+    execution_head = require_clean_execution_tree()
+    print("[dev-evaluate preflight] checking frozen protocol artifact", flush=True)
+    frozen_protocol, digest = load_and_verify_frozen_protocol_artifact(output_dirs["root"], config)
+    print("[dev-evaluate preflight] checking Stage-I checkpoint bytes", flush=True)
+    stage1_byte_identities = verify_stage1_checkpoint_bytes(args, config)
+    print("[dev-evaluate preflight] checking frozen probe head manifest and selected head bytes", flush=True)
     frozen_heads, frozen_heads_sha256 = load_and_verify_frozen_probe_heads(
         output_dirs["root"],
         config,
         protocol_digest_value=digest,
     )
+    print("[dev-evaluate preflight] loading pinned PhoBERT tokenizer", flush=True)
+    tokenizer = load_tokenizer(args.asset_root)
     head_by_key = {
         (str(row["pathway"]), int(row["seed"])): row
         for row in frozen_heads["heads"]
     }
-    train = parse_phoner_split(
-        args.data_root, PhoNERSplit.TRAIN, include_labels=True, stage="dev-evaluate"
-    )
-    dev = parse_phoner_split(
-        args.data_root, PhoNERSplit.DEV, include_labels=True, stage="dev-evaluate"
-    )
-    train_label_to_id = {label: index for index, label in enumerate(label_inventory_from_train(train))}
+    print("[dev-evaluate preflight] verifying local TRAIN/DEV file identity", flush=True)
+    _train, dev, train_label_to_id = verify_local_train_dev_identity(args, frozen_protocol)
+    print("[dev-evaluate preflight] materializing DEV condition-invariant chunks", flush=True)
     dev = materialize_condition_invariant_chunks(
         dev, tokenizer, config, purpose=CorruptionPurpose.SCIENTIFIC
     )
+    print("[dev-evaluate preflight] loading runtime inventory", flush=True)
     runtime_inventory, inventory_identity, inventory_report = load_inventory_inputs()
     classifier = make_classifier(runtime_inventory)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -889,20 +996,20 @@ def stage_dev_evaluate(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
         raise SystemExit(f"DEV evaluation must produce exactly 90 records, got {len(records)}")
     result = {
         "schema_version": DEV_EVALUATE_SCHEMA,
-        "repository_head": repository_head(),
+        "execution_repository_head": execution_head,
         "protocol_digest": digest,
         "frozen_protocol_schema_version": frozen_protocol["schema_version"],
         "frozen_probe_heads": {
             "path": str(frozen_probe_heads_path(output_dirs["root"])),
             "schema_version": frozen_heads["schema_version"],
+            "producer_repository_head": frozen_heads["repository_head"],
             "sha256": frozen_heads_sha256,
             "payload_digest": canonical_payload_digest(dict(frozen_heads)),
         },
         "verified_stage1_identities": {
             "phobert_checkpoint": ENCODER_CHECKPOINT,
             "phobert_revision": ENCODER_REVISION,
-            "gate_checkpoint_sha256": config.gate_checkpoint_sha256,
-            "scale_checkpoint_sha256": config.scale_checkpoint_sha256,
+            **stage1_byte_identities,
             "inventory": inventory_identity.to_dict(),
         },
         "inventory_preflight": inventory_report,

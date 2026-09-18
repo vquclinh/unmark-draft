@@ -165,11 +165,34 @@ def frozen_heads_artifact(output_root):
             )
     return {
         "schema_version": RUNNER.FROZEN_PROBE_HEAD_SCHEMA,
-        "repository_head": "test-head",
+        "repository_head": "a" * 40,
         "protocol_digest": "digest",
         "expected_head_count": 15,
         "heads": heads,
     }
+
+
+def frozen_protocol_artifact():
+    artifact = {
+        "schema_version": "phoner-cross-task-frozen-protocol-v1",
+        "protocol_frozen": True,
+        "config": phoner.PhoNERCrossTaskConfig().to_dict(),
+        "test_read_before_freeze": False,
+        "test_scored_before_freeze": False,
+        "dataset_identity": {
+            "dataset_id": "PhoNER_COVID19",
+            "representation": "word",
+            "split_files": {
+                "test": {
+                    "sha256": "SEALED_UNREAD",
+                    "row_count": "SEALED_UNREAD",
+                    "gold_labels_read": False,
+                }
+            }
+        },
+    }
+    artifact["protocol_digest"] = RUNNER.frozen_protocol_static_digest(artifact)
+    return artifact
 
 
 def test_conll_dataset_parser_and_stable_sample_ids(tmp_path):
@@ -535,9 +558,31 @@ def test_dev_evaluate_refuses_missing_frozen_protocol(monkeypatch, tmp_path):
         RUNNER.load_and_verify_frozen_protocol(args, phoner.PhoNERCrossTaskConfig(), StubPhoBERTTokenizer())
 
 
+def test_frozen_protocol_static_checks_refuse_digest_and_config_mismatch(tmp_path):
+    args = runner_args(tmp_path)
+    args.output_root.mkdir(parents=True)
+    artifact = frozen_protocol_artifact()
+    artifact["protocol_digest"] = "not-a-digest"
+    (args.output_root / "frozen_protocol.json").write_text(json.dumps(artifact), encoding="utf-8")
+    with pytest.raises(SystemExit, match="valid protocol_digest"):
+        RUNNER.load_and_verify_frozen_protocol_artifact(args.output_root, phoner.PhoNERCrossTaskConfig())
+
+    artifact = frozen_protocol_artifact()
+    artifact["config"] = {**artifact["config"], "corruption_seed": 1}
+    (args.output_root / "frozen_protocol.json").write_text(json.dumps(artifact), encoding="utf-8")
+    with pytest.raises(SystemExit, match="config does not match"):
+        RUNNER.load_and_verify_frozen_protocol_artifact(args.output_root, phoner.PhoNERCrossTaskConfig())
+
+
+def test_dirty_execution_tree_fails_closed(monkeypatch):
+    monkeypatch.setattr(RUNNER, "repository_head", lambda: "c" * 40)
+    monkeypatch.setattr(RUNNER, "repository_status_short", lambda: " M scripts/cross_task/run_phoner_transfer.py\n")
+    with pytest.raises(SystemExit, match="clean execution tree"):
+        RUNNER.require_clean_execution_tree()
+
+
 def test_dev_evaluate_refuses_missing_or_mismatching_frozen_probe_heads(monkeypatch, tmp_path):
     args = runner_args(tmp_path)
-    monkeypatch.setattr(RUNNER, "repository_head", lambda: "test-head")
     with pytest.raises(SystemExit, match="required artifact is missing"):
         RUNNER.load_and_verify_frozen_probe_heads(
             args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
@@ -549,6 +594,49 @@ def test_dev_evaluate_refuses_missing_or_mismatching_frozen_probe_heads(monkeypa
     with pytest.raises(SystemExit, match="wrong schema"):
         RUNNER.load_and_verify_frozen_probe_heads(
             args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+        )
+
+
+def test_old_frozen_manifest_producer_head_is_accepted_without_relabeling(monkeypatch, tmp_path):
+    args = runner_args(tmp_path)
+    prepare_expected_checkpoint_files(args.output_root)
+    producer_head = "1" * 40
+    execution_head = "2" * 40
+    artifact = frozen_heads_artifact(args.output_root)
+    artifact["repository_head"] = producer_head
+    (args.output_root / "frozen_probe_heads.json").write_text(json.dumps(artifact), encoding="utf-8")
+    monkeypatch.setattr(RUNNER, "repository_head", lambda: execution_head)
+    monkeypatch.setattr(
+        RUNNER,
+        "sha256_file",
+        lambda path: (
+            "manifest-sha"
+            if pathlib.Path(path).name == "frozen_probe_heads.json"
+            else RUNNER.EXPECTED_FROZEN_PROBE_HEAD_SHA256[pathlib.Path(path).name]
+        ),
+    )
+    monkeypatch.setattr(
+        RUNNER,
+        "load_probe_checkpoint",
+        lambda path, *, map_location="cpu": fake_probe_payload(*parse_checkpoint_name(pathlib.Path(path).name)),
+    )
+    loaded, digest = RUNNER.load_and_verify_frozen_probe_heads(
+        args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="digest"
+    )
+    assert loaded["repository_head"] == producer_head
+    assert loaded["repository_head"] != execution_head
+    assert digest == "manifest-sha"
+
+
+def test_frozen_probe_heads_protocol_digest_mismatch_fails_closed(tmp_path):
+    args = runner_args(tmp_path)
+    args.output_root.mkdir(parents=True)
+    (args.output_root / "frozen_probe_heads.json").write_text(
+        json.dumps(frozen_heads_artifact(args.output_root)), encoding="utf-8"
+    )
+    with pytest.raises(SystemExit, match="protocol_digest"):
+        RUNNER.load_and_verify_frozen_probe_heads(
+            args.output_root, phoner.PhoNERCrossTaskConfig(), protocol_digest_value="other"
         )
 
 
@@ -624,6 +712,12 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
     train_results.write_text('{"do_not_touch": true}\n', encoding="utf-8")
     train_before = (train_results.read_bytes(), train_results.stat().st_mtime_ns)
     heads = frozen_heads_artifact(args.output_root)
+    frozen_protocol_path = args.output_root / "frozen_protocol.json"
+    frozen_protocol_path.write_text(json.dumps(frozen_protocol_artifact()), encoding="utf-8")
+    frozen_heads_path = args.output_root / "frozen_probe_heads.json"
+    frozen_heads_path.write_text(json.dumps(heads), encoding="utf-8")
+    frozen_protocol_before = (frozen_protocol_path.read_bytes(), frozen_protocol_path.stat().st_mtime_ns)
+    frozen_heads_before = (frozen_heads_path.read_bytes(), frozen_heads_path.stat().st_mtime_ns)
     parse_calls = []
 
     class FakeProbe:
@@ -697,10 +791,22 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
     def forbidden(*args, **kwargs):
         raise AssertionError("dev-evaluate reached a training/write API")
 
+    def fake_verify_local(args, frozen_protocol):
+        train = phoner.parse_phoner_split(args.data_root, phoner.PhoNERSplit.TRAIN, include_labels=True, stage="dev-evaluate")
+        dev = phoner.parse_phoner_split(args.data_root, phoner.PhoNERSplit.DEV, include_labels=True, stage="dev-evaluate")
+        parse_calls.extend([phoner.PhoNERSplit.TRAIN, phoner.PhoNERSplit.DEV])
+        labels = {label: index for index, label in enumerate(phoner.label_inventory_from_train(train))}
+        return train, dev, labels
+
     monkeypatch.setattr(RUNNER, "load_tokenizer", lambda *a, **k: StubPhoBERTTokenizer())
-    monkeypatch.setattr(RUNNER, "load_and_verify_frozen_protocol", lambda *a, **k: ({"schema_version": "ok"}, FakeDatasetIdentity(), "digest"))
+    monkeypatch.setattr(RUNNER, "require_clean_execution_tree", lambda: "b" * 40)
+    monkeypatch.setattr(RUNNER, "load_and_verify_frozen_protocol_artifact", lambda *a, **k: ({"schema_version": "ok"}, "digest"))
+    monkeypatch.setattr(RUNNER, "verify_stage1_checkpoint_bytes", lambda *a, **k: {
+        "gate_checkpoint_sha256": phoner.PHONER_GATE_SHA256,
+        "scale_checkpoint_sha256": phoner.PHONER_SCALE_SHA256,
+    })
     monkeypatch.setattr(RUNNER, "load_and_verify_frozen_probe_heads", lambda *a, **k: (heads, "heads-sha"))
-    monkeypatch.setattr(RUNNER, "parse_phoner_split", fake_parse)
+    monkeypatch.setattr(RUNNER, "verify_local_train_dev_identity", fake_verify_local)
     monkeypatch.setattr(RUNNER, "materialize_condition_invariant_chunks", lambda rows, *a, **k: rows)
     monkeypatch.setattr(RUNNER, "load_inventory_inputs", lambda: (object(), inventory_identity(), {"ok": True}))
     monkeypatch.setattr(RUNNER, "make_classifier", lambda inventory: None)
@@ -717,8 +823,11 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
     result_path = args.output_root / "dev_evaluate_results.json"
     result = json.loads(result_path.read_text(encoding="utf-8"))
     assert result["schema_version"] == RUNNER.DEV_EVALUATE_SCHEMA
+    assert result["execution_repository_head"] == "b" * 40
     assert len(result["records"]) == 90
     assert result["frozen_probe_heads"]["sha256"] == "heads-sha"
+    assert result["frozen_probe_heads"]["producer_repository_head"] == "a" * 40
+    assert result["frozen_probe_heads"]["producer_repository_head"] != result["execution_repository_head"]
     assert "FULL_robustness_retention_mean" in result["summaries"]["robustness"]["PHOBERT_NATIVE"]
     assert phoner.PhoNERSplit.TEST not in parse_calls
     for path in checkpoint_dir.iterdir():
@@ -726,6 +835,8 @@ def test_stage_dev_evaluate_writes_dedicated_artifact_without_checkpoint_or_trai
         assert path.read_bytes() == before_bytes
         assert path.stat().st_mtime_ns == before_mtime
     assert (train_results.read_bytes(), train_results.stat().st_mtime_ns) == train_before
+    assert (frozen_protocol_path.read_bytes(), frozen_protocol_path.stat().st_mtime_ns) == frozen_protocol_before
+    assert (frozen_heads_path.read_bytes(), frozen_heads_path.stat().st_mtime_ns) == frozen_heads_before
     with pytest.raises(SystemExit, match="refusing to overwrite"):
         RUNNER.stage_dev_evaluate(args, phoner.PhoNERCrossTaskConfig())
 

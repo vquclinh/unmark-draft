@@ -366,6 +366,90 @@ STAGE1_RETRAINING=NO
 UIT_VSFC_RETUNING=NO
 ```
 
+## Frozen-Head Producer/Execution Provenance Repair Addendum
+
+This addendum records a provenance-gate repair at execution HEAD
+`c843d2874066bacebc275286e79927d12c6f6232`.
+
+Observed failure:
+
+- `dev-evaluate` refused an existing immutable `frozen_probe_heads.json` because
+  the artifact's `repository_head` differed from the current checkout.
+- That field is now interpreted as the producer HEAD of the frozen-head
+  manifest, not a requirement that every later execution-only evaluator run at
+  the same HEAD.
+
+Scientific status:
+
+- `frozen_probe_heads.json` was produced under an earlier repaired
+  implementation HEAD.
+- Fan-out `dev-evaluate` runs under a later execution-only HEAD.
+- The 15 selected probe checkpoint SHA-256 identities are unchanged.
+- No frozen head manifest was rewritten, regenerated, deleted or replaced.
+- No `frozen_protocol.json` rewrite occurred.
+- No re-freeze occurred after partial corrupted DEV metric exposure.
+- No scientific model, protocol, hyperparameter, seed, corruption semantics,
+  condition order, label handling, metric definition, checkpoint-selection rule
+  or Stage-I checkpoint changed.
+
+Repair:
+
+- `frozen_probe_heads.json.repository_head` is preserved as
+  `producer_repository_head` in `dev_evaluate_results.json`.
+- The current clean checkout is recorded separately as
+  `execution_repository_head`.
+- The evaluator still fails closed on all scientific identities: the exact 15
+  pathway/seed entries, selected-head checkpoint SHA-256 values, frozen protocol
+  digest/static coherence, Stage-I Gate/Scale checkpoint SHA-256 values,
+  PhoBERT checkpoint/revision, current scientific config constants and sealed
+  TEST state.
+- A dirty execution tree fails closed before expensive work.
+
+Performance/preflight repair:
+
+- Cheap gates now run before tokenizer loading and TRAIN/DEV parsing: result
+  overwrite check, clean Git HEAD, frozen protocol schema/static digest, Stage-I
+  checkpoint byte SHA-256, frozen-head manifest schema and selected-head SHA-256.
+- `dev-evaluate` no longer recomputes TRAIN condition-invariant coverage. TRAIN
+  is used only to verify local file SHA/row count and TRAIN-derived label
+  inventory against the frozen protocol artifact.
+- DEV file SHA/row count are still verified before DEV measurement, and DEV
+  condition-invariant chunks are materialized with the frozen tokenizer and
+  corruption semantics.
+
+Actual real corrupted DEV evaluation status in this repair task:
+
+- `NOT RUN`.
+
+Post-repair local verification:
+
+```text
+pytest -q tests/test_phoner_cross_task_transfer.py
+41 passed, 3 skipped in 0.94s
+
+pytest -q tests/test_viunmark_training.py::test_the_repository_has_no_other_cross_entropy_call_site
+1 passed in 0.44s
+
+python -m py_compile unmark/cross_task/phoner_transfer.py scripts/cross_task/run_phoner_transfer.py
+passed
+
+pytest -q
+7 failed, 5097 passed, 276 skipped in 140.29s
+```
+
+The seven full-suite failures are the known Stage-1 multiprocessing forkserver
+sandbox failures in `tests/test_stage1_parallel.py`
+(`PermissionError: [Errno 1] Operation not permitted`). No PhoNER cross-task
+test failed.
+
+```text
+PHONER_TEST_READ=NO
+PHONER_TEST_SCORING=NO
+PHONER_TEST_TUNING=NO
+STAGE1_RETRAINING=NO
+UIT_VSFC_RETUNING=NO
+```
+
 ## Dev-Evaluate Fan-Out Optimization Addendum
 
 This addendum records an execution-only optimization after the repaired
