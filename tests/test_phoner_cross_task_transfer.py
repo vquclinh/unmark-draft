@@ -8,13 +8,16 @@ guards.
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import pathlib
+import types
 
 import pytest
 
 from unmark.corruption import CorruptionPurpose
 from unmark.cross_task import phoner_transfer as phoner
+from unmark.stage1.preflight import InventoryIdentity
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -27,6 +30,8 @@ except ImportError:  # pragma: no cover
     TORCH = False
 
 requires_torch = pytest.mark.skipif(not TORCH, reason="torch not installed")
+
+RUNNER = importlib.import_module("scripts.cross_task.run_phoner_transfer")
 
 
 class StubPhoBERTTokenizer:
@@ -284,6 +289,126 @@ def test_no_sentiment_calibration_or_twenty_head_fusion_enters_protocol():
     assert cfg["probe_policy"]["scheduler"] == "none"
     assert cfg["probe_policy"]["warmup_updates"] == 0
     assert cfg["probe_policy"]["gradient_accumulation_steps"] == 1
+
+
+def test_fresh_output_root_creates_checkpoint_directory_automatically(tmp_path):
+    output_root = tmp_path / "fresh-output-root"
+    assert not output_root.exists()
+    paths = RUNNER.ensure_output_dirs(output_root)
+    assert paths["root"] == output_root
+    assert output_root.is_dir()
+    assert paths["checkpoints"] == output_root / "checkpoints"
+    assert paths["checkpoints"].is_dir()
+
+
+def inventory_identity() -> InventoryIdentity:
+    return InventoryIdentity(
+        inventory_schema_version="v1",
+        source_name="Vietnamese syllable inventory",
+        source_author="undertheseanlp",
+        source_revision="135a4d9716e49a981624474156d6f247b9b46f6a",
+        sha256="78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2",
+        size_bytes=116290,
+        license_status="NO_EXPLICIT_LICENSE",
+    )
+
+
+def test_gate_and_scale_loaders_receive_inventory_identity_not_runtime_inventory(monkeypatch, tmp_path):
+    import unmark.evaluation.stage2_dual_finalist as dual_finalist
+    import unmark.evaluation.stage2_scf_pathway as scf_pathway
+
+    identity = inventory_identity()
+    runtime_inventory = object()
+    captured = {}
+
+    def fake_gate_loader(arm, checkpoint, *, inventory, cache_dir):
+        captured["gate"] = inventory
+        return types.SimpleNamespace(kind="gate", arm=arm, checkpoint=checkpoint, cache_dir=cache_dir)
+
+    def fake_scale_loader(checkpoint, *, inventory, cache_dir):
+        captured["scale"] = inventory
+        return types.SimpleNamespace(kind="scale", checkpoint=checkpoint, cache_dir=cache_dir)
+
+    monkeypatch.setattr(RUNNER, "require_checkpoint_sha256", lambda *args, **kwargs: "verified")
+    monkeypatch.setattr(dual_finalist, "load_frozen_unmark_pathway", fake_gate_loader)
+    monkeypatch.setattr(scf_pathway, "load_frozen_scf_pathway", fake_scale_loader)
+    args = types.SimpleNamespace(
+        asset_root=tmp_path,
+        gate_checkpoint=tmp_path / "gate.pt",
+        scale_checkpoint=tmp_path / "scale.pt",
+    )
+
+    RUNNER.load_pathway(phoner.PhoNERPathway.VIUNMARK_GATE, args, inventory_identity=identity)
+    RUNNER.load_pathway(phoner.PhoNERPathway.VIUNMARK_SCALE, args, inventory_identity=identity)
+
+    assert captured["gate"] is identity
+    assert captured["scale"] is identity
+    assert captured["gate"] is not runtime_inventory
+    assert captured["scale"] is not runtime_inventory
+    assert captured["gate"].to_dict()["source_revision"] == "135a4d9716e49a981624474156d6f247b9b46f6a"
+    assert captured["scale"].to_dict()["sha256"] == "78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2"
+
+
+def test_checkpoint_verification_remains_active_before_pathway_load(monkeypatch, tmp_path):
+    import unmark.evaluation.stage2_dual_finalist as dual_finalist
+
+    called = {"loader": False}
+
+    def fail_verification(*args, **kwargs):
+        raise phoner.PhoNERContractViolation("sha mismatch")
+
+    def forbidden_loader(*args, **kwargs):
+        called["loader"] = True
+        raise AssertionError("loader must not run after checkpoint verification failure")
+
+    monkeypatch.setattr(RUNNER, "require_checkpoint_sha256", fail_verification)
+    monkeypatch.setattr(dual_finalist, "load_frozen_unmark_pathway", forbidden_loader)
+    args = types.SimpleNamespace(
+        asset_root=tmp_path,
+        gate_checkpoint=tmp_path / "wrong-gate.pt",
+        scale_checkpoint=tmp_path / "unused-scale.pt",
+    )
+
+    with pytest.raises(phoner.PhoNERContractViolation, match="sha mismatch"):
+        RUNNER.load_pathway(
+            phoner.PhoNERPathway.VIUNMARK_GATE,
+            args,
+            inventory_identity=inventory_identity(),
+        )
+    assert called["loader"] is False
+
+
+def test_phoner_scientific_protocol_constants_unchanged():
+    cfg = phoner.PhoNERCrossTaskConfig()
+    policy = cfg.probe_policy
+    assert phoner.PHONER_FINAL_SEEDS == (53148, 59945, 42941, 720, 9428)
+    assert phoner.PHONER_CORRUPTION_SEED == 19225
+    assert phoner.PHONER_GATE_SHA256 == "6773fbb59c7381ba8ddaa944302124a124f5b8a5cb0a5dbb1a5063f3db4a2a91"
+    assert phoner.PHONER_SCALE_SHA256 == "a32c0167817d457d5067c2a351f2d1b73b26229033f03727f43e2d79f59ef685"
+    assert cfg.encoder_checkpoint == "vinai/phobert-base"
+    assert cfg.encoder_revision == "01daacda68afe13d83023d16ec647239e344a1e6"
+    assert cfg.max_length == 256
+    assert policy.architecture == "Linear(768, num_ner_labels)"
+    assert policy.optimizer == "AdamW"
+    assert policy.learning_rate == pytest.approx(1e-3)
+    assert policy.betas == (0.9, 0.999)
+    assert policy.eps == pytest.approx(1e-8)
+    assert policy.weight_decay == pytest.approx(0.0)
+    assert policy.batch_size == 16
+    assert policy.gradient_accumulation_steps == 1
+    assert policy.max_optimizer_updates == 1000
+    assert policy.eval_every_updates == 100
+    assert policy.scheduler == "none"
+    assert policy.warmup_updates == 0
+    assert policy.amp == "disabled"
+
+
+def test_runner_test_stage_behavior_is_unchanged():
+    source = (REPO / "scripts/cross_task/run_phoner_transfer.py").read_text(encoding="utf-8")
+    assert 'require_stage_access("test-predict", split=PhoNERSplit.TEST, gold=False)' in source
+    assert 'require_stage_access("test-score", split=PhoNERSplit.TEST, gold=True)' in source
+    assert 'parse_phoner_split(\n        args.data_root, PhoNERSplit.TEST, include_labels=False, stage="test-predict"' in source
+    assert "test_scores_from_sealed_predictions.json" in source
 
 
 def test_entity_level_f1_exact_span_and_type():

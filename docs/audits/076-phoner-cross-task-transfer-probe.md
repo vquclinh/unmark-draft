@@ -380,3 +380,72 @@ At audit write time:
 `git diff --stat` reports no tracked-file diff because all implementation files
 for this task are newly added and untracked. This is intentional; no commit was
 created.
+
+## Real-Data Smoke Hardening Addendum
+
+This addendum updates Audit 076 in place after the real-data dataset audit and
+3-pathway 1-seed smoke run at HEAD
+`b7961b1cd3c1621989adbd8109464a41933cd0de`.
+It supersedes the earlier local-only unresolved note that no real-data audit or
+smoke run had been executed.
+
+Real-data audit facts:
+
+- Official TRAIN rows: `5027`.
+- Official DEV rows: `2000`.
+- TEST remained `SEALED_UNREAD`.
+- Coverage audit passed for TRAIN/DEV only:
+  - zero overlength samples in all six conditions;
+  - zero gold entities affected by naive truncation;
+  - identical evaluated word/entity coverage across conditions.
+
+Smoke status:
+
+- The smoke run used exactly 2 optimizer updates and is implementation
+  validation only, not scientific evidence.
+- Native PhoBERT, ViUnMark-Gate and ViUnMark-Scale each produced a best
+  checkpoint.
+- No PhoNER TEST prediction, scoring or tuning was run.
+
+Runtime integration bugs found and repaired:
+
+- The runner now creates the output root's `checkpoints/` directory with
+  `parents=True, exist_ok=True` before checkpoint writes, so a fresh output root
+  is sufficient.
+- Gate and Scale pathway loads now keep the runtime syllable inventory separate
+  from the Stage-I provenance identity. The runtime inventory is used for
+  linguistic eligibility/classification; the Stage-I checkpoint verifiers
+  receive `verify_scientific_inputs().inventory`, whose pinned identity remains:
+  revision `135a4d9716e49a981624474156d6f247b9b46f6a`, sha256
+  `78eeb840d50455b14bd564da5aed7318d96468b8deaad5986b77bf5c538315d2`.
+
+No protocol, model-selection rule or scientific/training hyperparameter changed.
+No raw or corrupted PhoNER text was added to repository artifacts.
+
+Post-hardening verification:
+
+```text
+pytest -q tests/test_phoner_cross_task_transfer.py
+29 passed, 1 skipped in 0.93s
+
+pytest -q tests/test_viunmark_training.py::test_the_repository_has_no_other_cross_entropy_call_site
+1 passed in 0.49s
+
+python -m py_compile unmark/cross_task/phoner_transfer.py scripts/cross_task/run_phoner_transfer.py
+passed
+
+pytest -q
+7 failed, 5085 passed, 274 skipped in 145.56s
+```
+
+The seven full-suite failures are the known Stage-1 multiprocessing forkserver
+sandbox `PermissionError: [Errno 1] Operation not permitted` failures in
+`tests/test_stage1_parallel.py`. No PhoNER cross-task test failed.
+
+```text
+PHONER_TEST_READ=NO
+PHONER_TEST_SCORING=NO
+PHONER_TEST_TUNING=NO
+STAGE1_RETRAINING=NO
+UIT_VSFC_RETUNING=NO
+```

@@ -106,7 +106,26 @@ def default_scale_checkpoint(asset_root: Path) -> Path:
     return asset_root / "stage1" / "viunmark_scale.pt"
 
 
-def load_pathway(pathway: PhoNERPathway, args: argparse.Namespace, *, inventory: Any) -> Any:
+def ensure_output_dirs(output_root: str | Path) -> dict[str, Path]:
+    root = Path(output_root)
+    checkpoints = root / "checkpoints"
+    checkpoints.mkdir(parents=True, exist_ok=True)
+    return {"root": root, "checkpoints": checkpoints}
+
+
+def load_inventory_inputs() -> tuple[Any, Any, dict[str, Any]]:
+    """Return runtime inventory and Stage-I provenance identity as distinct objects."""
+
+    from unmark.stage1.preflight import verify_scientific_inputs
+
+    scientific_inputs = verify_scientific_inputs()
+    runtime_inventory = try_load_inventory()
+    if runtime_inventory is None:
+        raise RuntimeError("scientific inventory verified but runtime inventory did not load")
+    return runtime_inventory, scientific_inputs.inventory, scientific_inputs.report
+
+
+def load_pathway(pathway: PhoNERPathway, args: argparse.Namespace, *, inventory_identity: Any) -> Any:
     if pathway is PhoNERPathway.PHOBERT_NATIVE:
         return load_native_encoder(args.asset_root)
     if pathway is PhoNERPathway.VIUNMARK_GATE:
@@ -117,7 +136,7 @@ def load_pathway(pathway: PhoNERPathway, args: argparse.Namespace, *, inventory:
         return load_frozen_unmark_pathway(
             "UNMARK-A",
             checkpoint,
-            inventory=inventory,
+            inventory=inventory_identity,
             cache_dir=args.asset_root,
         )
     if pathway is PhoNERPathway.VIUNMARK_SCALE:
@@ -127,7 +146,7 @@ def load_pathway(pathway: PhoNERPathway, args: argparse.Namespace, *, inventory:
         require_checkpoint_sha256(checkpoint, PHONER_SCALE_SHA256, label="ViUnMark-Scale")
         return load_frozen_scf_pathway(
             checkpoint,
-            inventory=inventory,
+            inventory=inventory_identity,
             cache_dir=args.asset_root,
         )
     raise ValueError(pathway)
@@ -259,11 +278,13 @@ def train_one(
     id_to_label: dict[int, str],
     config: PhoNERCrossTaskConfig,
     classifier: Any,
+    inventory_identity: Any,
     output_dir: Path,
     smoke: bool = False,
 ) -> dict[str, Any]:
     import torch
 
+    output_dir.mkdir(parents=True, exist_ok=True)
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if pathway is PhoNERPathway.PHOBERT_NATIVE:
@@ -338,6 +359,7 @@ def train_one(
                                 "phobert_revision": ENCODER_REVISION,
                                 "gate_checkpoint_sha256": config.gate_checkpoint_sha256,
                                 "scale_checkpoint_sha256": config.scale_checkpoint_sha256,
+                                "inventory": inventory_identity.to_dict(),
                             },
                             "selection": record,
                             "smoke": smoke,
@@ -372,15 +394,16 @@ def stage_audit(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None
 def stage_train(args: argparse.Namespace, config: PhoNERCrossTaskConfig, *, smoke: bool) -> None:
     import torch
 
-    output_root = Path(args.output_root)
+    output_dirs = ensure_output_dirs(args.output_root)
+    output_root = output_dirs["root"]
     train = parse_phoner_split(args.data_root, PhoNERSplit.TRAIN, include_labels=True, stage="smoke-train" if smoke else "train-dev")
     dev = parse_phoner_split(args.data_root, PhoNERSplit.DEV, include_labels=True, stage="smoke-train" if smoke else "train-dev")
     labels = label_inventory_from_train(train)
     label_to_id = {label: index for index, label in enumerate(labels)}
     id_to_label = {index: label for label, index in label_to_id.items()}
     tokenizer = load_tokenizer(args.asset_root)
-    inventory = try_load_inventory()
-    classifier = make_classifier(inventory) if inventory is not None else None
+    runtime_inventory, inventory_identity, inventory_report = load_inventory_inputs()
+    classifier = make_classifier(runtime_inventory)
     train = materialize_condition_invariant_chunks(
         train, tokenizer, config, purpose=CorruptionPurpose.SCIENTIFIC
     )
@@ -390,7 +413,7 @@ def stage_train(args: argparse.Namespace, config: PhoNERCrossTaskConfig, *, smok
     seeds = (args.seed,) if smoke else PHONER_FINAL_SEEDS
     results = []
     for pathway in config.pathways:
-        loaded = load_pathway(pathway, args, inventory=inventory)
+        loaded = load_pathway(pathway, args, inventory_identity=inventory_identity)
         for seed in seeds:
             results.append(
                 train_one(
@@ -404,7 +427,8 @@ def stage_train(args: argparse.Namespace, config: PhoNERCrossTaskConfig, *, smok
                     id_to_label=id_to_label,
                     config=config,
                     classifier=classifier,
-                    output_dir=output_root / "checkpoints",
+                    inventory_identity=inventory_identity,
+                    output_dir=output_dirs["checkpoints"],
                     smoke=smoke,
                 )
             )
@@ -415,7 +439,20 @@ def stage_train(args: argparse.Namespace, config: PhoNERCrossTaskConfig, *, smok
             loaded.adapter.cpu()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    write_json(output_root / ("smoke_results.json" if smoke else "train_dev_results.json"), results)
+    write_json(
+        output_root / ("smoke_results.json" if smoke else "train_dev_results.json"),
+        {
+            "verified_asset_identities": {
+                "phobert_checkpoint": ENCODER_CHECKPOINT,
+                "phobert_revision": ENCODER_REVISION,
+                "gate_checkpoint_sha256": config.gate_checkpoint_sha256,
+                "scale_checkpoint_sha256": config.scale_checkpoint_sha256,
+                "inventory": inventory_identity.to_dict(),
+            },
+            "inventory_preflight": inventory_report,
+            "runs": results,
+        },
+    )
 
 
 def stage_freeze(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
@@ -449,6 +486,7 @@ def stage_freeze(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> Non
 def stage_test_predict(args: argparse.Namespace, config: PhoNERCrossTaskConfig) -> None:
     import torch
 
+    output_dirs = ensure_output_dirs(args.output_root)
     require_stage_access("test-predict", split=PhoNERSplit.TEST, gold=False)
     test_examples = parse_phoner_split(
         args.data_root, PhoNERSplit.TEST, include_labels=False, stage="test-predict"
@@ -458,20 +496,20 @@ def stage_test_predict(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
     )
     labels = label_inventory_from_train(train_examples)
     tokenizer = load_tokenizer(args.asset_root)
-    inventory = try_load_inventory()
-    classifier = make_classifier(inventory) if inventory is not None else None
-    output_path = Path(args.prediction_artifact or Path(args.output_root) / "test_predictions_sealed.json")
+    runtime_inventory, inventory_identity, inventory_report = load_inventory_inputs()
+    classifier = make_classifier(runtime_inventory)
+    output_path = Path(args.prediction_artifact or output_dirs["root"] / "test_predictions_sealed.json")
     runs = []
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     for pathway in config.pathways:
-        loaded = load_pathway(pathway, args, inventory=inventory)
+        loaded = load_pathway(pathway, args, inventory_identity=inventory_identity)
         if pathway is PhoNERPathway.PHOBERT_NATIVE:
             loaded.to(device)
         else:
             loaded.encoder.to(device)
             loaded.adapter.to(device)
         for seed in PHONER_FINAL_SEEDS:
-            checkpoint_path = Path(args.output_root) / "checkpoints" / f"{pathway.value}_seed-{seed}_best.pt"
+            checkpoint_path = output_dirs["checkpoints"] / f"{pathway.value}_seed-{seed}_best.pt"
             payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
             label_to_id = {str(k): int(v) for k, v in payload["label_to_id"].items()}
             id_to_label = {index: label for label, index in label_to_id.items()}
@@ -523,6 +561,14 @@ def stage_test_predict(args: argparse.Namespace, config: PhoNERCrossTaskConfig) 
             "contains_gold_labels": False,
             "contains_original_or_corrupted_text": False,
             "config": config.to_dict(),
+            "verified_asset_identities": {
+                "phobert_checkpoint": ENCODER_CHECKPOINT,
+                "phobert_revision": ENCODER_REVISION,
+                "gate_checkpoint_sha256": config.gate_checkpoint_sha256,
+                "scale_checkpoint_sha256": config.scale_checkpoint_sha256,
+                "inventory": inventory_identity.to_dict(),
+            },
+            "inventory_preflight": inventory_report,
             "runs": runs,
         },
     )
