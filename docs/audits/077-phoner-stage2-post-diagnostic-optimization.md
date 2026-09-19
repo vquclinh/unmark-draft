@@ -39,7 +39,30 @@ v3 amendment must be created:
 phoner_stage2_optimized/umbrella_post_diagnostic_protocol_v3_amendment.json
 ```
 
-The v3 amendment supersedes v2 without mutating it. It records:
+The v3 amendment supersedes v2 without mutating it. `protocol-amend` requires an
+explicit external Audit-076 parent via:
+
+```text
+--audit076-frozen-protocol PATH
+```
+
+The parent is not inferred from the Audit-077 output root and there is no
+fallback to `OUTPUT_ROOT/frozen_protocol.json`. The verified real parent is:
+
+```text
+/content/drive/MyDrive/UNMARK/UNMARK-BACKUP/phoner-transfer/326e87417146-official-v1/frozen_protocol.json
+```
+
+Expected parent identity:
+
+```text
+schema_version = phoner-cross-task-frozen-protocol-v1
+sha256 = c64dd5dc5bd162582491b91b4c015dfe29279c76985edeebf778014e8bddee59
+protocol_digest = ba0d07ba891aa01a89c4f80d26b6efc5e889e894e9e4a16c328a63e9f5ad3433
+protocol_frozen = true
+```
+
+The v3 amendment records:
 
 - v2 path, schema, and SHA-256 parent identity
 - amendment reason
@@ -49,7 +72,8 @@ The v3 amendment supersedes v2 without mutating it. It records:
 - TRAIN and DEV local file SHA-256 values
 - TRAIN and DEV row counts
 - dataset source/revision provenance if available
-- Audit-076 frozen protocol parent identity/digest
+- supplied external Audit-076 frozen protocol path, SHA-256, schema,
+  `protocol_digest`, config digest, and producer/frozen identity where present
 - all contracts below in machine-readable form
 
 Future `build-bank` requires this v3 amended/final protocol, not v2. In this
@@ -536,7 +560,7 @@ pytest -q tests/test_phoner_stage2_optimization.py tests/test_phoner_cross_task_
 Result:
 
 ```text
-65 passed, 5 skipped
+67 passed, 5 skipped
 ```
 
 ```text
@@ -566,7 +590,7 @@ pytest -q
 Result:
 
 ```text
-7 failed, 5121 passed, 278 skipped
+7 failed, 5123 passed, 278 skipped
 ```
 
 The 7 failures are the known Stage-I multiprocessing forkserver sandbox

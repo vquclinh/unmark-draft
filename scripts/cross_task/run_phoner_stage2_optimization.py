@@ -59,6 +59,8 @@ from unmark.viunmark.config import SIX_CONDITIONS
 
 OFFICIAL_AUDITED_TRAIN_ROWS = 5027
 OFFICIAL_AUDITED_DEV_ROWS = 2000
+AUDIT076_FROZEN_PROTOCOL_SCHEMA = "phoner-cross-task-frozen-protocol-v1"
+AUDIT076_FROZEN_PROTOCOL_DIGEST = "ba0d07ba891aa01a89c4f80d26b6efc5e889e894e9e4a16c328a63e9f5ad3433"
 TEST_STAGES = {Stage2Stage.TEST_PREDICT.value, Stage2Stage.TEST_SCORE.value}
 
 
@@ -98,10 +100,6 @@ def protocol_path(output_root: str | Path, config: OptimizedPhoNERStage2Config) 
 
 def amended_protocol_path(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Path:
     return namespace_root(output_root, config) / "umbrella_post_diagnostic_protocol_v3_amendment.json"
-
-
-def audit076_frozen_protocol_path(output_root: str | Path) -> Path:
-    return Path(output_root) / "frozen_protocol.json"
 
 
 def stage_artifact_path(
@@ -174,6 +172,8 @@ def require_protocol(output_root: str | Path, config: OptimizedPhoNERStage2Confi
         raise SystemExit("optimized protocol digest mismatch")
     if payload.get("test_enabled") is not False:
         raise SystemExit("optimized protocol must keep TEST disabled")
+    if not isinstance(payload.get("audit076_parent_identity"), Mapping):
+        raise SystemExit("amended protocol must bind an Audit-076 parent identity")
     return payload
 
 
@@ -231,18 +231,50 @@ def parent_v2_identity(output_root: str | Path, config: OptimizedPhoNERStage2Con
     }
 
 
-def audit076_parent_identity(output_root: str | Path) -> dict[str, Any]:
-    path = audit076_frozen_protocol_path(output_root)
+def audit076_parent_identity(path_value: str | Path | None) -> dict[str, Any]:
+    if path_value is None:
+        raise SystemExit("--audit076-frozen-protocol is required for protocol-amend")
+    path = Path(path_value)
     if not path.exists():
-        raise SystemExit("Audit-076 frozen_protocol.json parent identity is required before protocol amendment")
+        raise SystemExit(f"Audit-076 frozen protocol does not exist: {path}")
+    if not path.is_file():
+        raise SystemExit(f"Audit-076 frozen protocol is not a regular file: {path}")
     data = path.read_bytes()
     payload = json.loads(data.decode("utf-8"))
+    if payload.get("schema_version") != AUDIT076_FROZEN_PROTOCOL_SCHEMA:
+        raise SystemExit("Audit-076 parent has the wrong schema_version")
+    if payload.get("protocol_frozen") is not True:
+        raise SystemExit("Audit-076 parent must mark protocol_frozen=true")
+    if payload.get("protocol_digest") != AUDIT076_FROZEN_PROTOCOL_DIGEST:
+        raise SystemExit("Audit-076 parent protocol_digest does not match the frozen expected digest")
+    if payload.get("test_read_before_freeze") is not False:
+        raise SystemExit("Audit-076 parent reports TEST was read before freeze")
+    if payload.get("test_scored_before_freeze") is not False:
+        raise SystemExit("Audit-076 parent reports TEST was scored before freeze")
+    dataset_identity = payload.get("dataset_identity")
+    if not isinstance(dataset_identity, Mapping):
+        raise SystemExit("Audit-076 parent must contain dataset_identity")
+    split_files = dataset_identity.get("split_files")
+    if not isinstance(split_files, Mapping):
+        raise SystemExit("Audit-076 parent dataset_identity must contain split_files")
+    test_identity = split_files.get("test")
+    if not isinstance(test_identity, Mapping):
+        raise SystemExit("Audit-076 parent dataset_identity must contain sealed TEST identity")
+    if test_identity.get("path") != "SEALED_UNREAD":
+        raise SystemExit("Audit-076 parent does not preserve sealed TEST path")
+    if test_identity.get("gold_labels_read") is not False:
+        raise SystemExit("Audit-076 parent reports TEST gold labels were read")
     return {
-        "path": path.name,
+        "external_parent_path": str(path),
         "sha256": sha256_bytes(data),
         "schema_version": payload.get("schema_version"),
         "protocol_digest": payload.get("protocol_digest"),
         "config_digest": stable_digest(payload.get("config", {})) if isinstance(payload.get("config"), Mapping) else None,
+        "protocol_frozen": payload.get("protocol_frozen"),
+        "test_read_before_freeze": payload.get("test_read_before_freeze"),
+        "test_scored_before_freeze": payload.get("test_scored_before_freeze"),
+        "producer_repository_head": payload.get("repository_head") or payload.get("execution_repository_head"),
+        "dataset_identity_digest": stable_digest(dataset_identity),
     }
 
 
@@ -309,7 +341,7 @@ def stage_protocol_amend(args: argparse.Namespace, config: OptimizedPhoNERStage2
     head, clean = require_clean_execution_tree()
     v2_parent = parent_v2_identity(output_root, config)
     dataset = train_dev_dataset_provenance(args.data_root)
-    audit076_parent = audit076_parent_identity(output_root)
+    audit076_parent = audit076_parent_identity(getattr(args, "audit076_frozen_protocol", None))
     payload = {
         "schema_version": PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
         "supersedes": v2_parent,
@@ -581,6 +613,7 @@ def main() -> None:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--gate-checkpoint", default=None)
     parser.add_argument("--scale-checkpoint", default=None)
+    parser.add_argument("--audit076-frozen-protocol", default=None)
     args = parser.parse_args()
     run_stage(args.stage, args, OptimizedPhoNERStage2Config())
 

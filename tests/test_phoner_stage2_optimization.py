@@ -128,12 +128,7 @@ def test_d4_stage_is_no_training_in_runner(tmp_path):
     RUNNER.stage_protocol(args, cfg)
     RUNNER.write_json(
         RUNNER.amended_protocol_path(tmp_path, cfg),
-        {
-            "schema_version": opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
-            "config_digest": opt.stable_digest(cfg.to_dict()),
-            "test_enabled": False,
-            "expected_training_schedule_closure_for_current_corpus": opt.training_schedule_closure(5027),
-        },
+        _minimal_v3_protocol(cfg),
     )
     RUNNER.write_json(
         RUNNER.representation_bank_manifest_path(tmp_path, cfg),
@@ -388,17 +383,61 @@ def _write_phoner_conll(path: pathlib.Path, rows: int) -> None:
     path.write_text(("a O\n\n" * rows), encoding="utf-8")
 
 
+def _audit076_parent_payload(**overrides):
+    payload = {
+        "schema_version": RUNNER.AUDIT076_FROZEN_PROTOCOL_SCHEMA,
+        "protocol_frozen": True,
+        "protocol_digest": RUNNER.AUDIT076_FROZEN_PROTOCOL_DIGEST,
+        "test_read_before_freeze": False,
+        "test_scored_before_freeze": False,
+        "repository_head": "326e874171464970293bd08929debffc6c6f5ee1",
+        "config": {"dataset_id": "PhoNER_COVID19"},
+        "dataset_identity": {
+            "dataset_id": "PhoNER_COVID19",
+            "split_files": {
+                "train": {"sha256": "train", "gold_labels_read": True},
+                "dev": {"sha256": "dev", "gold_labels_read": True},
+                "test": {
+                    "path": "SEALED_UNREAD",
+                    "sha256": "SEALED_UNREAD",
+                    "row_count": "SEALED_UNREAD",
+                    "gold_labels_read": False,
+                },
+            },
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _minimal_v3_protocol(cfg):
+    return {
+        "schema_version": opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
+        "config_digest": opt.stable_digest(cfg.to_dict()),
+        "test_enabled": False,
+        "audit076_parent_identity": {
+            "external_parent_path": "/external/frozen_protocol.json",
+            "sha256": "parent-sha",
+            "schema_version": RUNNER.AUDIT076_FROZEN_PROTOCOL_SCHEMA,
+            "protocol_digest": RUNNER.AUDIT076_FROZEN_PROTOCOL_DIGEST,
+        },
+        "expected_training_schedule_closure_for_current_corpus": opt.training_schedule_closure(5027),
+    }
+
+
 def test_protocol_amendment_preserves_v2_and_binds_head_train_dev_and_parent(monkeypatch, tmp_path):
     cfg = opt.OptimizedPhoNERStage2Config()
     data_root = tmp_path / "data"
     data_root.mkdir()
     _write_phoner_conll(data_root / "train_word.conll", 5027)
     _write_phoner_conll(data_root / "dev_word.conll", 2000)
-    args = types.SimpleNamespace(output_root=tmp_path, data_root=data_root)
+    parent = tmp_path / "external" / "audit076" / "frozen_protocol.json"
+    parent.parent.mkdir(parents=True)
+    RUNNER.write_json(parent, _audit076_parent_payload())
+    args = types.SimpleNamespace(output_root=tmp_path, data_root=data_root, audit076_frozen_protocol=parent)
     RUNNER.stage_protocol(args, cfg)
     v2_path = RUNNER.protocol_path(tmp_path, cfg)
     v2_before = v2_path.read_bytes()
-    RUNNER.write_json(tmp_path / "frozen_protocol.json", {"schema_version": "audit076", "protocol_digest": "parent"})
     monkeypatch.setattr(RUNNER, "require_clean_execution_tree", lambda: ("HEAD123", True))
 
     RUNNER.stage_protocol_amend(args, cfg)
@@ -412,10 +451,74 @@ def test_protocol_amendment_preserves_v2_and_binds_head_train_dev_and_parent(mon
     assert amended["dataset_provenance"]["splits"]["train"]["row_count"] == 5027
     assert amended["dataset_provenance"]["splits"]["dev"]["row_count"] == 2000
     assert amended["dataset_provenance"]["test_read"] is False
-    assert amended["audit076_parent_identity"]["protocol_digest"] == "parent"
+    assert amended["audit076_parent_identity"]["external_parent_path"] == str(parent)
+    assert amended["audit076_parent_identity"]["sha256"] == RUNNER.sha256_file(parent)
+    assert amended["audit076_parent_identity"]["schema_version"] == RUNNER.AUDIT076_FROZEN_PROTOCOL_SCHEMA
+    assert amended["audit076_parent_identity"]["protocol_digest"] == RUNNER.AUDIT076_FROZEN_PROTOCOL_DIGEST
+    assert amended["audit076_parent_identity"]["protocol_frozen"] is True
+    assert amended["audit076_parent_identity"]["producer_repository_head"] == "326e874171464970293bd08929debffc6c6f5ee1"
     assert amended["no_new_campaign_scientific_results_observed_between_v2_and_v3"] is True
+    assert not RUNNER.representation_bank_manifest_path(tmp_path, cfg).exists()
+    assert not RUNNER.training_schedule_closure_path(tmp_path, cfg).exists()
+    assert not RUNNER.stage_artifact_path(tmp_path, cfg, opt.Stage2Stage.D1_TRAIN, "d1_train_plan.json").exists()
 
     with pytest.raises(SystemExit, match="refusing to overwrite"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+
+def test_protocol_amendment_requires_explicit_external_audit076_parent(monkeypatch, tmp_path):
+    cfg = opt.OptimizedPhoNERStage2Config()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    _write_phoner_conll(data_root / "train_word.conll", 5027)
+    _write_phoner_conll(data_root / "dev_word.conll", 2000)
+    args = types.SimpleNamespace(output_root=tmp_path, data_root=data_root)
+    RUNNER.stage_protocol(args, cfg)
+    monkeypatch.setattr(RUNNER, "require_clean_execution_tree", lambda: ("HEAD123", True))
+    with pytest.raises(SystemExit, match="--audit076-frozen-protocol is required"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+
+def test_protocol_amendment_refuses_bad_audit076_parent(monkeypatch, tmp_path):
+    cfg = opt.OptimizedPhoNERStage2Config()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    _write_phoner_conll(data_root / "train_word.conll", 5027)
+    _write_phoner_conll(data_root / "dev_word.conll", 2000)
+    RUNNER.stage_protocol(types.SimpleNamespace(output_root=tmp_path), cfg)
+    monkeypatch.setattr(RUNNER, "require_clean_execution_tree", lambda: ("HEAD123", True))
+
+    missing = tmp_path / "missing.json"
+    args = types.SimpleNamespace(output_root=tmp_path, data_root=data_root, audit076_frozen_protocol=missing)
+    with pytest.raises(SystemExit, match="does not exist"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    wrong_schema = tmp_path / "wrong_schema.json"
+    RUNNER.write_json(wrong_schema, _audit076_parent_payload(schema_version="wrong"))
+    args.audit076_frozen_protocol = wrong_schema
+    with pytest.raises(SystemExit, match="wrong schema_version"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    wrong_digest = tmp_path / "wrong_digest.json"
+    RUNNER.write_json(wrong_digest, _audit076_parent_payload(protocol_digest="not-the-parent"))
+    args.audit076_frozen_protocol = wrong_digest
+    with pytest.raises(SystemExit, match="protocol_digest"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    missing_digest = tmp_path / "missing_digest.json"
+    payload = _audit076_parent_payload()
+    del payload["protocol_digest"]
+    RUNNER.write_json(missing_digest, payload)
+    args.audit076_frozen_protocol = missing_digest
+    with pytest.raises(SystemExit, match="protocol_digest"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    test_open = tmp_path / "test_open.json"
+    payload = _audit076_parent_payload()
+    payload["dataset_identity"]["split_files"]["test"]["path"] = "test_word.conll"
+    RUNNER.write_json(test_open, payload)
+    args.audit076_frozen_protocol = test_open
+    with pytest.raises(SystemExit, match="sealed TEST"):
         RUNNER.stage_protocol_amend(args, cfg)
 
 
@@ -428,12 +531,7 @@ def test_build_bank_and_d1_train_require_amended_protocol_and_schedule(tmp_path)
 
     RUNNER.write_json(
         RUNNER.amended_protocol_path(tmp_path, cfg),
-        {
-            "schema_version": opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
-            "config_digest": opt.stable_digest(cfg.to_dict()),
-            "test_enabled": False,
-            "expected_training_schedule_closure_for_current_corpus": opt.training_schedule_closure(5027),
-        },
+        _minimal_v3_protocol(cfg),
     )
     with pytest.raises(SystemExit, match="build-bank is fail-closed"):
         RUNNER.stage_build_bank(args, cfg)
