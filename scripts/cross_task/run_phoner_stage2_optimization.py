@@ -60,6 +60,7 @@ from unmark.viunmark.config import SIX_CONDITIONS
 OFFICIAL_AUDITED_TRAIN_ROWS = 5027
 OFFICIAL_AUDITED_DEV_ROWS = 2000
 AUDIT076_FROZEN_PROTOCOL_SCHEMA = "phoner-cross-task-frozen-protocol-v1"
+AUDIT076_FROZEN_PROTOCOL_SHA256 = "c64dd5dc5bd162582491b91b4c015dfe29279c76985edeebf778014e8bddee59"
 AUDIT076_FROZEN_PROTOCOL_DIGEST = "ba0d07ba891aa01a89c4f80d26b6efc5e889e894e9e4a16c328a63e9f5ad3433"
 TEST_STAGES = {Stage2Stage.TEST_PREDICT.value, Stage2Stage.TEST_SCORE.value}
 
@@ -240,6 +241,9 @@ def audit076_parent_identity(path_value: str | Path | None) -> dict[str, Any]:
     if not path.is_file():
         raise SystemExit(f"Audit-076 frozen protocol is not a regular file: {path}")
     data = path.read_bytes()
+    parent_sha256 = sha256_bytes(data)
+    if parent_sha256 != AUDIT076_FROZEN_PROTOCOL_SHA256:
+        raise SystemExit("Audit-076 parent SHA256 does not match the frozen expected file identity")
     payload = json.loads(data.decode("utf-8"))
     if payload.get("schema_version") != AUDIT076_FROZEN_PROTOCOL_SCHEMA:
         raise SystemExit("Audit-076 parent has the wrong schema_version")
@@ -260,13 +264,17 @@ def audit076_parent_identity(path_value: str | Path | None) -> dict[str, Any]:
     test_identity = split_files.get("test")
     if not isinstance(test_identity, Mapping):
         raise SystemExit("Audit-076 parent dataset_identity must contain sealed TEST identity")
-    if test_identity.get("path") != "SEALED_UNREAD":
-        raise SystemExit("Audit-076 parent does not preserve sealed TEST path")
+    if test_identity.get("split") != "test":
+        raise SystemExit("Audit-076 parent TEST identity must have split=test")
     if test_identity.get("gold_labels_read") is not False:
         raise SystemExit("Audit-076 parent reports TEST gold labels were read")
+    if test_identity.get("row_count") != "SEALED_UNREAD":
+        raise SystemExit("Audit-076 parent does not preserve sealed TEST row_count")
+    if test_identity.get("sha256") != "SEALED_UNREAD":
+        raise SystemExit("Audit-076 parent does not preserve sealed TEST sha256")
     return {
         "external_parent_path": str(path),
-        "sha256": sha256_bytes(data),
+        "sha256": parent_sha256,
         "schema_version": payload.get("schema_version"),
         "protocol_digest": payload.get("protocol_digest"),
         "config_digest": stable_digest(payload.get("config", {})) if isinstance(payload.get("config"), Mapping) else None,
@@ -275,6 +283,13 @@ def audit076_parent_identity(path_value: str | Path | None) -> dict[str, Any]:
         "test_scored_before_freeze": payload.get("test_scored_before_freeze"),
         "producer_repository_head": payload.get("repository_head") or payload.get("execution_repository_head"),
         "dataset_identity_digest": stable_digest(dataset_identity),
+        "test_seal": {
+            "test_gold_labels_read": test_identity.get("gold_labels_read"),
+            "test_row_count": test_identity.get("row_count"),
+            "test_sha256": test_identity.get("sha256"),
+            "test_path_recorded_in_parent": bool(test_identity.get("path")),
+            "test_path_dereferenced_by_audit077": False,
+        },
     }
 
 

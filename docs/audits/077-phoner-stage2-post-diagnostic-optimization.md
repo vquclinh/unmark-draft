@@ -62,6 +62,23 @@ protocol_digest = ba0d07ba891aa01a89c4f80d26b6efc5e889e894e9e4a16c328a63e9f5ad34
 protocol_frozen = true
 ```
 
+Audit-077 initially interpreted the Audit-076 TEST seal too narrowly by requiring
+the parent `dataset_identity.split_files.test.path` field itself to be the
+`SEALED_UNREAD` sentinel. That was incorrect. Audit-076 sealed TEST content,
+hash, and count while retaining a historical external/local pathname as metadata.
+The corrected v3 validator treats that pathname as inert parent metadata only:
+it does not open, stat, resolve, hash, or otherwise dereference the TEST path.
+The fail-closed seal checks are:
+
+- `dataset_identity.split_files.test` exists
+- `split = test`
+- `gold_labels_read = false`
+- `row_count = SEALED_UNREAD`
+- `sha256 = SEALED_UNREAD`
+- `test_read_before_freeze = false`
+- `test_scored_before_freeze = false`
+- parent schema, digest, and `protocol_frozen = true` remain exact
+
 The v3 amendment records:
 
 - v2 path, schema, and SHA-256 parent identity
@@ -74,6 +91,10 @@ The v3 amendment records:
 - dataset source/revision provenance if available
 - supplied external Audit-076 frozen protocol path, SHA-256, schema,
   `protocol_digest`, config digest, and producer/frozen identity where present
+- safe Audit-076 TEST seal summary:
+  `test_gold_labels_read`, `test_row_count`, `test_sha256`,
+  `test_path_recorded_in_parent`, and
+  `test_path_dereferenced_by_audit077 = false`
 - all contracts below in machine-readable form
 
 Future `build-bank` requires this v3 amended/final protocol, not v2. In this
@@ -560,7 +581,7 @@ pytest -q tests/test_phoner_stage2_optimization.py tests/test_phoner_cross_task_
 Result:
 
 ```text
-67 passed, 5 skipped
+68 passed, 5 skipped
 ```
 
 ```text
@@ -590,7 +611,7 @@ pytest -q
 Result:
 
 ```text
-7 failed, 5123 passed, 278 skipped
+7 failed, 5124 passed, 278 skipped
 ```
 
 The 7 failures are the known Stage-I multiprocessing forkserver sandbox

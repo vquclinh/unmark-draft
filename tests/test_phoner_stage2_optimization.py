@@ -398,7 +398,9 @@ def _audit076_parent_payload(**overrides):
                 "train": {"sha256": "train", "gold_labels_read": True},
                 "dev": {"sha256": "dev", "gold_labels_read": True},
                 "test": {
-                    "path": "SEALED_UNREAD",
+                    "format": "conll",
+                    "path": "/content/PhoNER_COVID19_word_conll/test_word.conll",
+                    "split": "test",
                     "sha256": "SEALED_UNREAD",
                     "row_count": "SEALED_UNREAD",
                     "gold_labels_read": False,
@@ -434,6 +436,8 @@ def test_protocol_amendment_preserves_v2_and_binds_head_train_dev_and_parent(mon
     parent = tmp_path / "external" / "audit076" / "frozen_protocol.json"
     parent.parent.mkdir(parents=True)
     RUNNER.write_json(parent, _audit076_parent_payload())
+    parent_before = parent.read_bytes()
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(parent))
     args = types.SimpleNamespace(output_root=tmp_path, data_root=data_root, audit076_frozen_protocol=parent)
     RUNNER.stage_protocol(args, cfg)
     v2_path = RUNNER.protocol_path(tmp_path, cfg)
@@ -443,6 +447,7 @@ def test_protocol_amendment_preserves_v2_and_binds_head_train_dev_and_parent(mon
     RUNNER.stage_protocol_amend(args, cfg)
 
     assert v2_path.read_bytes() == v2_before
+    assert parent.read_bytes() == parent_before
     amended = RUNNER.read_json(RUNNER.amended_protocol_path(tmp_path, cfg))
     assert amended["schema_version"] == opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA
     assert amended["supersedes"]["sha256"] == RUNNER.sha256_bytes(v2_before)
@@ -457,6 +462,13 @@ def test_protocol_amendment_preserves_v2_and_binds_head_train_dev_and_parent(mon
     assert amended["audit076_parent_identity"]["protocol_digest"] == RUNNER.AUDIT076_FROZEN_PROTOCOL_DIGEST
     assert amended["audit076_parent_identity"]["protocol_frozen"] is True
     assert amended["audit076_parent_identity"]["producer_repository_head"] == "326e874171464970293bd08929debffc6c6f5ee1"
+    assert amended["audit076_parent_identity"]["test_seal"] == {
+        "test_gold_labels_read": False,
+        "test_row_count": "SEALED_UNREAD",
+        "test_sha256": "SEALED_UNREAD",
+        "test_path_recorded_in_parent": True,
+        "test_path_dereferenced_by_audit077": False,
+    }
     assert amended["no_new_campaign_scientific_results_observed_between_v2_and_v3"] is True
     assert not RUNNER.representation_bank_manifest_path(tmp_path, cfg).exists()
     assert not RUNNER.training_schedule_closure_path(tmp_path, cfg).exists()
@@ -479,6 +491,68 @@ def test_protocol_amendment_requires_explicit_external_audit076_parent(monkeypat
         RUNNER.stage_protocol_amend(args, cfg)
 
 
+def test_protocol_amendment_never_dereferences_parent_test_path(monkeypatch, tmp_path):
+    cfg = opt.OptimizedPhoNERStage2Config()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    _write_phoner_conll(data_root / "train_word.conll", 5027)
+    _write_phoner_conll(data_root / "dev_word.conll", 2000)
+    forbidden_test_path = pathlib.Path("/content/PhoNER_COVID19_word_conll/test_word.conll")
+    parent = tmp_path / "external" / "audit076" / "frozen_protocol.json"
+    parent.parent.mkdir(parents=True)
+    RUNNER.write_json(
+        parent,
+        _audit076_parent_payload(
+            dataset_identity={
+                "dataset_id": "PhoNER_COVID19",
+                "split_files": {
+                    "train": {"sha256": "train", "gold_labels_read": True},
+                    "dev": {"sha256": "dev", "gold_labels_read": True},
+                    "test": {
+                        "format": "conll",
+                        "path": str(forbidden_test_path),
+                        "split": "test",
+                        "sha256": "SEALED_UNREAD",
+                        "row_count": "SEALED_UNREAD",
+                        "gold_labels_read": False,
+                    },
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(parent))
+    RUNNER.stage_protocol(types.SimpleNamespace(output_root=tmp_path), cfg)
+    monkeypatch.setattr(RUNNER, "require_clean_execution_tree", lambda: ("HEAD123", True))
+
+    original_exists = pathlib.Path.exists
+    original_is_file = pathlib.Path.is_file
+    original_stat = pathlib.Path.stat
+    original_open = pathlib.Path.open
+    original_read_bytes = pathlib.Path.read_bytes
+
+    def forbid_test_path(method_name, original):
+        def guarded(self, *args, **kwargs):
+            if self == forbidden_test_path:
+                raise AssertionError(f"Audit-077 dereferenced TEST path via Path.{method_name}")
+            return original(self, *args, **kwargs)
+
+        return guarded
+
+    monkeypatch.setattr(pathlib.Path, "exists", forbid_test_path("exists", original_exists))
+    monkeypatch.setattr(pathlib.Path, "is_file", forbid_test_path("is_file", original_is_file))
+    monkeypatch.setattr(pathlib.Path, "stat", forbid_test_path("stat", original_stat))
+    monkeypatch.setattr(pathlib.Path, "open", forbid_test_path("open", original_open))
+    monkeypatch.setattr(pathlib.Path, "read_bytes", forbid_test_path("read_bytes", original_read_bytes))
+
+    RUNNER.stage_protocol_amend(
+        types.SimpleNamespace(output_root=tmp_path, data_root=data_root, audit076_frozen_protocol=parent),
+        cfg,
+    )
+    amended = RUNNER.read_json(RUNNER.amended_protocol_path(tmp_path, cfg))
+    assert amended["audit076_parent_identity"]["test_seal"]["test_path_recorded_in_parent"] is True
+    assert amended["audit076_parent_identity"]["test_seal"]["test_path_dereferenced_by_audit077"] is False
+
+
 def test_protocol_amendment_refuses_bad_audit076_parent(monkeypatch, tmp_path):
     cfg = opt.OptimizedPhoNERStage2Config()
     data_root = tmp_path / "data"
@@ -493,14 +567,23 @@ def test_protocol_amendment_refuses_bad_audit076_parent(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="does not exist"):
         RUNNER.stage_protocol_amend(args, cfg)
 
+    sha_mismatch = tmp_path / "sha_mismatch.json"
+    RUNNER.write_json(sha_mismatch, _audit076_parent_payload())
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", "not-the-file-sha")
+    args.audit076_frozen_protocol = sha_mismatch
+    with pytest.raises(SystemExit, match="SHA256"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
     wrong_schema = tmp_path / "wrong_schema.json"
     RUNNER.write_json(wrong_schema, _audit076_parent_payload(schema_version="wrong"))
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(wrong_schema))
     args.audit076_frozen_protocol = wrong_schema
     with pytest.raises(SystemExit, match="wrong schema_version"):
         RUNNER.stage_protocol_amend(args, cfg)
 
     wrong_digest = tmp_path / "wrong_digest.json"
     RUNNER.write_json(wrong_digest, _audit076_parent_payload(protocol_digest="not-the-parent"))
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(wrong_digest))
     args.audit076_frozen_protocol = wrong_digest
     with pytest.raises(SystemExit, match="protocol_digest"):
         RUNNER.stage_protocol_amend(args, cfg)
@@ -509,17 +592,53 @@ def test_protocol_amendment_refuses_bad_audit076_parent(monkeypatch, tmp_path):
     payload = _audit076_parent_payload()
     del payload["protocol_digest"]
     RUNNER.write_json(missing_digest, payload)
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(missing_digest))
     args.audit076_frozen_protocol = missing_digest
     with pytest.raises(SystemExit, match="protocol_digest"):
         RUNNER.stage_protocol_amend(args, cfg)
 
     test_open = tmp_path / "test_open.json"
     payload = _audit076_parent_payload()
-    payload["dataset_identity"]["split_files"]["test"]["path"] = "test_word.conll"
+    payload["dataset_identity"]["split_files"]["test"]["row_count"] = 42
     RUNNER.write_json(test_open, payload)
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(test_open))
     args.audit076_frozen_protocol = test_open
-    with pytest.raises(SystemExit, match="sealed TEST"):
+    with pytest.raises(SystemExit, match="row_count"):
         RUNNER.stage_protocol_amend(args, cfg)
+
+    test_hashed = tmp_path / "test_hashed.json"
+    payload = _audit076_parent_payload()
+    payload["dataset_identity"]["split_files"]["test"]["sha256"] = "abc123"
+    RUNNER.write_json(test_hashed, payload)
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(test_hashed))
+    args.audit076_frozen_protocol = test_hashed
+    with pytest.raises(SystemExit, match="sha256"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    test_gold_read = tmp_path / "test_gold_read.json"
+    payload = _audit076_parent_payload()
+    payload["dataset_identity"]["split_files"]["test"]["gold_labels_read"] = True
+    RUNNER.write_json(test_gold_read, payload)
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(test_gold_read))
+    args.audit076_frozen_protocol = test_gold_read
+    with pytest.raises(SystemExit, match="gold labels"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    test_read = tmp_path / "test_read.json"
+    RUNNER.write_json(test_read, _audit076_parent_payload(test_read_before_freeze=True))
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(test_read))
+    args.audit076_frozen_protocol = test_read
+    with pytest.raises(SystemExit, match="TEST was read"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    test_scored = tmp_path / "test_scored.json"
+    RUNNER.write_json(test_scored, _audit076_parent_payload(test_scored_before_freeze=True))
+    monkeypatch.setattr(RUNNER, "AUDIT076_FROZEN_PROTOCOL_SHA256", RUNNER.sha256_file(test_scored))
+    args.audit076_frozen_protocol = test_scored
+    with pytest.raises(SystemExit, match="TEST was scored"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+    assert not RUNNER.amended_protocol_path(tmp_path, cfg).exists()
 
 
 def test_build_bank_and_d1_train_require_amended_protocol_and_schedule(tmp_path):
