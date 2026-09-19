@@ -9,7 +9,9 @@ SYS2-2 and the baseline protocols are frozen in a later task.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import subprocess
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -18,7 +20,10 @@ from unmark.cross_task.phoner_stage2_optimization import (
     PHONER_STAGE2_OPT_BANK_SCHEMA,
     PHONER_STAGE2_OPT_FINAL_SCHEMA,
     PHONER_STAGE2_OPT_NAMESPACE,
+    PHONER_STAGE2_OPT_PROTOCOL_V2_SCHEMA,
+    PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
     PHONER_STAGE2_OPT_RESULT_SCHEMA,
+    PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA,
     DecodePolicy,
     OptimizedPhoNERStage2Config,
     RepresentationBankIdentity,
@@ -26,11 +31,18 @@ from unmark.cross_task.phoner_stage2_optimization import (
     d1_candidate_family,
     d2_candidate_family,
     derive_training_budget,
+    d2_transition_contract,
+    d4_entity_contract,
+    fusion_selection_contract,
+    head_reuse_contract,
     matched_d3_recipes,
+    representation_bank_contract,
     stable_digest,
     sys1_beta_grid,
+    sys2_1_admission_contract,
     sys2_1_native_candidates,
     sys2_2_gamma_grid,
+    training_schedule_closure,
 )
 from unmark.cross_task.phoner_transfer import (
     PHONER_FINAL_SEEDS,
@@ -38,6 +50,10 @@ from unmark.cross_task.phoner_transfer import (
     PHONER_SCALE_SHA256,
     PhoNERContractViolation,
     PhoNERPathway,
+    PhoNERSplit,
+    find_phoner_split_file,
+    parse_phoner_split,
+    sha256_file,
 )
 from unmark.viunmark.config import SIX_CONDITIONS
 
@@ -63,6 +79,10 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def namespace_root(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Path:
     return Path(output_root) / config.namespace
 
@@ -74,6 +94,14 @@ def stage_root(output_root: str | Path, config: OptimizedPhoNERStage2Config, sta
 
 def protocol_path(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Path:
     return namespace_root(output_root, config) / "umbrella_post_diagnostic_protocol.json"
+
+
+def amended_protocol_path(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Path:
+    return namespace_root(output_root, config) / "umbrella_post_diagnostic_protocol_v3_amendment.json"
+
+
+def audit076_frozen_protocol_path(output_root: str | Path) -> Path:
+    return Path(output_root) / "frozen_protocol.json"
 
 
 def stage_artifact_path(
@@ -89,6 +117,10 @@ def representation_bank_manifest_path(output_root: str | Path, config: Optimized
     return stage_artifact_path(output_root, config, Stage2Stage.BUILD_BANK, "representation_bank_manifest.json")
 
 
+def training_schedule_closure_path(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Path:
+    return stage_artifact_path(output_root, config, Stage2Stage.BUILD_BANK, "training_schedule_closure.json")
+
+
 def final_freeze_path(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Path:
     return stage_artifact_path(output_root, config, Stage2Stage.FREEZE_FINAL, "final_freeze.json")
 
@@ -98,8 +130,46 @@ def require_test_disabled(stage: str) -> None:
         raise SystemExit("PhoNER optimized Stage-II TEST stages are disabled; TEST remains sealed")
 
 
+def repository_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def repository_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root(),
+        text=True,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout.strip()
+
+
+def repository_status_short() -> str:
+    result = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=repository_root(),
+        text=True,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.stdout
+
+
+def require_clean_execution_tree() -> tuple[str, bool]:
+    head = repository_head()
+    status = repository_status_short()
+    if status.strip():
+        raise SystemExit("protocol amendment requires a clean execution tree; git status --short:\n" + status.rstrip())
+    return head, True
+
+
 def require_protocol(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> Mapping[str, Any]:
-    payload = read_json(protocol_path(output_root, config))
+    payload = read_json(amended_protocol_path(output_root, config))
+    if payload.get("schema_version") != PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA:
+        raise SystemExit("build-bank requires the v3 amended/final protocol artifact")
     if payload.get("config_digest") != stable_digest(config.to_dict()):
         raise SystemExit("optimized protocol digest mismatch")
     if payload.get("test_enabled") is not False:
@@ -118,6 +188,61 @@ def official_expected_budget(config: OptimizedPhoNERStage2Config) -> dict[str, A
     return {
         "FULL": derive_training_budget(OFFICIAL_AUDITED_TRAIN_ROWS, ("FULL",), config.policy).to_dict(),
         "AUG6": derive_training_budget(OFFICIAL_AUDITED_TRAIN_ROWS, SIX_CONDITIONS, config.policy).to_dict(),
+    }
+
+
+def train_dev_dataset_provenance(data_root: str | Path) -> dict[str, Any]:
+    rows: dict[str, Any] = {}
+    for split in (PhoNERSplit.TRAIN, PhoNERSplit.DEV):
+        path, file_format = find_phoner_split_file(data_root, split)
+        examples = parse_phoner_split(data_root, split, include_labels=True, stage="dataset-audit")
+        rows[split.value] = {
+            "split": split.value,
+            "path_name": path.name,
+            "format": file_format,
+            "sha256": sha256_file(path),
+            "row_count": len(examples),
+            "gold_labels_read": True,
+        }
+    if rows["train"]["row_count"] != OFFICIAL_AUDITED_TRAIN_ROWS:
+        raise SystemExit(f"unexpected PhoNER TRAIN row count: {rows['train']['row_count']}")
+    if rows["dev"]["row_count"] != OFFICIAL_AUDITED_DEV_ROWS:
+        raise SystemExit(f"unexpected PhoNER DEV row count: {rows['dev']['row_count']}")
+    return {
+        "dataset_id": "PhoNER_COVID19",
+        "representation": "word",
+        "source": "official PhoNER_COVID19 word-level local release supplied via DATA_ROOT",
+        "source_revision": "external DATA_ROOT; no dataset content committed",
+        "splits": rows,
+        "test_read": False,
+    }
+
+
+def parent_v2_identity(output_root: str | Path, config: OptimizedPhoNERStage2Config) -> dict[str, Any]:
+    path = protocol_path(output_root, config)
+    data = path.read_bytes()
+    payload = json.loads(data.decode("utf-8"))
+    if payload.get("schema_version") != PHONER_STAGE2_OPT_PROTOCOL_V2_SCHEMA:
+        raise SystemExit("v2 umbrella protocol parent has wrong schema")
+    return {
+        "path": str(path.relative_to(Path(output_root))),
+        "schema_version": payload.get("schema_version"),
+        "sha256": sha256_bytes(data),
+    }
+
+
+def audit076_parent_identity(output_root: str | Path) -> dict[str, Any]:
+    path = audit076_frozen_protocol_path(output_root)
+    if not path.exists():
+        raise SystemExit("Audit-076 frozen_protocol.json parent identity is required before protocol amendment")
+    data = path.read_bytes()
+    payload = json.loads(data.decode("utf-8"))
+    return {
+        "path": path.name,
+        "sha256": sha256_bytes(data),
+        "schema_version": payload.get("schema_version"),
+        "protocol_digest": payload.get("protocol_digest"),
+        "config_digest": stable_digest(payload.get("config", {})) if isinstance(payload.get("config"), Mapping) else None,
     }
 
 
@@ -157,7 +282,7 @@ def planned_representation_banks(config: OptimizedPhoNERStage2Config) -> list[di
 
 def stage_protocol(args: argparse.Namespace, config: OptimizedPhoNERStage2Config) -> None:
     payload = {
-        "schema_version": "phoner-stage2-umbrella-protocol-v2",
+        "schema_version": PHONER_STAGE2_OPT_PROTOCOL_V2_SCHEMA,
         "config": config.to_dict(),
         "config_digest": stable_digest(config.to_dict()),
         "stage_layout": stage_layout(config),
@@ -179,27 +304,67 @@ def stage_protocol(args: argparse.Namespace, config: OptimizedPhoNERStage2Config
         stage_root(args.output_root, config, stage).mkdir(parents=True, exist_ok=True)
 
 
-def stage_build_bank(args: argparse.Namespace, config: OptimizedPhoNERStage2Config) -> None:
-    require_protocol(args.output_root, config)
+def stage_protocol_amend(args: argparse.Namespace, config: OptimizedPhoNERStage2Config) -> None:
+    output_root = Path(args.output_root)
+    head, clean = require_clean_execution_tree()
+    v2_parent = parent_v2_identity(output_root, config)
+    dataset = train_dev_dataset_provenance(args.data_root)
+    audit076_parent = audit076_parent_identity(output_root)
     payload = {
-        "schema_version": PHONER_STAGE2_OPT_BANK_SCHEMA,
-        "config_digest": stable_digest(config.to_dict()),
-        "splits": ["train", "dev"],
-        "test_included": False,
-        "dtype": "float32",
-        "precision_reduction": False,
-        "planned_banks": planned_representation_banks(config),
-        "status": (
-            "Representation banks must be materialized here before any D1/D3/SYS2-1 training. "
-            "Each bank stores frozen token hidden states plus sample/token provenance and labels, "
-            "never TEST and never raw/corrupted text."
+        "schema_version": PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
+        "supersedes": v2_parent,
+        "amendment_reason": (
+            "Strengthen execution, dataset, parent, representation-bank, schedule, "
+            "decoder, SYS2-1, head-reuse, D4, and fusion-selection provenance before build-bank."
         ),
+        "no_new_campaign_scientific_results_observed_between_v2_and_v3": True,
+        "execution_repository_head": head,
+        "clean_execution_tree": clean,
+        "config": config.to_dict(),
+        "config_digest": stable_digest(config.to_dict()),
+        "dataset_provenance": dataset,
+        "audit076_parent_identity": audit076_parent,
+        "stage_layout": stage_layout(config),
+        "official_train_rows": OFFICIAL_AUDITED_TRAIN_ROWS,
+        "official_dev_rows": OFFICIAL_AUDITED_DEV_ROWS,
+        "expected_distribution_specific_budgets_if_no_train_chunking": official_expected_budget(config),
+        "representation_bank_contract": representation_bank_contract(config),
+        "training_schedule_closure_required_before_training": True,
+        "expected_training_schedule_closure_for_current_corpus": training_schedule_closure(
+            OFFICIAL_AUDITED_TRAIN_ROWS, policy=config.policy
+        ),
+        "d2_hard_bio_contract": d2_transition_contract(),
+        "sys2_1_admission_contract": sys2_1_admission_contract(),
+        "scientific_head_reuse_contract": head_reuse_contract(),
+        "d4_entity_contract": d4_entity_contract(),
+        "fusion_selection_contract": fusion_selection_contract(),
+        "test_enabled": False,
+        "test_read": False,
+        "test_scored": False,
+        "stage1_retraining": False,
+        "uit_vsfc_retuning": False,
     }
-    write_json_once(representation_bank_manifest_path(args.output_root, config), payload)
+    write_json_once(amended_protocol_path(output_root, config), payload)
+
+
+def stage_build_bank(args: argparse.Namespace, config: OptimizedPhoNERStage2Config) -> None:
+    protocol = require_protocol(args.output_root, config)
+    closure = protocol.get("expected_training_schedule_closure_for_current_corpus")
+    if not isinstance(closure, Mapping) or closure.get("schema_version") != PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA:
+        raise SystemExit("amended protocol is missing training schedule closure")
+    raise SystemExit(
+        "build-bank is fail-closed in this contract audit; a later real bank materializer must "
+        "write actual bank files, bank SHA256 values, stream digests, and the training schedule closure"
+    )
 
 
 def stage_d1_train(args: argparse.Namespace, config: OptimizedPhoNERStage2Config) -> None:
+    require_protocol(args.output_root, config)
     require_artifact(representation_bank_manifest_path(args.output_root, config), schema=PHONER_STAGE2_OPT_BANK_SCHEMA)
+    require_artifact(
+        training_schedule_closure_path(args.output_root, config),
+        schema=PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA,
+    )
     payload = {
         "schema_version": PHONER_STAGE2_OPT_RESULT_SCHEMA,
         "stage": Stage2Stage.D1_TRAIN.value,
@@ -376,6 +541,8 @@ def run_stage(stage: str, args: argparse.Namespace, config: OptimizedPhoNERStage
         raise SystemExit(f"unknown optimized Stage-II stage: {stage}") from error
     if resolved is Stage2Stage.PROTOCOL:
         stage_protocol(args, config)
+    elif resolved is Stage2Stage.PROTOCOL_AMEND:
+        stage_protocol_amend(args, config)
     elif resolved is Stage2Stage.BUILD_BANK:
         stage_build_bank(args, config)
     elif resolved is Stage2Stage.D1_TRAIN:

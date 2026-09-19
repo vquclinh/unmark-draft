@@ -38,6 +38,9 @@ PHONER_STAGE2_OPT_HEAD_SCHEMA = "phoner-stage2-optimized-mlp-head-v2"
 PHONER_STAGE2_OPT_BANK_SCHEMA = "phoner-stage2-representation-bank-v1"
 PHONER_STAGE2_OPT_RESULT_SCHEMA = "phoner-stage2-funnel-result-v1"
 PHONER_STAGE2_OPT_FINAL_SCHEMA = "phoner-stage2-final-freeze-v1"
+PHONER_STAGE2_OPT_PROTOCOL_V2_SCHEMA = "phoner-stage2-umbrella-protocol-v2"
+PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA = "phoner-stage2-umbrella-protocol-v3-amendment"
+PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA = "phoner-stage2-training-schedule-closure-v1"
 PHONER_STAGE2_OPT_POST_DIAGNOSTIC = True
 PHONER_STAGE2_OPT_TEST_ENABLED = False
 
@@ -47,6 +50,7 @@ FULL_ONLY = ("FULL",)
 
 class Stage2Stage(Enum):
     PROTOCOL = "protocol"
+    PROTOCOL_AMEND = "protocol-amend"
     BUILD_BANK = "build-bank"
     D1_TRAIN = "d1-train"
     D1_SELECT = "d1-select"
@@ -67,6 +71,7 @@ class Stage2Stage(Enum):
 
 OPTIMIZED_STAGE_ORDER: tuple[Stage2Stage, ...] = (
     Stage2Stage.PROTOCOL,
+    Stage2Stage.PROTOCOL_AMEND,
     Stage2Stage.BUILD_BANK,
     Stage2Stage.D1_TRAIN,
     Stage2Stage.D1_SELECT,
@@ -208,7 +213,7 @@ class DerivedTrainingBudget:
     examples_per_pass: int
     batch_size: int
     complete_distribution_passes: int
-    updates_per_complete_aug6_pass: int
+    updates_per_complete_distribution_pass: int
     max_optimizer_updates: int
     selection_boundaries: int
     boundary_updates: tuple[int, ...]
@@ -221,7 +226,7 @@ class DerivedTrainingBudget:
             "examples_per_pass": self.examples_per_pass,
             "batch_size": self.batch_size,
             "complete_distribution_passes": self.complete_distribution_passes,
-            "updates_per_complete_aug6_pass": self.updates_per_complete_aug6_pass,
+            "updates_per_complete_distribution_pass": self.updates_per_complete_distribution_pass,
             "max_optimizer_updates": self.max_optimizer_updates,
             "selection_boundaries": self.selection_boundaries,
             "boundary_updates": list(self.boundary_updates),
@@ -269,7 +274,7 @@ def derive_training_budget(
         examples_per_pass=examples_per_pass,
         batch_size=active_policy.batch_size,
         complete_distribution_passes=active_policy.complete_distribution_passes,
-        updates_per_complete_aug6_pass=updates_per_pass,
+        updates_per_complete_distribution_pass=updates_per_pass,
         max_optimizer_updates=max_updates,
         selection_boundaries=active_policy.selection_boundaries,
         boundary_updates=boundaries,
@@ -756,6 +761,158 @@ def verify_representation_bank_identity(expected: RepresentationBankIdentity, ob
         raise PhoNERContractViolation("representation bank provenance mismatch")
 
 
+def d2_transition_contract() -> dict[str, Any]:
+    return {
+        "decoder": DecodePolicy.HARD_BIO_VITERBI.value,
+        "i_x_cannot_start_sequence": True,
+        "o_to_i_x_forbidden": True,
+        "b_x_or_i_x_to_i_x_allowed": True,
+        "b_y_or_i_y_to_i_x_forbidden_when_x_differs_y": True,
+        "transitions_into_o_allowed": True,
+        "transitions_into_b_x_allowed": True,
+        "path_score": "sum of raw emission logits only",
+        "learned_transition_parameters": 0,
+        "fixed_transition_bonuses": 0,
+        "decoder_checkpoint": False,
+        "constrained_output_already_valid_bio": True,
+        "later_iob2_repair_policy": "asserted no-op",
+    }
+
+
+def representation_bank_contract(config: "OptimizedPhoNERStage2Config") -> dict[str, Any]:
+    return {
+        "splits": ["train", "dev"],
+        "test_excluded": True,
+        "pathways": [pathway.value for pathway in config.pathways],
+        "conditions": list(config.conditions),
+        "dtype": "float32",
+        "encoder_checkpoint": config.encoder_checkpoint,
+        "encoder_revision": config.encoder_revision,
+        "tokenizer_max_length": config.max_length,
+        "corruption_seed": config.policy.corruption_seed,
+        "gate_checkpoint_sha256": config.gate_checkpoint_sha256,
+        "scale_checkpoint_sha256": config.scale_checkpoint_sha256,
+        "sample_id_chunk_provenance_required": True,
+        "dataset_sha_required": True,
+        "representation_schema_version": PHONER_STAGE2_OPT_BANK_SCHEMA,
+        "fail_closed_on_mismatch": True,
+        "bank_manifest_required_fields": [
+            "train_chunk_count",
+            "dev_chunk_count",
+            "per_pathway_condition_representation_identity",
+            "sample_chunk_stream_digests",
+            "bank_file_sha256_values",
+            "dataset_provenance",
+            "stage1_and_phobert_identities",
+            "training_schedule_closure",
+        ],
+    }
+
+
+def sys2_1_admission_contract() -> dict[str, Any]:
+    return {
+        "always_admitted": [
+            "Native MLP FULL unweighted",
+            "Native MLP AUG6 unweighted",
+        ],
+        "conditionally_admitted": [
+            "Native MLP AUG6 weighted iff the CLOSED D1 five-seed recipe-selection artifact "
+            "selects or keeps the weighted recipe according to the prospectively fixed rule"
+        ],
+        "later_ad_hoc_admission": False,
+    }
+
+
+def scientific_head_identity_schema() -> dict[str, Any]:
+    return {
+        "schema_version": "phoner-stage2-scientific-head-identity-v1",
+        "required_fields": [
+            "pathway",
+            "representation_bank_identity",
+            "encoder_or_stage1_identity",
+            "head_architecture",
+            "train_distribution",
+            "loss_definition_and_weights",
+            "optimizer_hyperparameters",
+            "exact_budget_and_boundaries",
+            "seed",
+            "checkpoint_selection_semantics",
+        ],
+    }
+
+
+def head_reuse_contract() -> dict[str, Any]:
+    return {
+        "identity_schema": scientific_head_identity_schema(),
+        "reuse_rule": (
+            "If a closed earlier-stage head has an identical scientific identity, later stages "
+            "must reuse that checkpoint byte-for-byte; retraining is prohibited."
+        ),
+        "explicit_reuse_cases": [
+            "D1 Scale -> D3 Scale",
+            "D3 Native -> identical SYS2-1 candidate",
+            "D3 Gate/Scale -> SYS1",
+            "closed SYS1 + SYS2-1 -> SYS2-2",
+        ],
+        "fail_closed_on_identity_mismatch": True,
+    }
+
+
+def d4_entity_contract() -> dict[str, Any]:
+    return {
+        "entity_key": ["sample_id", "word_start", "word_end", "entity_type"],
+        "tuple_form": "(sample_id, word_start, word_end, entity_type)",
+        "cross_sentence_collision_allowed": False,
+    }
+
+
+def fusion_selection_contract() -> dict[str, Any]:
+    return {
+        "applies_to": ["SYS1 beta", "SYS2-2 gamma"],
+        "input": "actual deployed five-head branch ensemble outputs",
+        "not_input": "mean of five independent per-seed F1 values",
+        "selection_order": [
+            "ensemble All6 entity micro-F1",
+            "ensemble worst-condition entity micro-F1",
+            "ensemble FULL entity micro-F1",
+            "prospectively declared default/simpler fusion",
+        ],
+        "decode_policy": "fuse raw token emissions first, then apply exactly one selected decoder",
+    }
+
+
+def training_schedule_closure(
+    actual_train_chunk_count: int,
+    *,
+    expected_train_chunk_count: int = 5027,
+    policy: OptimizedTrainingPolicy | None = None,
+) -> dict[str, Any]:
+    if actual_train_chunk_count != expected_train_chunk_count:
+        raise PhoNERContractViolation(
+            "actual TRAIN chunk count does not match the committed expected schedule"
+        )
+    active_policy = policy or OptimizedTrainingPolicy()
+    full = derive_training_budget(actual_train_chunk_count, FULL_ONLY, active_policy)
+    aug6 = derive_training_budget(actual_train_chunk_count, SIX_CONDITIONS, active_policy)
+    if full.max_optimizer_updates != 1575 or aug6.max_optimizer_updates != 9430:
+        raise PhoNERContractViolation("training schedule closure drifted from expected 1575/9430 budgets")
+    for budget in (full, aug6):
+        if len(budget.boundary_updates) != active_policy.selection_boundaries:
+            raise PhoNERContractViolation("training schedule closure has wrong boundary count")
+        if tuple(sorted(set(budget.boundary_updates))) != budget.boundary_updates:
+            raise PhoNERContractViolation("training schedule boundaries must be unique and monotonic")
+        if budget.boundary_updates[-1] != budget.max_optimizer_updates:
+            raise PhoNERContractViolation("training schedule final boundary must equal max updates")
+    return {
+        "schema_version": PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA,
+        "actual_train_chunk_count": actual_train_chunk_count,
+        "expected_train_chunk_count": expected_train_chunk_count,
+        "five_pass_rule": True,
+        "FULL": full.to_dict(),
+        "AUG6": aug6.to_dict(),
+    }
+
+
 @dataclass(frozen=True)
 class OptimizedPhoNERStage2Config:
     dataset_id: str = PHONER_TASK_ID
@@ -814,13 +971,19 @@ class OptimizedPhoNERStage2Config:
             "stage_order": [stage.value for stage in OPTIMIZED_STAGE_ORDER],
             "d1_candidates": [recipe.to_dict() for recipe in d1_candidate_family()],
             "d2_decoders": [policy.value for policy in d2_candidate_family()],
+            "d2_hard_bio_contract": d2_transition_contract(),
             "sys1_beta_grid": [candidate.to_dict() for candidate in sys1_beta_grid()],
+            "sys2_1_admission_contract": sys2_1_admission_contract(),
             "sys2_2_gamma_grid": [candidate.to_dict() for candidate in sys2_2_gamma_grid()],
             "fusion_selection_policy": (
                 "SYS1 beta and SYS2-2 gamma are selected on actual deployed branch ensembles: "
                 "five-head branch logits are averaged first, candidate weights fuse raw tensors, "
                 "one selected decoder is applied, and DEV entity metrics are computed on that ensemble."
             ),
+            "fusion_selection_contract": fusion_selection_contract(),
+            "representation_bank_contract": representation_bank_contract(self),
+            "scientific_head_reuse_contract": head_reuse_contract(),
+            "d4_entity_contract": d4_entity_contract(),
             "negative_controls": {
                 "crf_used": False,
                 "sentiment_bias_or_calibration_used": False,
@@ -855,9 +1018,12 @@ __all__ = [
     "PHONER_STAGE2_OPT_HEAD_SCHEMA",
     "PHONER_STAGE2_OPT_NAMESPACE",
     "PHONER_STAGE2_OPT_POST_DIAGNOSTIC",
+    "PHONER_STAGE2_OPT_PROTOCOL_V2_SCHEMA",
+    "PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA",
     "PHONER_STAGE2_OPT_PROTOCOL_VERSION",
     "PHONER_STAGE2_OPT_RESULT_SCHEMA",
     "PHONER_STAGE2_OPT_TEST_ENABLED",
+    "PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA",
     "CandidateKind",
     "DecodePolicy",
     "DerivedTrainingBudget",
@@ -876,23 +1042,31 @@ __all__ = [
     "condition_f1_values",
     "d1_candidate_family",
     "d2_candidate_family",
+    "d2_transition_contract",
+    "d4_entity_contract",
     "d4_entity_key",
     "derive_training_budget",
     "distribution_for_conditions",
     "ensemble_fusion_selection_tuple",
     "first_subtoken_label_weights",
+    "fusion_selection_contract",
     "hard_bio_constrained_viterbi",
+    "head_reuse_contract",
     "is_valid_bio_sequence",
     "legal_bio_transition",
     "matched_d3_recipes",
     "mean_five_head_logits",
     "per_head_selection_tuple",
+    "representation_bank_contract",
     "require_exact_head_reuse",
     "sample_ids_digest",
+    "scientific_head_identity_schema",
     "stable_digest",
     "summarize_optimized_candidate_scores",
     "sys1_beta_grid",
+    "sys2_1_admission_contract",
     "sys2_1_native_candidates",
     "sys2_2_gamma_grid",
+    "training_schedule_closure",
     "verify_representation_bank_identity",
 ]

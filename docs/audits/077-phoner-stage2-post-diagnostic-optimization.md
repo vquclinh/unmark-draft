@@ -29,6 +29,34 @@ All new outputs are namespaced under:
 phoner_stage2_optimized/
 ```
 
+## Protocol Amendment
+
+The original `umbrella_post_diagnostic_protocol.json` is preserved byte-for-byte
+as the v2 parent artifact. Before any representation-bank build, a write-once
+v3 amendment must be created:
+
+```text
+phoner_stage2_optimized/umbrella_post_diagnostic_protocol_v3_amendment.json
+```
+
+The v3 amendment supersedes v2 without mutating it. It records:
+
+- v2 path, schema, and SHA-256 parent identity
+- amendment reason
+- `no_new_campaign_scientific_results_observed_between_v2_and_v3 = true`
+- execution repository HEAD resolved from Git
+- `clean_execution_tree = true`
+- TRAIN and DEV local file SHA-256 values
+- TRAIN and DEV row counts
+- dataset source/revision provenance if available
+- Audit-076 frozen protocol parent identity/digest
+- all contracts below in machine-readable form
+
+Future `build-bank` requires this v3 amended/final protocol, not v2. In this
+contract audit, `build-bank` remains fail-closed until a later real bank
+materializer writes actual bank files, SHA-256 values, stream digests, and
+training schedule closure. No placeholder bank is allowed to unlock training.
+
 ## Post-Diagnostic Status
 
 This is explicitly post-diagnostic development. Corrupted PhoNER DEV metrics
@@ -127,6 +155,9 @@ Pinned transition semantics:
 - Any post-repair after constrained decoding must be a verified no-op because
   the constrained path is already valid BIO.
 
+These semantics are materialized in the v3 protocol artifact as
+`d2_hard_bio_contract`.
+
 ## D3-NER
 
 D3 applies the D1-selected readout recipe and D2-selected decoding policy,
@@ -158,6 +189,8 @@ Exact entity identity for D4 overlap/correctness analysis is:
 
 Including `sample_id` prevents cross-sentence entity collisions.
 
+This key is materialized in the v3 protocol artifact as `d4_entity_contract`.
+
 ## SYS1-NER
 
 SYS1 is adapted-only fusion:
@@ -185,6 +218,9 @@ candidate_raw    = beta_gate * Gate_branch_raw + beta_scale * Scale_branch_raw
 metrics          = one selected decoder(candidate_raw)
 ```
 
+This is materialized separately from recipe selection in the v3 protocol artifact
+as `fusion_selection_contract`.
+
 ## SYS2-1-NER
 
 SYS2-1 develops the Native branch separately.
@@ -197,6 +233,9 @@ Minimum Native candidates:
 A Native weighted candidate is admitted only if the closed D1 selection artifact
 keeps the weighted readout alive under the five-seed aggregate rule. The final
 Native branch is an arithmetic mean of exactly five selected Native head logits.
+
+This admission policy is materialized in the v3 protocol artifact as
+`sys2_1_admission_contract`.
 
 ## SYS2-2-NER
 
@@ -264,6 +303,19 @@ If future legitimate TRAIN chunking changes the TRAIN chunk count, the same
 rule derives both FULL and AUG6 budgets from the frozen chunk count before
 training.
 
+The emitted budget schema field is:
+
+```text
+updates_per_complete_distribution_pass
+```
+
+The misleading old field name `updates_per_complete_aug6_pass` is not emitted.
+
+D1 training remains locked until build-bank produces an immutable
+`training_schedule_closure.json` derived from the actual frozen TRAIN chunk
+count. For the current authoritative 5027-chunk corpus, closure must verify the
+expected `1575` and `9430` max updates and fail closed on drift.
+
 ## Representation Bank
 
 Frozen encoders/pathways are banked before head training:
@@ -281,6 +333,27 @@ condition/seed, and representation-bank schema. Any mismatch fails closed.
 
 Head training consumes frozen representation banks; seed-specific shuffles and
 dropout remain head-level randomness.
+
+The v3 protocol artifact materializes `representation_bank_contract` with:
+
+- splits: TRAIN and DEV only
+- TEST excluded
+- pathways: Native, Gate, Scale
+- conditions: all six frozen conditions
+- dtype: float32
+- PhoBERT checkpoint/revision
+- tokenizer max length
+- corruption seed
+- Gate/Scale Stage-I SHA-256 identities
+- sample-ID/chunk provenance requirement
+- dataset SHA requirement
+- representation schema/version
+- fail-closed mismatch policy
+
+The eventual bank manifest must contain actual verified train/dev chunk counts,
+per-pathway/condition representation identities, sample/chunk stream digests,
+bank file SHA-256 values, and all provenance bindings above. TEST is
+structurally unreachable.
 
 ## Mandatory Exact Head Reuse
 
@@ -308,6 +381,9 @@ Required reuse cases:
 - D3 Native heads are reused by SYS2-1 when the Native candidate is identical.
 - SYS1 uses closed D3 Gate/Scale branch heads; no retraining.
 - SYS2-2 uses closed SYS1 and SYS2-1 artifacts; no retraining.
+
+This is materialized in the v3 protocol artifact as
+`scientific_head_reuse_contract`, including the scientific head identity schema.
 
 ## Selection
 
@@ -439,6 +515,12 @@ Focused tests added for:
 - derived training-budget math
 - exact scientific head identity and mandatory reuse
 - D4 entity key
+- v2 immutable plus v3 amendment/supersession
+- execution repository HEAD and clean-tree binding
+- TRAIN/DEV SHA and row-count binding
+- build-bank requiring v3 and failing closed without actual bank materialization
+- schedule closure required before training
+- budget field rename to `updates_per_complete_distribution_pass`
 - old diagnostic artifacts never targeted
 - TEST unreachable
 
@@ -454,7 +536,7 @@ pytest -q tests/test_phoner_stage2_optimization.py tests/test_phoner_cross_task_
 Result:
 
 ```text
-61 passed, 5 skipped
+65 passed, 5 skipped
 ```
 
 ```text
@@ -484,7 +566,7 @@ pytest -q
 Result:
 
 ```text
-7 failed, 5117 passed, 278 skipped
+7 failed, 5121 passed, 278 skipped
 ```
 
 The 7 failures are the known Stage-I multiprocessing forkserver sandbox

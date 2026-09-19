@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import importlib
 import pathlib
 import types
@@ -44,6 +45,7 @@ def test_protocol_is_post_diagnostic_funnel_with_test_disabled():
 def test_stage_boundaries_are_the_fixed_research_funnel():
     assert [stage.value for stage in opt.OPTIMIZED_STAGE_ORDER] == [
         "protocol",
+        "protocol-amend",
         "build-bank",
         "d1-train",
         "d1-select",
@@ -124,7 +126,23 @@ def test_d4_stage_is_no_training_in_runner(tmp_path):
     cfg = opt.OptimizedPhoNERStage2Config()
     args = types.SimpleNamespace(output_root=tmp_path)
     RUNNER.stage_protocol(args, cfg)
-    RUNNER.stage_build_bank(args, cfg)
+    RUNNER.write_json(
+        RUNNER.amended_protocol_path(tmp_path, cfg),
+        {
+            "schema_version": opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
+            "config_digest": opt.stable_digest(cfg.to_dict()),
+            "test_enabled": False,
+            "expected_training_schedule_closure_for_current_corpus": opt.training_schedule_closure(5027),
+        },
+    )
+    RUNNER.write_json(
+        RUNNER.representation_bank_manifest_path(tmp_path, cfg),
+        {"schema_version": opt.PHONER_STAGE2_OPT_BANK_SCHEMA},
+    )
+    RUNNER.write_json(
+        RUNNER.training_schedule_closure_path(tmp_path, cfg),
+        opt.training_schedule_closure(5027),
+    )
     RUNNER.stage_d1_train(args, cfg)
     RUNNER.stage_d1_select(args, cfg)
     RUNNER.stage_d2_decode(args, cfg)
@@ -260,7 +278,8 @@ def test_training_budget_is_distribution_specific_five_complete_passes():
     full = opt.derive_training_budget(5027, ("FULL",))
     assert full.distribution is opt.TrainingDistribution.FULL
     assert full.examples_per_pass == 5027
-    assert full.updates_per_complete_aug6_pass == 315
+    assert full.updates_per_complete_distribution_pass == 315
+    assert "updates_per_complete_aug6_pass" not in full.to_dict()
     assert full.complete_distribution_passes == 5
     assert full.max_optimizer_updates == 1575
     assert len(full.boundary_updates) == 30
@@ -270,12 +289,37 @@ def test_training_budget_is_distribution_specific_five_complete_passes():
     aug6 = opt.derive_training_budget(5027, phoner.SIX_CONDITIONS)
     assert aug6.distribution is opt.TrainingDistribution.AUG6
     assert aug6.examples_per_pass == 30162
-    assert aug6.updates_per_complete_aug6_pass == 1886
+    assert aug6.updates_per_complete_distribution_pass == 1886
     assert aug6.complete_distribution_passes == 5
     assert aug6.max_optimizer_updates == 9430
     assert len(aug6.boundary_updates) == 30
     assert list(aug6.boundary_updates) == sorted(set(aug6.boundary_updates))
     assert aug6.boundary_updates[-1] == 9430
+
+
+def test_training_schedule_closure_fails_closed_on_unexpected_chunk_count():
+    closure = opt.training_schedule_closure(5027)
+    assert closure["schema_version"] == opt.PHONER_STAGE2_OPT_TRAINING_SCHEDULE_SCHEMA
+    assert closure["FULL"]["max_optimizer_updates"] == 1575
+    assert closure["AUG6"]["max_optimizer_updates"] == 9430
+    assert closure["FULL"]["boundary_updates"][-1] == 1575
+    assert closure["AUG6"]["boundary_updates"][-1] == 9430
+    with pytest.raises(phoner.PhoNERContractViolation):
+        opt.training_schedule_closure(5028)
+
+
+def test_protocol_contract_sections_are_materialized():
+    cfg = opt.OptimizedPhoNERStage2Config()
+    payload = cfg.to_dict()
+    assert payload["representation_bank_contract"]["splits"] == ["train", "dev"]
+    assert payload["representation_bank_contract"]["test_excluded"] is True
+    assert payload["representation_bank_contract"]["dtype"] == "float32"
+    assert payload["d2_hard_bio_contract"]["path_score"] == "sum of raw emission logits only"
+    assert payload["d2_hard_bio_contract"]["decoder_checkpoint"] is False
+    assert payload["sys2_1_admission_contract"]["later_ad_hoc_admission"] is False
+    assert payload["scientific_head_reuse_contract"]["fail_closed_on_identity_mismatch"] is True
+    assert payload["d4_entity_contract"]["tuple_form"] == "(sample_id, word_start, word_end, entity_type)"
+    assert payload["fusion_selection_contract"]["not_input"] == "mean of five independent per-seed F1 values"
 
 
 def test_exact_head_identity_requires_byte_for_byte_reuse():
@@ -324,7 +368,9 @@ def test_runner_writes_only_optimized_namespace_and_not_old_diagnostic_targets(t
     assert RUNNER.namespace_root(tmp_path, cfg) == tmp_path / "phoner_stage2_optimized"
     paths = [
         RUNNER.protocol_path(tmp_path, cfg),
+        RUNNER.amended_protocol_path(tmp_path, cfg),
         RUNNER.representation_bank_manifest_path(tmp_path, cfg),
+        RUNNER.training_schedule_closure_path(tmp_path, cfg),
         RUNNER.final_freeze_path(tmp_path, cfg),
     ]
     for path in paths:
@@ -336,6 +382,70 @@ def test_runner_writes_only_optimized_namespace_and_not_old_diagnostic_targets(t
         "dev_evaluate_results.json",
     }
     assert not forbidden & {path.name for path in paths}
+
+
+def _write_phoner_conll(path: pathlib.Path, rows: int) -> None:
+    path.write_text(("a O\n\n" * rows), encoding="utf-8")
+
+
+def test_protocol_amendment_preserves_v2_and_binds_head_train_dev_and_parent(monkeypatch, tmp_path):
+    cfg = opt.OptimizedPhoNERStage2Config()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    _write_phoner_conll(data_root / "train_word.conll", 5027)
+    _write_phoner_conll(data_root / "dev_word.conll", 2000)
+    args = types.SimpleNamespace(output_root=tmp_path, data_root=data_root)
+    RUNNER.stage_protocol(args, cfg)
+    v2_path = RUNNER.protocol_path(tmp_path, cfg)
+    v2_before = v2_path.read_bytes()
+    RUNNER.write_json(tmp_path / "frozen_protocol.json", {"schema_version": "audit076", "protocol_digest": "parent"})
+    monkeypatch.setattr(RUNNER, "require_clean_execution_tree", lambda: ("HEAD123", True))
+
+    RUNNER.stage_protocol_amend(args, cfg)
+
+    assert v2_path.read_bytes() == v2_before
+    amended = RUNNER.read_json(RUNNER.amended_protocol_path(tmp_path, cfg))
+    assert amended["schema_version"] == opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA
+    assert amended["supersedes"]["sha256"] == RUNNER.sha256_bytes(v2_before)
+    assert amended["execution_repository_head"] == "HEAD123"
+    assert amended["clean_execution_tree"] is True
+    assert amended["dataset_provenance"]["splits"]["train"]["row_count"] == 5027
+    assert amended["dataset_provenance"]["splits"]["dev"]["row_count"] == 2000
+    assert amended["dataset_provenance"]["test_read"] is False
+    assert amended["audit076_parent_identity"]["protocol_digest"] == "parent"
+    assert amended["no_new_campaign_scientific_results_observed_between_v2_and_v3"] is True
+
+    with pytest.raises(SystemExit, match="refusing to overwrite"):
+        RUNNER.stage_protocol_amend(args, cfg)
+
+
+def test_build_bank_and_d1_train_require_amended_protocol_and_schedule(tmp_path):
+    cfg = opt.OptimizedPhoNERStage2Config()
+    args = types.SimpleNamespace(output_root=tmp_path)
+    RUNNER.stage_protocol(args, cfg)
+    with pytest.raises(SystemExit, match="required optimized artifact is missing"):
+        RUNNER.stage_build_bank(args, cfg)
+
+    RUNNER.write_json(
+        RUNNER.amended_protocol_path(tmp_path, cfg),
+        {
+            "schema_version": opt.PHONER_STAGE2_OPT_PROTOCOL_V3_SCHEMA,
+            "config_digest": opt.stable_digest(cfg.to_dict()),
+            "test_enabled": False,
+            "expected_training_schedule_closure_for_current_corpus": opt.training_schedule_closure(5027),
+        },
+    )
+    with pytest.raises(SystemExit, match="build-bank is fail-closed"):
+        RUNNER.stage_build_bank(args, cfg)
+    RUNNER.write_json(
+        RUNNER.representation_bank_manifest_path(tmp_path, cfg),
+        {"schema_version": opt.PHONER_STAGE2_OPT_BANK_SCHEMA},
+    )
+    RUNNER.write_json(
+        RUNNER.training_schedule_closure_path(tmp_path, cfg),
+        opt.training_schedule_closure(5027),
+    )
+    RUNNER.stage_d1_train(args, cfg)
 
 
 def test_test_stages_are_disabled(tmp_path):
@@ -361,6 +471,8 @@ def test_runner_exposes_new_stages_without_direct_fusion_campaign_or_personal_pa
     assert "FUSE_NATIVE_GATE_075_025" not in source
     assert "dev_evaluate_results.json" not in source
     assert "frozen_probe_heads.json" not in source
-    assert "frozen_protocol.json" not in source
+    assert "frozen_probe_heads.json" not in source
+    assert "train_dev_results.json" not in source
+    assert "dev_evaluate_results.json" not in source
     assert "/content/drive" not in source
     assert "MyDrive" not in source
